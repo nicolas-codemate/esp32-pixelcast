@@ -1,0 +1,52 @@
+{
+    "display": {
+        "brightness": 128,
+        "colorDepth": 6,
+        "autoRotate": true,
+        "defaultDuration": 10000,
+        "transition": "none"
+    },
+    "wifi": {
+        "hostname": "pixelcast"
+    },
+    "mqtt": {
+        "enabled": false,
+        "server": "",
+        "port": 1883,
+        "user": "",
+        "password": "",
+        "prefix": "pixelcast"
+    },
+    "ntp": {
+        "server": "pool.ntp.org",
+        "offset": 3600,
+        "daylightOffset": 3600
+    },
+    "apps": {
+        "clock": {
+            "enabled": true,
+            "format24h": true,
+            "showSeconds": false,
+            "color": [255, 255, 255]
+        },
+        "date": {
+            "enabled": true,
+            "format": "DD/MM/YYYY",
+            "color": [100, 100, 255]
+        }
+    },
+    "indicators": {
+        "1": {
+            "enabled": false,
+            "color": [255, 0, 0]
+        },
+        "2": {
+            "enabled": false,
+            "color": [0, 255, 0]
+        },
+        "3": {
+            "enabled": false,
+            "color": [0, 0, 255]
+        }
+    }
+}

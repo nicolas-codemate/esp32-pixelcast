@@ -6,45 +6,48 @@ This document details the development phases of the ESP32-PixelCast project, fro
 
 ---
 
-## Phase 0: Preparation
+## Phase 0: Preparation ✅
 
 ### 0.1 Environment Setup
 - [x] Create GitHub repository
-- [ ] Configure PlatformIO
-- [ ] Test hardware (Trinity + 64x64 panel)
-- [ ] Validate wiring and power supply
+- [x] Configure PlatformIO
+- [x] Test hardware (Trinity + 64x64 panel)
+- [x] Validate wiring and power supply
 
 ### 0.2 Hardware Validation
-- [ ] Flash a basic ESP32-HUB75-MatrixPanel-DMA example
-- [ ] Verify display (colors, orientation, scan type)
-- [ ] Test brightness and power consumption
-- [ ] Identify exact pinout (E_PIN for 64x64)
+- [x] Flash a basic ESP32-HUB75-MatrixPanel-DMA example
+- [x] Verify display (colors, orientation, scan type)
+- [x] Test brightness and power consumption
+- [x] Identify exact pinout (E_PIN for 64x64)
+
+> **Note**: Trinity board uses **GPIO 18** for E_PIN (not GPIO 32).
+> Panel model: P3(2121)64X64-32S-T (1/32 scan)
 
 ### 0.3 Final Technical Choices
-- [ ] Validate LittleFS vs SD card
-- [ ] Choose color depth (5-6 bits recommended)
+- [x] Validate LittleFS vs SD card → LittleFS (built into ESP32 core)
+- [x] Choose color depth (5-6 bits recommended) → 6 bits
 - [ ] Define target memory limits
 
 **Deliverables:**
-- Working panel with test display
-- Validated PlatformIO configuration
+- [x] Working panel with test display
+- [x] Validated PlatformIO configuration
 
 ---
 
-## Phase 1: Foundations
+## Phase 1: Foundations 🔄 (In Progress)
 
 ### 1.1 Base Architecture
-- [ ] Project structure (src/, include/, lib/)
-- [ ] Centralized configuration file (`config.h`)
-- [ ] Logging system (Serial + future web)
+- [x] Project structure (src/, include/, lib/)
+- [x] Centralized configuration file (`config.h`)
+- [x] Logging system (Serial)
 - [ ] Error handling
 
 ### 1.2 Display Driver
-- [ ] Wrapper around ESP32-HUB75-MatrixPanel-DMA
-- [ ] Dynamic configuration (resolution, pins)
-- [ ] Double buffering
-- [ ] Brightness control with gamma correction
-- [ ] Clear/fill functions
+- [x] Wrapper around ESP32-HUB75-MatrixPanel-DMA
+- [x] Dynamic configuration (resolution, pins)
+- [ ] Double buffering (disabled for now)
+- [x] Brightness control
+- [x] Clear/fill functions
 
 ```cpp
 // Target interface
@@ -61,22 +64,22 @@ public:
 ```
 
 ### 1.3 WiFi Connectivity
-- [ ] WiFiManager for initial configuration
-- [ ] Captive portal
-- [ ] Credential storage in NVS
-- [ ] Automatic reconnection
-- [ ] mDNS (`pixelcast.local`)
+- [x] WiFiManager for initial configuration
+- [x] Captive portal
+- [x] Credential storage in NVS
+- [x] Automatic reconnection
+- [x] mDNS (`pixelcast.local`)
 
 ### 1.4 LittleFS Filesystem
-- [ ] LittleFS initialization
+- [x] LittleFS initialization
 - [ ] Folder structure (`/icons`, `/gifs`, `/config`)
 - [ ] JSON configuration read/write
 - [ ] Available space management
 
 **Deliverables:**
-- Working WiFi with captive portal
-- Basic text display
-- Persistent configuration
+- [x] Working WiFi with captive portal
+- [x] Basic text display (time via NTP)
+- [ ] Persistent configuration
 
 ---
 
@@ -116,9 +119,9 @@ struct AppItem {
 - [ ] Bar chart (optional)
 
 ### 2.4 Built-in System Apps
-- [ ] **Clock**: Clock with NTP
+- [x] **Clock**: Clock with NTP (basic implementation)
 - [ ] **Date**: Current date
-- [ ] **IP**: IP display at startup
+- [x] **IP**: IP display at startup
 
 **Deliverables:**
 - Working app rotation
@@ -164,31 +167,31 @@ struct Notification {
 
 ---
 
-## Phase 4: REST API
+## Phase 4: REST API 🔄 (Partial)
 
 ### 4.1 Async Web Server
-- [ ] ESPAsyncWebServer setup
-- [ ] CORS for cross-origin access
+- [x] ESPAsyncWebServer setup
+- [x] CORS for cross-origin access
 - [ ] Basic authentication (optional)
 
 ### 4.2 REST Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/custom` | Create/Update an app |
-| DELETE | `/api/custom` | Delete an app |
-| POST | `/api/notify` | Send notification |
-| POST | `/api/dismiss` | Acknowledge notification |
-| POST | `/api/indicator{1-3}` | Control indicator |
-| GET | `/api/apps` | List active apps |
-| GET | `/api/stats` | System statistics |
-| POST | `/api/settings` | Modify settings |
-| GET | `/api/settings` | Read settings |
-| POST | `/api/reboot` | Reboot |
-| POST | `/api/brightness` | Set brightness |
+| Method | Endpoint | Description | Status |
+|--------|----------|-------------|--------|
+| POST | `/api/custom` | Create/Update an app | ❌ |
+| DELETE | `/api/custom` | Delete an app | ❌ |
+| POST | `/api/notify` | Send notification | ❌ |
+| POST | `/api/dismiss` | Acknowledge notification | ❌ |
+| POST | `/api/indicator{1-3}` | Control indicator | ❌ |
+| GET | `/api/apps` | List active apps | ❌ |
+| GET | `/api/stats` | System statistics | ✅ |
+| POST | `/api/settings` | Modify settings | ❌ |
+| GET | `/api/settings` | Read settings | ✅ |
+| POST | `/api/reboot` | Reboot | ✅ |
+| POST | `/api/brightness` | Set brightness | ✅ |
 
 ### 4.3 JSON Parsing
-- [ ] ArduinoJson for parsing
+- [x] ArduinoJson for parsing
 - [ ] Payload validation
 - [ ] Standardized error responses
 
@@ -417,4 +420,39 @@ Application breakdown:
 
 ---
 
-*Last updated: January 2026*
+## Hardware Notes
+
+### Trinity Board Pinout (64x64 panels)
+
+The ESP32-Trinity board has a **specific pinout** for the HUB75 E pin:
+
+```
+Pin     GPIO    Note
+────────────────────────────────
+R1      25
+G1      26
+B1      27
+R2      14
+G2      12
+B2      13
+A       23
+B       19
+C       5
+D       17
+E       18      ⚠️ Trinity-specific (not 32!)
+LAT     4
+OE      15
+CLK     16
+```
+
+> **Important**: Most documentation shows E_PIN = GPIO 32, but on Trinity
+> the HUB75 connector's E pin is wired to **GPIO 18**.
+
+### Panel Compatibility
+
+Tested with:
+- **P3(2121)64X64-32S-T** - 64x64, 1/32 scan, 3mm pitch
+
+---
+
+*Last updated: January 31, 2026*

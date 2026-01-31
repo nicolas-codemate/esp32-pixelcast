@@ -1,0 +1,27 @@
+meta {
+  name: Set Brightness
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/brightness
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "brightness": 128
+  }
+}
+
+docs {
+  Sets the display brightness (0-255).
+
+  Note: Currently has a body handler issue with ESPAsyncWebServer.
+}

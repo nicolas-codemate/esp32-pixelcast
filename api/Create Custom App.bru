@@ -1,0 +1,43 @@
+meta {
+  name: Create Custom App
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/custom
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "weather",
+    "text": "22°C Sunny",
+    "color": [255, 200, 0],
+    "background": [0, 0, 0],
+    "duration": 10000,
+    "lifetime": 0,
+    "priority": 0
+  }
+}
+
+docs {
+  Creates or updates a custom app.
+
+  Parameters:
+  - name: Unique identifier for the app (required)
+  - text: Text to display (required)
+  - icon: Icon name from /icons folder (optional)
+  - color: RGB array [r, g, b] or hex integer (default: white)
+  - background: RGB array [r, g, b] (default: black)
+  - duration: Display duration in ms (default: 10000)
+  - lifetime: Auto-expire after ms, 0 = permanent (default: 0)
+  - priority: -10 to 10, higher = more important (default: 0)
+
+  Note: Currently has a body handler issue with ESPAsyncWebServer.
+}

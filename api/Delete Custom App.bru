@@ -1,0 +1,21 @@
+meta {
+  name: Delete Custom App
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/api/custom?name=weather
+  body: none
+  auth: none
+}
+
+params:query {
+  name: weather
+}
+
+docs {
+  Deletes a custom app by name.
+
+  System apps (clock, date) cannot be deleted.
+}

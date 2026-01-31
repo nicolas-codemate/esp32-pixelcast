@@ -1,0 +1,15 @@
+meta {
+  name: Get Stats
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/stats
+  body: none
+  auth: none
+}
+
+docs {
+  Returns system statistics including uptime, memory, WiFi status, and app information.
+}

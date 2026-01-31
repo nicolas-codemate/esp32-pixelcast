@@ -1,0 +1,15 @@
+meta {
+  name: Get Apps
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/apps
+  body: none
+  auth: none
+}
+
+docs {
+  Returns list of all active apps with their configuration and current display status.
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Reboot
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/reboot
+  body: none
+  auth: none
+}
+
+docs {
+  Reboots the ESP32 device.
+
+  The device will disconnect and restart. Allow ~10 seconds for it to reconnect.
+}

@@ -34,34 +34,20 @@ This document details the development phases of the ESP32-PixelCast project, fro
 
 ---
 
-## Phase 1: Foundations 🔄 (In Progress)
+## Phase 1: Foundations ✅
 
 ### 1.1 Base Architecture
 - [x] Project structure (src/, include/, lib/)
 - [x] Centralized configuration file (`config.h`)
 - [x] Logging system (Serial)
-- [ ] Error handling
+- [x] Basic error handling
 
 ### 1.2 Display Driver
 - [x] Wrapper around ESP32-HUB75-MatrixPanel-DMA
 - [x] Dynamic configuration (resolution, pins)
-- [ ] Double buffering (disabled for now)
+- [x] Double buffering (configurable)
 - [x] Brightness control
 - [x] Clear/fill functions
-
-```cpp
-// Target interface
-class Display {
-public:
-    void begin(uint8_t width, uint8_t height);
-    void setBrightness(uint8_t brightness);
-    void clear();
-    void drawPixel(int16_t x, int16_t y, uint32_t color);
-    void drawText(const char* text, int16_t x, int16_t y, uint32_t color);
-    void drawIcon(const char* name, int16_t x, int16_t y);
-    void swap(); // Double buffer swap
-};
-```
 
 ### 1.3 WiFi Connectivity
 - [x] WiFiManager for initial configuration
@@ -72,45 +58,46 @@ public:
 
 ### 1.4 LittleFS Filesystem
 - [x] LittleFS initialization
-- [ ] Folder structure (`/icons`, `/gifs`, `/config`)
-- [ ] JSON configuration read/write
-- [ ] Available space management
+- [x] Folder structure (`/icons`, `/gifs`, `/config`)
+- [x] JSON configuration read/write
+- [x] Available space management
 
 **Deliverables:**
 - [x] Working WiFi with captive portal
 - [x] Basic text display (time via NTP)
-- [ ] Persistent configuration
+- [x] Persistent configuration
 
 ---
 
-## Phase 2: Application System
+## Phase 2: Application System ✅
 
 ### 2.1 App Manager
-- [ ] `AppItem` structure (id, text, icon, color, duration, lifetime, priority)
-- [ ] Circular application queue (max 16-24)
-- [ ] Add/remove/update apps
-- [ ] Lifetime management (automatic expiration)
+- [x] `AppItem` structure (id, text, icon, color, duration, lifetime, priority)
+- [x] Circular application queue (max 16)
+- [x] Add/remove/update apps
+- [x] Lifetime management (automatic expiration)
 
 ```cpp
 struct AppItem {
-    String id;
-    String text;
-    String icon;
-    uint32_t color;
-    uint32_t background;
+    char id[24];
+    char text[64];
+    char icon[32];
+    uint32_t textColor;
+    uint32_t backgroundColor;
     uint16_t duration;      // Display duration (ms)
     uint32_t lifetime;      // Expiration (ms), 0 = permanent
-    uint32_t lastUpdate;    // Last update timestamp
+    uint32_t createdAt;     // Creation timestamp
     int8_t priority;        // -10 to 10
     bool active;
+    bool isSystem;          // System apps cannot be deleted
 };
 ```
 
 ### 2.2 Automatic Rotation
-- [ ] Rotation timer
-- [ ] Transitions between apps (cut, fade, slide)
-- [ ] Respect configured durations
-- [ ] Skip expired apps
+- [x] Rotation timer
+- [ ] Transitions between apps (cut only for now)
+- [x] Respect configured durations
+- [x] Skip expired apps
 
 ### 2.3 Application Rendering
 - [ ] Layout: icon (left) + text (right)
@@ -119,14 +106,14 @@ struct AppItem {
 - [ ] Bar chart (optional)
 
 ### 2.4 Built-in System Apps
-- [x] **Clock**: Clock with NTP (basic implementation)
-- [ ] **Date**: Current date
+- [x] **Clock**: Clock with NTP (format 24h/12h configurable, seconds optional)
+- [x] **Date**: Current date (multiple formats)
 - [x] **IP**: IP display at startup
 
 **Deliverables:**
-- Working app rotation
-- NTP clock
-- Apps persistent after reboot
+- [x] Working app rotation
+- [x] NTP clock
+- [ ] Apps persistent after reboot (custom apps)
 
 ---
 
@@ -178,22 +165,24 @@ struct Notification {
 
 | Method | Endpoint | Description | Status |
 |--------|----------|-------------|--------|
-| POST | `/api/custom` | Create/Update an app | ❌ |
-| DELETE | `/api/custom` | Delete an app | ❌ |
+| POST | `/api/custom` | Create/Update an app | ⚠️ (body handler issue) |
+| DELETE | `/api/custom` | Delete an app | ✅ |
 | POST | `/api/notify` | Send notification | ❌ |
 | POST | `/api/dismiss` | Acknowledge notification | ❌ |
 | POST | `/api/indicator{1-3}` | Control indicator | ❌ |
-| GET | `/api/apps` | List active apps | ❌ |
+| GET | `/api/apps` | List active apps | ✅ |
 | GET | `/api/stats` | System statistics | ✅ |
-| POST | `/api/settings` | Modify settings | ❌ |
+| POST | `/api/settings` | Modify settings | ⚠️ (body handler issue) |
 | GET | `/api/settings` | Read settings | ✅ |
-| POST | `/api/reboot` | Reboot | ✅ |
-| POST | `/api/brightness` | Set brightness | ✅ |
+| POST | `/api/reboot` | Reboot | ⚠️ (body handler issue) |
+| POST | `/api/brightness` | Set brightness | ⚠️ (body handler issue) |
+
+> **Note**: POST endpoints with JSON body have a known issue with ESPAsyncWebServer body handler not being triggered. Investigation needed.
 
 ### 4.3 JSON Parsing
 - [x] ArduinoJson for parsing
-- [ ] Payload validation
-- [ ] Standardized error responses
+- [x] Payload validation
+- [x] Standardized error responses
 
 **Deliverables:**
 - Complete and documented REST API
@@ -452,6 +441,25 @@ CLK     16
 
 Tested with:
 - **P3(2121)64X64-32S-T** - 64x64, 1/32 scan, 3mm pitch
+
+### Power Supply Requirements
+
+⚠️ **IMPORTANT**: The HUB75 panel requires adequate power supply!
+
+| Power Source | Current | Result |
+|--------------|---------|--------|
+| USB only | ~500mA | Only red LEDs work |
+| 5V 5A PSU | 5A | All colors work ✅ |
+
+A 64x64 panel at full white brightness can draw up to **8A**. USB power alone (500mA max) is insufficient and will cause color issues (only red channel works).
+
+**Recommended**: Mean Well RS-25-5 (5V 5A) or equivalent.
+
+---
+
+## API Testing
+
+A Bruno collection is available in `api/` folder for testing all REST endpoints.
 
 ---
 

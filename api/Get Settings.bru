@@ -1,0 +1,15 @@
+meta {
+  name: Get Settings
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/settings
+  body: none
+  auth: none
+}
+
+docs {
+  Returns current device settings including brightness, display config, and MQTT status.
+}

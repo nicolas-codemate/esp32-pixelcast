@@ -23,6 +23,7 @@
 // Web Server
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
+#include <AsyncJson.h>
 
 // MQTT
 #include <PubSubClient.h>
@@ -81,6 +82,8 @@ bool wifiConnected = false;
 bool mqttConnected = false;
 bool filesystemReady = false;
 uint8_t currentBrightness = DEFAULT_BRIGHTNESS;
+bool pendingReboot = false;
+unsigned long rebootRequestTime = 0;
 
 // Application Manager
 AppItem apps[MAX_APPS];
@@ -115,10 +118,6 @@ struct Settings {
 unsigned long lastStatsPublish = 0;
 unsigned long lastDisplayUpdate = 0;
 unsigned long lastTimeUpdate = 0;
-
-// Request body buffer for async handling
-static char requestBodyBuffer[1024];
-static size_t requestBodyLength = 0;
 
 // ============================================================================
 // Function Prototypes
@@ -238,6 +237,12 @@ void setup() {
 // ============================================================================
 
 void loop() {
+    // Handle pending reboot (allow response to be sent first)
+    if (pendingReboot && (millis() - rebootRequestTime > 500)) {
+        Serial.println("[SYSTEM] Rebooting...");
+        ESP.restart();
+    }
+
     loopWiFi();
     loopMQTT();
     loopTime();
@@ -528,14 +533,10 @@ void setupMDNS() {
 // ============================================================================
 
 void setupWebServer() {
+    // CORS headers via DefaultHeaders
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
-
-    // Handle OPTIONS for CORS preflight
-    webServer.on("/api/*", HTTP_OPTIONS, [](AsyncWebServerRequest *request) {
-        request->send(200);
-    });
 
     webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send(200, "text/html",
@@ -552,129 +553,101 @@ void setupWebServer() {
     webServer.on("/api/settings", HTTP_GET, handleApiSettings);
     webServer.on("/api/apps", HTTP_GET, handleApiApps);
 
-    // POST /api/brightness - Set brightness
-    webServer.on("/api/brightness", HTTP_POST,
-        [](AsyncWebServerRequest *request) {
-            // This handler should not be called if body handler sends response
-        },
-        NULL,
-        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-            // Body handler - accumulate and process when complete
-            if (index == 0) {
-                requestBodyLength = 0;
-            }
-            if (requestBodyLength + len < sizeof(requestBodyBuffer)) {
-                memcpy(requestBodyBuffer + requestBodyLength, data, len);
-                requestBodyLength += len;
+    // POST /api/brightness - Set brightness (using AsyncCallbackJsonWebHandler)
+    AsyncCallbackJsonWebHandler* brightnessHandler = new AsyncCallbackJsonWebHandler("/api/brightness",
+        [](AsyncWebServerRequest *request, JsonVariant &json) {
+            Serial.println("[API] /brightness handler called");
+            JsonObject doc = json.as<JsonObject>();
+
+            if (doc.isNull()) {
+                request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
             }
 
-            // Process when all data received
-            if (index + len == total) {
-                JsonDocument doc;
-                DeserializationError error = deserializeJson(doc, requestBodyBuffer, requestBodyLength);
-
-                if (error) {
-                    request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-                    return;
-                }
-
-                if (!doc["brightness"].isNull()) {
-                    uint8_t brightness = doc["brightness"].as<uint8_t>();
-                    displaySetBrightness(brightness);
-                    settings.brightness = brightness;
-                    saveSettings();
-                    request->send(200, "application/json", "{\"success\":true}");
-                } else {
-                    request->send(400, "application/json", "{\"error\":\"Missing brightness\"}");
-                }
+            if (!doc["brightness"].isNull()) {
+                uint8_t brightness = doc["brightness"].as<uint8_t>();
+                displaySetBrightness(brightness);
+                settings.brightness = brightness;
+                saveSettings();
+                Serial.printf("[API] Brightness set to %d\n", brightness);
+                request->send(200, "application/json", "{\"success\":true}");
+            } else {
+                request->send(400, "application/json", "{\"error\":\"Missing brightness\"}");
             }
         });
+    webServer.addHandler(brightnessHandler);
 
-    // POST /api/custom - Create/update custom app
-    webServer.on("/api/custom", HTTP_POST,
-        [](AsyncWebServerRequest *request) {
-            // This handler should not be called if body handler sends response
-        },
-        NULL,
-        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-            // Body handler - accumulate and process when complete
-            if (index == 0) {
-                requestBodyLength = 0;
-            }
-            if (requestBodyLength + len < sizeof(requestBodyBuffer)) {
-                memcpy(requestBodyBuffer + requestBodyLength, data, len);
-                requestBodyLength += len;
+    // POST /api/custom - Create/update custom app (using AsyncCallbackJsonWebHandler)
+    AsyncCallbackJsonWebHandler* customHandler = new AsyncCallbackJsonWebHandler("/api/custom",
+        [](AsyncWebServerRequest *request, JsonVariant &json) {
+            Serial.println("[API] /custom handler called");
+            JsonObject doc = json.as<JsonObject>();
+
+            if (doc.isNull()) {
+                request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
             }
 
-            // Process when all data received
-            if (index + len == total) {
-                JsonDocument doc;
-                DeserializationError error = deserializeJson(doc, requestBodyBuffer, requestBodyLength);
+            // Get app name from query param or JSON
+            String name;
+            if (request->hasParam("name")) {
+                name = request->getParam("name")->value();
+            } else if (!doc["name"].isNull()) {
+                name = doc["name"].as<String>();
+            } else {
+                request->send(400, "application/json", "{\"error\":\"Missing app name\"}");
+                return;
+            }
 
-                if (error) {
-                    request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-                    return;
-                }
+            const char* text = doc["text"] | "";
+            const char* icon = doc["icon"] | "";
 
-                // Get app name from query param or JSON
-                String name;
-                if (request->hasParam("name")) {
-                    name = request->getParam("name")->value();
-                } else if (!doc["name"].isNull()) {
-                    name = doc["name"].as<String>();
-                } else {
-                    request->send(400, "application/json", "{\"error\":\"Missing app name\"}");
-                    return;
-                }
-
-                const char* text = doc["text"] | "";
-                const char* icon = doc["icon"] | "";
-
-                // Parse color (can be hex string or RGB array)
-                uint32_t textColor = 0xFFFFFF;
-                if (!doc["color"].isNull()) {
-                    if (doc["color"].is<JsonArray>()) {
-                        JsonArray arr = doc["color"];
-                        if (arr.size() == 3) {
-                            textColor = ((uint32_t)arr[0].as<uint8_t>() << 16) |
-                                        ((uint32_t)arr[1].as<uint8_t>() << 8) |
-                                        (uint32_t)arr[2].as<uint8_t>();
-                        }
-                    } else if (doc["color"].is<const char*>()) {
-                        textColor = strtoul(doc["color"].as<const char*>() + 1, NULL, 16);
-                    } else {
-                        textColor = doc["color"].as<uint32_t>();
+            // Parse color (can be hex string or RGB array)
+            uint32_t textColor = 0xFFFFFF;
+            if (!doc["color"].isNull()) {
+                if (doc["color"].is<JsonArray>()) {
+                    JsonArray arr = doc["color"];
+                    if (arr.size() == 3) {
+                        textColor = ((uint32_t)arr[0].as<uint8_t>() << 16) |
+                                    ((uint32_t)arr[1].as<uint8_t>() << 8) |
+                                    (uint32_t)arr[2].as<uint8_t>();
                     }
-                }
-
-                uint32_t bgColor = 0;
-                if (!doc["background"].isNull()) {
-                    if (doc["background"].is<JsonArray>()) {
-                        JsonArray arr = doc["background"];
-                        if (arr.size() == 3) {
-                            bgColor = ((uint32_t)arr[0].as<uint8_t>() << 16) |
-                                      ((uint32_t)arr[1].as<uint8_t>() << 8) |
-                                      (uint32_t)arr[2].as<uint8_t>();
-                        }
-                    } else {
-                        bgColor = doc["background"].as<uint32_t>();
-                    }
-                }
-
-                uint16_t duration = doc["duration"] | settings.defaultDuration;
-                uint32_t lifetime = doc["lifetime"] | 0;
-                int8_t priority = doc["priority"] | 0;
-
-                int8_t result = appAdd(name.c_str(), text, icon, textColor, bgColor,
-                                       duration, lifetime, priority, false);
-
-                if (result >= 0) {
-                    request->send(200, "application/json", "{\"success\":true}");
+                } else if (doc["color"].is<const char*>()) {
+                    textColor = strtoul(doc["color"].as<const char*>() + 1, NULL, 16);
                 } else {
-                    request->send(500, "application/json", "{\"error\":\"Failed to add app\"}");
+                    textColor = doc["color"].as<uint32_t>();
                 }
+            }
+
+            uint32_t bgColor = 0;
+            if (!doc["background"].isNull()) {
+                if (doc["background"].is<JsonArray>()) {
+                    JsonArray arr = doc["background"];
+                    if (arr.size() == 3) {
+                        bgColor = ((uint32_t)arr[0].as<uint8_t>() << 16) |
+                                  ((uint32_t)arr[1].as<uint8_t>() << 8) |
+                                  (uint32_t)arr[2].as<uint8_t>();
+                    }
+                } else {
+                    bgColor = doc["background"].as<uint32_t>();
+                }
+            }
+
+            uint16_t duration = doc["duration"] | settings.defaultDuration;
+            uint32_t lifetime = doc["lifetime"] | 0;
+            int8_t priority = doc["priority"] | 0;
+
+            int8_t result = appAdd(name.c_str(), text, icon, textColor, bgColor,
+                                   duration, lifetime, priority, false);
+
+            if (result >= 0) {
+                Serial.printf("[API] Custom app '%s' created/updated\n", name.c_str());
+                request->send(200, "application/json", "{\"success\":true}");
+            } else {
+                request->send(500, "application/json", "{\"error\":\"Failed to add app\"}");
             }
         });
+    webServer.addHandler(customHandler);
 
     // DELETE /api/custom - Delete custom app
     webServer.on("/api/custom", HTTP_DELETE, [](AsyncWebServerRequest *request) {
@@ -691,55 +664,42 @@ void setupWebServer() {
         }
     });
 
-    // POST /api/settings - Update settings
-    webServer.on("/api/settings", HTTP_POST,
-        [](AsyncWebServerRequest *request) {
-            // This handler should not be called if body handler sends response
-        },
-        NULL,
-        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-            // Body handler - accumulate and process when complete
-            if (index == 0) {
-                requestBodyLength = 0;
-            }
-            if (requestBodyLength + len < sizeof(requestBodyBuffer)) {
-                memcpy(requestBodyBuffer + requestBodyLength, data, len);
-                requestBodyLength += len;
+    // POST /api/settings - Update settings (using AsyncCallbackJsonWebHandler)
+    AsyncCallbackJsonWebHandler* settingsHandler = new AsyncCallbackJsonWebHandler("/api/settings",
+        [](AsyncWebServerRequest *request, JsonVariant &json) {
+            Serial.println("[API] /settings handler called");
+            JsonObject doc = json.as<JsonObject>();
+
+            if (doc.isNull()) {
+                request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
             }
 
-            // Process when all data received
-            if (index + len == total) {
-                JsonDocument doc;
-                DeserializationError error = deserializeJson(doc, requestBodyBuffer, requestBodyLength);
-
-                if (error) {
-                    request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-                    return;
-                }
-
-                // Update settings from JSON
-                if (!doc["brightness"].isNull()) {
-                    settings.brightness = doc["brightness"].as<uint8_t>();
-                    displaySetBrightness(settings.brightness);
-                }
-                if (!doc["autoRotate"].isNull()) {
-                    settings.autoRotate = doc["autoRotate"].as<bool>();
-                    appRotationEnabled = settings.autoRotate;
-                }
-                if (!doc["defaultDuration"].isNull()) {
-                    settings.defaultDuration = doc["defaultDuration"].as<uint16_t>();
-                }
-
-                saveSettings();
-                request->send(200, "application/json", "{\"success\":true}");
+            // Update settings from JSON
+            if (!doc["brightness"].isNull()) {
+                settings.brightness = doc["brightness"].as<uint8_t>();
+                displaySetBrightness(settings.brightness);
             }
+            if (!doc["autoRotate"].isNull()) {
+                settings.autoRotate = doc["autoRotate"].as<bool>();
+                appRotationEnabled = settings.autoRotate;
+            }
+            if (!doc["defaultDuration"].isNull()) {
+                settings.defaultDuration = doc["defaultDuration"].as<uint16_t>();
+            }
+
+            saveSettings();
+            Serial.println("[API] Settings updated");
+            request->send(200, "application/json", "{\"success\":true}");
         });
+    webServer.addHandler(settingsHandler);
 
-    // POST /api/reboot - Reboot device
+    // POST /api/reboot - Reboot device (deferred to allow response to be sent)
     webServer.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest *request) {
+        Serial.println("[API] Reboot requested");
         request->send(200, "application/json", "{\"success\":true,\"message\":\"Rebooting...\"}");
-        delay(500);
-        ESP.restart();
+        pendingReboot = true;
+        rebootRequestTime = millis();
     });
 
     webServer.onNotFound([](AsyncWebServerRequest *request) {

@@ -165,19 +165,19 @@ struct Notification {
 
 | Method | Endpoint | Description | Status |
 |--------|----------|-------------|--------|
-| POST | `/api/custom` | Create/Update an app | ⚠️ (body handler issue) |
+| POST | `/api/custom` | Create/Update an app | ✅ |
 | DELETE | `/api/custom` | Delete an app | ✅ |
 | POST | `/api/notify` | Send notification | ❌ |
 | POST | `/api/dismiss` | Acknowledge notification | ❌ |
 | POST | `/api/indicator{1-3}` | Control indicator | ❌ |
 | GET | `/api/apps` | List active apps | ✅ |
 | GET | `/api/stats` | System statistics | ✅ |
-| POST | `/api/settings` | Modify settings | ⚠️ (body handler issue) |
+| POST | `/api/settings` | Modify settings | ✅ |
 | GET | `/api/settings` | Read settings | ✅ |
-| POST | `/api/reboot` | Reboot | ⚠️ (body handler issue) |
-| POST | `/api/brightness` | Set brightness | ⚠️ (body handler issue) |
+| POST | `/api/reboot` | Reboot | ✅ |
+| POST | `/api/brightness` | Set brightness | ✅ |
 
-> **Note**: POST endpoints with JSON body have a known issue with ESPAsyncWebServer body handler not being triggered. Investigation needed.
+> **Note**: Avoid using wildcard patterns (`/api/*`) with HTTP_OPTIONS in ESPAsyncWebServer as it interferes with POST handlers.
 
 ### 4.3 JSON Parsing
 - [x] ArduinoJson for parsing

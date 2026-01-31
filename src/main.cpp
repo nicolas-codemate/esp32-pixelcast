@@ -3,7 +3,7 @@
  *
  * Firmware for HUB75 LED matrix displays
  * Compatible with ESP32 Trinity and 64x64 panels
- * 
+ *
  * @author nicolas-codemate
  * @license MIT
  * @version 0.1.0
@@ -42,7 +42,7 @@
 // ============================================================================
 
 // Display
-MatrixPanel_I2S_DMA *display = nullptr;
+MatrixPanel_I2S_DMA *dma_display = nullptr;
 
 // Network
 WiFiClient wifiClient;
@@ -66,12 +66,12 @@ uint8_t currentBrightness = DEFAULT_BRIGHTNESS;
 // Timing
 unsigned long lastStatsPublish = 0;
 unsigned long lastDisplayUpdate = 0;
+unsigned long lastTimeUpdate = 0;
 
 // ============================================================================
 // Function Prototypes
 // ============================================================================
 
-// Setup functions
 void setupDisplay();
 void setupWiFi();
 void setupMDNS();
@@ -79,32 +79,24 @@ void setupWebServer();
 void setupMQTT();
 void setupFilesystem();
 
-// Loop functions
 void loopWiFi();
 void loopMQTT();
 void loopDisplay();
 void loopTime();
 
-// Display functions
 void displayShowBoot();
 void displayShowIP();
+void displayShowTime();
 void displayClear();
 void displaySetBrightness(uint8_t brightness);
 
-// MQTT functions
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void mqttReconnect();
 void mqttPublishStats();
-void mqttPublishStatus(bool online);
 
-// API handlers
-void handleApiCustom(AsyncWebServerRequest *request, JsonVariant &json);
-void handleApiNotify(AsyncWebServerRequest *request, JsonVariant &json);
-void handleApiSettings(AsyncWebServerRequest *request);
 void handleApiStats(AsyncWebServerRequest *request);
+void handleApiSettings(AsyncWebServerRequest *request);
 
-// Utility functions
-uint32_t colorFromRGB(uint8_t r, uint8_t g, uint8_t b);
 void logMemory();
 
 // ============================================================================
@@ -112,46 +104,44 @@ void logMemory();
 // ============================================================================
 
 void setup() {
-    // Serial
     Serial.begin(115200);
     delay(100);
-    
+
     Serial.println();
-    Serial.println("╔═══════════════════════════════════════════╗");
-    Serial.println("║         ESP32-PixelCast v" VERSION_STRING "          ║");
-    Serial.println("║     HUB75 LED Matrix Display Firmware     ║");
-    Serial.println("╚═══════════════════════════════════════════╝");
+    Serial.println("========================================");
+    Serial.println("   ESP32-PixelCast v" VERSION_STRING);
+    Serial.println("   HUB75 LED Matrix Display Firmware");
+    Serial.println("========================================");
     Serial.println();
-    
+
     logMemory();
-    
-    // Initialize subsystems
+
     Serial.println("[INIT] Setting up display...");
     setupDisplay();
     displayShowBoot();
-    
+
     Serial.println("[INIT] Setting up filesystem...");
     setupFilesystem();
-    
+
     Serial.println("[INIT] Setting up WiFi...");
     setupWiFi();
-    
+
     if (wifiConnected) {
         Serial.println("[INIT] Setting up mDNS...");
         setupMDNS();
-        
+
         Serial.println("[INIT] Setting up web server...");
         setupWebServer();
-        
+
         Serial.println("[INIT] Setting up MQTT...");
         setupMQTT();
-        
+
         Serial.println("[INIT] Setting up NTP...");
         timeClient.begin();
-        
+
         displayShowIP();
     }
-    
+
     logMemory();
     Serial.println("[INIT] Setup complete!");
     Serial.println();
@@ -166,7 +156,7 @@ void loop() {
     loopMQTT();
     loopTime();
     loopDisplay();
-    
+
     delay(LOOP_DELAY);
 }
 
@@ -180,8 +170,8 @@ void setupDisplay() {
         PANEL_HEIGHT,
         PANEL_CHAIN
     );
-    
-    // Pin configuration
+
+    // Trinity board pin configuration
     mxconfig.gpio.r1 = R1_PIN;
     mxconfig.gpio.g1 = G1_PIN;
     mxconfig.gpio.b1 = B1_PIN;
@@ -192,82 +182,98 @@ void setupDisplay() {
     mxconfig.gpio.b = B_PIN;
     mxconfig.gpio.c = C_PIN;
     mxconfig.gpio.d = D_PIN;
-    mxconfig.gpio.e = E_PIN;  // Required for 64x64
+    mxconfig.gpio.e = E_PIN;  // GPIO 18 on Trinity for 64x64 panels
     mxconfig.gpio.lat = LAT_PIN;
     mxconfig.gpio.oe = OE_PIN;
     mxconfig.gpio.clk = CLK_PIN;
-    
-    // Display options
+
     mxconfig.clkphase = false;
-    mxconfig.driver = HUB75_I2S_CFG::FM6124;
-    
+    mxconfig.driver = HUB75_I2S_CFG::SHIFTREG;
+
     #if DOUBLE_BUFFER
         mxconfig.double_buff = true;
     #endif
-    
-    // Create display instance
-    display = new MatrixPanel_I2S_DMA(mxconfig);
-    
-    if (!display->begin()) {
-        Serial.println("[ERROR] Display initialization failed!");
+
+    dma_display = new MatrixPanel_I2S_DMA(mxconfig);
+
+    if (!dma_display->begin()) {
+        Serial.println("[ERROR] Display init failed!");
         while (true) { delay(1000); }
     }
-    
-    display->setBrightness8(currentBrightness);
-    display->clearScreen();
-    
-    Serial.printf("[DISPLAY] Initialized %dx%d panel\n", DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    dma_display->setBrightness8(currentBrightness);
+    dma_display->clearScreen();
+
+    Serial.printf("[DISPLAY] Initialized %dx%d panel (E_PIN=%d)\n", PANEL_WIDTH, PANEL_HEIGHT, E_PIN);
 }
 
 void displayShowBoot() {
-    display->clearScreen();
-    display->setTextColor(display->color565(0, 150, 255));
-    display->setTextSize(1);
-    display->setCursor(4, 20);
-    display->print("PixelCast");
-    display->setCursor(4, 35);
-    display->setTextColor(display->color565(100, 100, 100));
-    display->print("v" VERSION_STRING);
-    
+    dma_display->clearScreen();
+    dma_display->setTextColor(dma_display->color565(0, 150, 255));
+    dma_display->setTextSize(1);
+    dma_display->setCursor(4, 24);
+    dma_display->print("PixelCast");
+    dma_display->setCursor(4, 36);
+    dma_display->setTextColor(dma_display->color565(100, 100, 100));
+    dma_display->print("v" VERSION_STRING);
+
     #if DOUBLE_BUFFER
-        display->flipDMABuffer();
+        dma_display->flipDMABuffer();
     #endif
 }
 
 void displayShowIP() {
-    delay(2000);  // Show boot screen for 2s
-    
-    display->clearScreen();
-    display->setTextColor(display->color565(0, 255, 0));
-    display->setTextSize(1);
-    display->setCursor(4, 10);
-    display->print("WiFi OK");
-    
-    display->setTextColor(display->color565(255, 255, 255));
-    display->setCursor(4, 25);
-    display->print(WiFi.localIP().toString());
-    
-    display->setTextColor(display->color565(100, 100, 100));
-    display->setCursor(4, 45);
-    display->print(MDNS_NAME ".local");
-    
+    dma_display->clearScreen();
+    dma_display->setTextColor(dma_display->color565(0, 255, 0));
+    dma_display->setTextSize(1);
+    dma_display->setCursor(2, 20);
+    dma_display->print("WiFi OK");
+
+    dma_display->setTextColor(dma_display->color565(255, 255, 255));
+    dma_display->setCursor(2, 36);
+    String ip = WiFi.localIP().toString();
+    dma_display->print(ip);
+
     #if DOUBLE_BUFFER
-        display->flipDMABuffer();
+        dma_display->flipDMABuffer();
     #endif
-    
-    delay(3000);  // Show IP for 3s
+
+    delay(3000);
+}
+
+void displayShowTime() {
+    dma_display->clearScreen();
+
+    // Get time
+    int hours = timeClient.getHours();
+    int minutes = timeClient.getMinutes();
+    int seconds = timeClient.getSeconds();
+
+    // Format time string
+    char timeStr[9];
+    snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, seconds);
+
+    // Draw time centered
+    dma_display->setTextColor(dma_display->color565(255, 255, 255));
+    dma_display->setTextSize(1);
+    dma_display->setCursor(8, 28);
+    dma_display->print(timeStr);
+
+    #if DOUBLE_BUFFER
+        dma_display->flipDMABuffer();
+    #endif
 }
 
 void displayClear() {
-    display->clearScreen();
+    dma_display->clearScreen();
     #if DOUBLE_BUFFER
-        display->flipDMABuffer();
+        dma_display->flipDMABuffer();
     #endif
 }
 
 void displaySetBrightness(uint8_t brightness) {
     currentBrightness = constrain(brightness, MIN_BRIGHTNESS, MAX_BRIGHTNESS);
-    display->setBrightness8(currentBrightness);
+    dma_display->setBrightness8(currentBrightness);
     Serial.printf("[DISPLAY] Brightness set to %d\n", currentBrightness);
 }
 
@@ -276,23 +282,23 @@ void displaySetBrightness(uint8_t brightness) {
 // ============================================================================
 
 void setupWiFi() {
-    wifiManager.setConfigPortalTimeout(180);  // 3 minutes timeout
+    wifiManager.setConfigPortalTimeout(180);
     wifiManager.setAPCallback([](WiFiManager *myWiFiManager) {
         Serial.println("[WIFI] Config portal started");
-        display->clearScreen();
-        display->setTextColor(display->color565(255, 165, 0));
-        display->setCursor(4, 20);
-        display->print("WiFi Setup");
-        display->setTextColor(display->color565(255, 255, 255));
-        display->setCursor(4, 35);
-        display->print(WIFI_AP_NAME);
+        dma_display->clearScreen();
+        dma_display->setTextColor(dma_display->color565(255, 165, 0));
+        dma_display->setCursor(4, 20);
+        dma_display->print("WiFi Setup");
+        dma_display->setTextColor(dma_display->color565(255, 255, 255));
+        dma_display->setCursor(4, 35);
+        dma_display->print(WIFI_AP_NAME);
         #if DOUBLE_BUFFER
-            display->flipDMABuffer();
+            dma_display->flipDMABuffer();
         #endif
     });
-    
-    wifiConnected = wifiManager.autoConnect(WIFI_AP_NAME, WIFI_AP_PASS);
-    
+
+    wifiConnected = wifiManager.autoConnect(WIFI_AP_NAME);
+
     if (wifiConnected) {
         Serial.print("[WIFI] Connected! IP: ");
         Serial.println(WiFi.localIP());
@@ -330,14 +336,12 @@ void setupMDNS() {
 // ============================================================================
 
 void setupWebServer() {
-    // CORS headers
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
-    
-    // Root
+
     webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send(200, "text/html", 
+        request->send(200, "text/html",
             "<!DOCTYPE html><html><head><title>PixelCast</title></head>"
             "<body><h1>ESP32-PixelCast</h1>"
             "<p>Version: " VERSION_STRING "</p>"
@@ -345,25 +349,20 @@ void setupWebServer() {
             "</body></html>"
         );
     });
-    
-    // API: Stats
+
     webServer.on("/api/stats", HTTP_GET, handleApiStats);
-    
-    // API: Settings GET
     webServer.on("/api/settings", HTTP_GET, handleApiSettings);
-    
-    // API: Brightness
-    webServer.on("/api/brightness", HTTP_POST, [](AsyncWebServerRequest *request) {
-        // Handled by body handler
-    }, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+
+    webServer.on("/api/brightness", HTTP_POST, [](AsyncWebServerRequest *request) {},
+        NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
         JsonDocument doc;
         DeserializationError error = deserializeJson(doc, data, len);
-        
+
         if (error) {
             request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
             return;
         }
-        
+
         if (doc.containsKey("brightness")) {
             displaySetBrightness(doc["brightness"].as<uint8_t>());
             request->send(200, "application/json", "{\"success\":true}");
@@ -371,26 +370,24 @@ void setupWebServer() {
             request->send(400, "application/json", "{\"error\":\"Missing brightness\"}");
         }
     });
-    
-    // API: Reboot
+
     webServer.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest *request) {
         request->send(200, "application/json", "{\"success\":true,\"message\":\"Rebooting...\"}");
         delay(500);
         ESP.restart();
     });
-    
-    // 404 handler
+
     webServer.onNotFound([](AsyncWebServerRequest *request) {
         request->send(404, "application/json", "{\"error\":\"Not found\"}");
     });
-    
+
     webServer.begin();
     Serial.printf("[WEB] Server started on port %d\n", WEB_SERVER_PORT);
 }
 
 void handleApiStats(AsyncWebServerRequest *request) {
     JsonDocument doc;
-    
+
     doc["version"] = VERSION_STRING;
     doc["uptime"] = millis() / 1000;
     doc["freeHeap"] = ESP.getFreeHeap();
@@ -401,7 +398,7 @@ void handleApiStats(AsyncWebServerRequest *request) {
     doc["display"]["width"] = DISPLAY_WIDTH;
     doc["display"]["height"] = DISPLAY_HEIGHT;
     doc["mqtt"]["connected"] = mqttConnected;
-    
+
     String response;
     serializeJson(doc, response);
     request->send(200, "application/json", response);
@@ -409,12 +406,12 @@ void handleApiStats(AsyncWebServerRequest *request) {
 
 void handleApiSettings(AsyncWebServerRequest *request) {
     JsonDocument doc;
-    
+
     doc["brightness"] = currentBrightness;
     doc["display"]["width"] = DISPLAY_WIDTH;
     doc["display"]["height"] = DISPLAY_HEIGHT;
     doc["mqtt"]["prefix"] = MQTT_PREFIX;
-    
+
     String response;
     serializeJson(doc, response);
     request->send(200, "application/json", response);
@@ -425,24 +422,12 @@ void handleApiSettings(AsyncWebServerRequest *request) {
 // ============================================================================
 
 void setupMQTT() {
-    // TODO: Load from config
-    // mqttClient.setServer(mqtt_server, mqtt_port);
-    // mqttClient.setCallback(mqttCallback);
-    // mqttClient.setBufferSize(MQTT_BUFFER_SIZE);
-    
     Serial.println("[MQTT] Not configured (TODO: implement config)");
 }
 
 void loopMQTT() {
     if (!wifiConnected) return;
-    
-    // Reconnect if needed
-    // if (!mqttClient.connected()) {
-    //     mqttReconnect();
-    // }
-    // mqttClient.loop();
-    
-    // Publish stats periodically
+
     if (millis() - lastStatsPublish > MQTT_STATS_INTERVAL) {
         mqttPublishStats();
         lastStatsPublish = millis();
@@ -451,40 +436,27 @@ void loopMQTT() {
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.printf("[MQTT] Message on topic: %s\n", topic);
-    
-    // Parse JSON payload
+
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, length);
-    
+
     if (error) {
         Serial.printf("[MQTT] JSON parse error: %s\n", error.c_str());
         return;
     }
-    
-    // TODO: Route to appropriate handler based on topic
-}
-
-void mqttReconnect() {
-    // TODO: Implement reconnection logic
 }
 
 void mqttPublishStats() {
     if (!mqttConnected) return;
-    
+
     JsonDocument doc;
     doc["uptime"] = millis() / 1000;
     doc["freeHeap"] = ESP.getFreeHeap();
     doc["brightness"] = currentBrightness;
     doc["rssi"] = WiFi.RSSI();
-    
+
     String payload;
     serializeJson(doc, payload);
-    
-    // mqttClient.publish((String(MQTT_PREFIX) + MQTT_TOPIC_STATS).c_str(), payload.c_str());
-}
-
-void mqttPublishStatus(bool online) {
-    // mqttClient.publish((String(MQTT_PREFIX) + MQTT_TOPIC_STATUS).c_str(), online ? "online" : "offline", true);
 }
 
 // ============================================================================
@@ -496,7 +468,7 @@ void setupFilesystem() {
         Serial.println("[FS] LittleFS mount failed!");
         return;
     }
-    
+
     Serial.printf("[FS] LittleFS mounted, total: %d bytes, used: %d bytes\n",
         LittleFS.totalBytes(), LittleFS.usedBytes());
 }
@@ -516,36 +488,18 @@ void loopTime() {
 // ============================================================================
 
 void loopDisplay() {
-    // TODO: Implement app rotation and rendering
-    
-    // For now, just show time
-    static unsigned long lastTimeUpdate = 0;
+    if (!wifiConnected) return;
+
+    // Update time display every second
     if (millis() - lastTimeUpdate > 1000) {
+        displayShowTime();
         lastTimeUpdate = millis();
-        
-        if (wifiConnected) {
-            display->clearScreen();
-            
-            // Draw time
-            display->setTextColor(display->color565(255, 255, 255));
-            display->setTextSize(2);
-            display->setCursor(8, 24);
-            display->print(timeClient.getFormattedTime());
-            
-            #if DOUBLE_BUFFER
-                display->flipDMABuffer();
-            #endif
-        }
     }
 }
 
 // ============================================================================
 // Utility Functions
 // ============================================================================
-
-uint32_t colorFromRGB(uint8_t r, uint8_t g, uint8_t b) {
-    return display->color565(r, g, b);
-}
 
 void logMemory() {
     Serial.printf("[MEM] Free heap: %d bytes, largest block: %d bytes\n",

@@ -367,6 +367,7 @@ void handleApiIconsDelete(AsyncWebServerRequest *request);
 bool loadSettings();
 bool saveSettings();
 void initDefaultSettings();
+void printTextWithSpecialChars(const char* text, int16_t x, int16_t y);
 bool ensureDirectories();
 bool loadApps();
 bool saveApps();
@@ -664,15 +665,17 @@ void displayShowApp(AppItem* app) {
         dma_display->fillScreen(dma_display->color565(br, bg, bb));
     }
 
-    // Layout calculation
+    // Layout calculation - VERTICAL layout for 64x64 panel
     // +----------64px-----------+
-    // | Icon  |    Text Area    |
-    // | 32x32 |  (scrollable)   |
+    // |      Icon (8-16px)      |  <- centered, top
+    // |                         |
+    // |         Text            |  <- centered, below icon
+    // |      (scrollable)       |
     // +-------------------------+
 
     int16_t textAreaX = 2;
     int16_t textAreaWidth = DISPLAY_WIDTH - 4;  // 2px margin each side
-    int16_t yPos = 28;  // Vertically centered for 64px panel (text baseline)
+    int16_t textYPos = 28;  // Default Y position for text
 
     // Try to load icon if specified
     CachedIcon* icon = nullptr;
@@ -680,16 +683,19 @@ void displayShowApp(AppItem* app) {
         icon = getIcon(app->icon);
     }
 
-    // Adjust layout if icon is present
+    // Adjust layout if icon is present - VERTICAL layout
     if (icon && icon->valid) {
-        // Draw icon vertically centered on the left
-        int16_t iconX = 2;
-        int16_t iconY = (DISPLAY_HEIGHT - icon->height) / 2;
+        // Limit icon size to 16x16 max for display
+        uint8_t displayWidth = min(icon->width, (uint8_t)16);
+        uint8_t displayHeight = min(icon->height, (uint8_t)16);
+
+        // Draw icon centered horizontally at top
+        int16_t iconX = (DISPLAY_WIDTH - displayWidth) / 2;
+        int16_t iconY = 2;  // 2px from top
         drawIcon(icon, iconX, iconY);
 
-        // Text area starts after icon + gap
-        textAreaX = iconX + icon->width + 4;  // 4px gap after icon
-        textAreaWidth = DISPLAY_WIDTH - textAreaX - 2;  // 2px right margin
+        // Text starts below icon with gap
+        textYPos = iconY + displayHeight + 6;  // 6px gap below icon
     }
 
     // Text color
@@ -720,9 +726,8 @@ void displayShowApp(AppItem* app) {
         xPos = textAreaX - appScrollState.scrollOffset;
     }
 
-    // Draw text (clipping handled by display library)
-    dma_display->setCursor(xPos, yPos);
-    dma_display->print(app->text);
+    // Draw text with special character handling
+    printTextWithSpecialChars(app->text, xPos, textYPos);
 
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
@@ -760,6 +765,82 @@ void resetScrollState() {
     appScrollState.availableWidth = DISPLAY_WIDTH - 4;  // 2px margin each side
 }
 
+// Print text with special character handling
+// Replaces non-ASCII characters with ASCII equivalents or draws them manually
+void printTextWithSpecialChars(const char* text, int16_t x, int16_t y) {
+    int16_t cursorX = x;
+    const uint8_t charWidth = 6;  // 5x7 font + 1px spacing
+
+    dma_display->setCursor(cursorX, y);
+
+    const uint8_t* ptr = (const uint8_t*)text;
+    while (*ptr) {
+        uint8_t c = *ptr;
+
+        // Handle UTF-8 degree symbol (C2 B0)
+        if (c == 0xC2 && *(ptr + 1) == 0xB0) {
+            // Draw degree symbol as small circle (3x3 at top)
+            // Use white color - will inherit from setTextColor context
+            int16_t dx = cursorX;
+            int16_t dy = y - 6;  // Position at top of character
+            dma_display->drawPixel(dx + 1, dy, 0xFFFF);
+            dma_display->drawPixel(dx, dy + 1, 0xFFFF);
+            dma_display->drawPixel(dx + 2, dy + 1, 0xFFFF);
+            dma_display->drawPixel(dx + 1, dy + 2, 0xFFFF);
+            cursorX += 4;  // Smaller width for degree
+            ptr += 2;  // Skip both UTF-8 bytes
+            dma_display->setCursor(cursorX, y);
+            continue;
+        }
+
+        // Handle Latin-1 degree symbol (direct byte 0xB0)
+        if (c == 0xB0) {
+            int16_t dx = cursorX;
+            int16_t dy = y - 6;
+            dma_display->drawPixel(dx + 1, dy, 0xFFFF);
+            dma_display->drawPixel(dx, dy + 1, 0xFFFF);
+            dma_display->drawPixel(dx + 2, dy + 1, 0xFFFF);
+            dma_display->drawPixel(dx + 1, dy + 2, 0xFFFF);
+            cursorX += 4;
+            ptr++;
+            dma_display->setCursor(cursorX, y);
+            continue;
+        }
+
+        // Handle UTF-8 accented characters (common French)
+        if (c == 0xC3) {
+            uint8_t next = *(ptr + 1);
+            char replacement = '?';
+            switch (next) {
+                case 0xA0: case 0xA2: case 0xA4: replacement = 'a'; break;  // a grave, circumflex, umlaut
+                case 0xA8: case 0xA9: case 0xAA: case 0xAB: replacement = 'e'; break;  // e variants
+                case 0xAC: case 0xAE: case 0xAF: replacement = 'i'; break;  // i variants
+                case 0xB2: case 0xB4: case 0xB6: replacement = 'o'; break;  // o variants
+                case 0xB9: case 0xBB: case 0xBC: replacement = 'u'; break;  // u variants
+                case 0xA7: replacement = 'c'; break;  // c cedilla
+                case 0xB1: replacement = 'n'; break;  // n tilde
+                case 0x80: case 0x89: replacement = 'E'; break;  // E accent
+                case 0x87: replacement = 'C'; break;  // C cedilla
+            }
+            dma_display->print(replacement);
+            cursorX += charWidth;
+            ptr += 2;
+            dma_display->setCursor(cursorX, y);
+            continue;
+        }
+
+        // Standard ASCII character
+        if (c >= 32 && c <= 126) {
+            dma_display->print((char)c);
+            cursorX += charWidth;
+        }
+        // Skip other non-printable characters
+
+        ptr++;
+        dma_display->setCursor(cursorX, y);
+    }
+}
+
 // ============================================================================
 // Icon Functions
 // ============================================================================
@@ -777,7 +858,13 @@ void initIconCache() {
 }
 
 int pngDrawCallback(PNGDRAW *pDraw) {
-    if (!pngDecodeTarget || pDraw->y >= 32) return 1;
+    if (!pngDecodeTarget || pDraw->y >= 16) return 1;
+
+    // Debug: log pixel type on first line
+    if (pDraw->y == 0) {
+        Serial.printf("[PNG] PixelType=%d, Width=%d, BPP=%d, HasAlpha=%d\n",
+            pDraw->iPixelType, pDraw->iWidth, pDraw->iBpp, pDraw->iHasAlpha);
+    }
 
     uint16_t* dest = pngDecodeTarget + (pDraw->y * pngDecodeWidth);
     uint16_t pixel;
@@ -785,15 +872,27 @@ int pngDrawCallback(PNGDRAW *pDraw) {
     for (int x = 0; x < pDraw->iWidth && x < pngDecodeWidth; x++) {
         // Get RGBA values from source
         uint8_t r, g, b, a;
-        if (pDraw->iPixelType == PNG_PIXEL_TRUECOLOR_ALPHA || pDraw->iPixelType == PNG_PIXEL_INDEXED) {
-            // For RGBA or indexed with alpha
+        if (pDraw->iPixelType == PNG_PIXEL_TRUECOLOR_ALPHA) {
+            // RGBA: 4 bytes per pixel
             uint8_t* src = pDraw->pPixels + (x * 4);
             r = src[0];
             g = src[1];
             b = src[2];
             a = src[3];
+        } else if (pDraw->iPixelType == PNG_PIXEL_INDEXED) {
+            // Indexed: use palette lookup
+            uint8_t idx = pDraw->pPixels[x];
+            if (pDraw->pPalette) {
+                r = pDraw->pPalette[idx * 3];
+                g = pDraw->pPalette[idx * 3 + 1];
+                b = pDraw->pPalette[idx * 3 + 2];
+                a = pDraw->iHasAlpha ? 255 : 255;  // TODO: handle alpha palette
+            } else {
+                r = g = b = idx;
+                a = 255;
+            }
         } else if (pDraw->iPixelType == PNG_PIXEL_TRUECOLOR) {
-            // For RGB without alpha
+            // RGB: 3 bytes per pixel
             uint8_t* src = pDraw->pPixels + (x * 3);
             r = src[0];
             g = src[1];
@@ -803,6 +902,11 @@ int pngDrawCallback(PNGDRAW *pDraw) {
             // Grayscale or other
             r = g = b = pDraw->pPixels[x];
             a = 255;
+        }
+
+        // Debug: log first non-black pixel on line 10
+        if (pDraw->y == 10 && x < 20 && (r > 50 || g > 50 || b > 50)) {
+            Serial.printf("[PNG] y=10 x=%d: R=%d G=%d B=%d A=%d\n", x, r, g, b, a);
         }
 
         // Convert to RGB565
@@ -893,8 +997,8 @@ CachedIcon* loadIcon(const char* name) {
     }
 
     // Get dimensions (limit to 32x32)
-    uint8_t width = min((int)png.getWidth(), 32);
-    uint8_t height = min((int)png.getHeight(), 32);
+    uint8_t width = min((int)png.getWidth(), 16);
+    uint8_t height = min((int)png.getHeight(), 16);
 
     // Allocate pixel buffer
     cached->pixels = (uint16_t*)malloc(width * height * sizeof(uint16_t));

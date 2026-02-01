@@ -1,0 +1,37 @@
+meta {
+  name: Create App with Scrolling
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/custom
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "scroll-test",
+    "text": "This is a very long text that should scroll automatically across the display",
+    "color": [0, 255, 128],
+    "duration": 30000
+  }
+}
+
+docs {
+  Test request for text scrolling feature.
+
+  Scrolling behavior:
+  1. Pause 2 seconds at start (SCROLL_PAUSE)
+  2. Scroll left at 50ms per pixel (SCROLL_SPEED)
+  3. Pause 2 seconds at end
+  4. Loop back to start
+
+  The text will scroll if it exceeds the available width.
+  Default font is 6px per character, so ~10 chars fit without icon.
+}

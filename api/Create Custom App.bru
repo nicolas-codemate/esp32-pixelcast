@@ -18,6 +18,7 @@ body:json {
   {
     "name": "weather",
     "text": "22°C Sunny",
+    "icon": "sunny",
     "color": [255, 200, 0],
     "background": [0, 0, 0],
     "duration": 10000,
@@ -32,12 +33,16 @@ docs {
   Parameters:
   - name: Unique identifier for the app (required)
   - text: Text to display (required)
-  - icon: Icon name from /icons folder (optional)
+  - icon: Icon name from /icons folder (optional, e.g. "sunny" loads /icons/sunny.png)
   - color: RGB array [r, g, b] or hex integer (default: white)
   - background: RGB array [r, g, b] (default: black)
   - duration: Display duration in ms (default: 10000)
   - lifetime: Auto-expire after ms, 0 = permanent (default: 0)
   - priority: -10 to 10, higher = more important (default: 0)
 
-  Note: Currently has a body handler issue with ESPAsyncWebServer.
+  Features:
+  - Apps are persisted to /config/apps.json and survive reboots
+  - Long text automatically scrolls horizontally (pause-scroll-pause cycle)
+  - Icons are cached in memory (LRU with 8 slots max)
+  - Layout: icon (32x32) on left, text area (scrollable) on right
 }

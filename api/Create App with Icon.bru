@@ -1,0 +1,43 @@
+meta {
+  name: Create App with Icon
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/custom
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "weather",
+    "text": "24°C",
+    "icon": "sunny",
+    "color": [255, 255, 255],
+    "duration": 10000
+  }
+}
+
+docs {
+  Test request for icon rendering feature.
+
+  Icon requirements:
+  - Place PNG files in /icons/ folder on LittleFS
+  - Max size: 32x32 pixels (larger icons are cropped)
+  - Supports transparency (alpha < 128 = transparent)
+  - Icon cache: 8 slots with LRU eviction
+
+  Layout on 64x64 panel:
+  +----------64px-----------+
+  | Icon  |    Text Area    |
+  | 32x32 |  (scrollable)   |
+  +-------------------------+
+
+  Upload icons via: pio run -t uploadfs
+}

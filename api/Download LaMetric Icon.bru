@@ -1,0 +1,34 @@
+meta {
+  name: Download LaMetric Icon
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/api/icons/lametric
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": 2867,
+    "name": "sun"
+  }
+}
+
+docs {
+  Download an icon from LaMetric's icon gallery.
+
+  Browse icons at: https://developer.lametric.com/icons
+
+  Body:
+  - id: LaMetric icon ID (required)
+  - name: Save as this name (optional, defaults to icon ID)
+
+  The icon will be downloaded as PNG or GIF depending on availability.
+}

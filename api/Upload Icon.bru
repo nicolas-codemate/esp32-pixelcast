@@ -1,0 +1,27 @@
+meta {
+  name: Upload Icon
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/api/icons?name=sun
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  file: @file(sun.png)
+}
+
+docs {
+  Upload a PNG or GIF icon to the device.
+
+  Query parameter:
+  - name: Icon name (without extension)
+
+  Body:
+  - file: The PNG or GIF file (max 8KB)
+
+  The icon will be saved with the appropriate extension based on the file format.
+}

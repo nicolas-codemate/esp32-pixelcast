@@ -34,9 +34,16 @@
 // Filesystem
 #include <LittleFS.h>
 
+// PNG decoding
+#include <PNGdec.h>
+
 // NTP
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+
+// HTTPS for LaMetric icon download
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 
 // ============================================================================
 // Application System - Structures
@@ -92,6 +99,33 @@ int8_t currentAppIndex = -1;
 unsigned long lastAppSwitch = 0;
 bool appRotationEnabled = true;
 
+// Scroll State
+struct ScrollState {
+    int16_t scrollOffset;
+    unsigned long lastScrollTime;
+    uint8_t scrollPhase;  // 0=pause_start, 1=scrolling, 2=pause_end
+    bool needsScroll;
+    int16_t textWidth;
+    int16_t availableWidth;
+};
+ScrollState appScrollState;
+
+// Icon Cache
+struct CachedIcon {
+    char name[32];
+    uint16_t* pixels;  // RGB565 format
+    uint8_t width;
+    uint8_t height;
+    bool valid;
+    unsigned long lastUsed;
+};
+CachedIcon iconCache[MAX_ICON_CACHE];
+PNG png;
+
+// Temporary buffer for PNG decode callback
+uint16_t* pngDecodeTarget = nullptr;
+uint8_t pngDecodeWidth = 0;
+
 // Settings from JSON
 struct Settings {
     uint8_t brightness;
@@ -118,6 +152,173 @@ struct Settings {
 unsigned long lastStatsPublish = 0;
 unsigned long lastDisplayUpdate = 0;
 unsigned long lastTimeUpdate = 0;
+unsigned long lastScrollUpdate = 0;
+
+// Icon Upload State
+File uploadFile;
+String uploadIconName;
+bool uploadValid = false;
+size_t uploadSize = 0;
+
+// Icons Web Interface HTML (stored in PROGMEM to save RAM)
+const char ICONS_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PixelCast Icons</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #1a1a2e; color: #eee; }
+        h1 { color: #00aaff; }
+        h2 { color: #888; border-bottom: 1px solid #333; padding-bottom: 8px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 15px; }
+        .icon { text-align: center; padding: 15px; background: #16213e; border-radius: 8px; position: relative; }
+        .icon img { width: 48px; height: 48px; image-rendering: pixelated; background: #000; }
+        .icon .name { margin-top: 8px; font-size: 12px; word-break: break-all; }
+        .icon .size { font-size: 10px; color: #666; }
+        .icon button { position: absolute; top: 5px; right: 5px; background: #ff4444; border: none; color: white; width: 20px; height: 20px; border-radius: 50%; cursor: pointer; font-size: 12px; }
+        .icon button:hover { background: #ff6666; }
+        input, button { padding: 10px 15px; margin: 5px; border: none; border-radius: 4px; }
+        input[type="text"], input[type="number"] { background: #0f3460; color: #eee; width: 150px; }
+        input[type="file"] { background: #0f3460; color: #eee; }
+        button { background: #00aaff; color: white; cursor: pointer; }
+        button:hover { background: #0088cc; }
+        button:disabled { background: #444; cursor: not-allowed; }
+        section { margin-bottom: 30px; padding: 20px; background: #16213e; border-radius: 8px; }
+        a { color: #00aaff; }
+        .storage { font-size: 12px; color: #888; margin-top: 10px; }
+        .msg { padding: 10px; border-radius: 4px; margin: 10px 0; display: none; }
+        .msg.success { background: #1a4d1a; color: #4caf50; display: block; }
+        .msg.error { background: #4d1a1a; color: #f44336; display: block; }
+        .loading { opacity: 0.5; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <h1>PixelCast Icons</h1>
+    <div id="msg" class="msg"></div>
+
+    <section>
+        <h2>Upload Icon</h2>
+        <input type="text" id="name" placeholder="Icon name (no extension)">
+        <input type="file" id="file" accept=".png,.gif">
+        <button onclick="upload()" id="uploadBtn">Upload</button>
+    </section>
+
+    <section>
+        <h2>Download from LaMetric</h2>
+        <input type="number" id="lmId" placeholder="Icon ID (e.g. 2867)">
+        <input type="text" id="lmName" placeholder="Save as (optional)">
+        <button onclick="downloadLM()" id="lmBtn">Download</button>
+        <a href="https://developer.lametric.com/icons" target="_blank">Browse LaMetric Icons</a>
+    </section>
+
+    <section>
+        <h2>Icon Gallery</h2>
+        <div id="gallery" class="grid"></div>
+        <div id="storage" class="storage"></div>
+    </section>
+
+    <script>
+        function showMsg(text, isError) {
+            const el = document.getElementById('msg');
+            el.textContent = text;
+            el.className = 'msg ' + (isError ? 'error' : 'success');
+            setTimeout(() => el.className = 'msg', 3000);
+        }
+
+        async function load() {
+            try {
+                const r = await fetch('/api/icons');
+                const d = await r.json();
+                document.getElementById('gallery').innerHTML = d.icons.length ? d.icons.map(i => `
+                    <div class="icon">
+                        <button onclick="del('${i.name}')" title="Delete">X</button>
+                        <img src="/api/icons/${i.name}" onerror="this.src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'">
+                        <div class="name">${i.name}</div>
+                        <div class="size">${i.size}B</div>
+                    </div>
+                `).join('') : '<p style="color:#666">No icons uploaded yet</p>';
+                document.getElementById('storage').innerHTML = `Storage: ${d.storage.used} / ${d.storage.total} bytes (${Math.round(d.storage.used/d.storage.total*100)}%)`;
+            } catch(e) {
+                showMsg('Failed to load icons: ' + e.message, true);
+            }
+        }
+
+        async function upload() {
+            const name = document.getElementById('name').value.trim();
+            const file = document.getElementById('file').files[0];
+            if (!name) { showMsg('Please enter icon name', true); return; }
+            if (!file) { showMsg('Please select a file', true); return; }
+            if (file.size > 8192) { showMsg('File too large (max 8KB)', true); return; }
+
+            document.getElementById('uploadBtn').disabled = true;
+            try {
+                const fd = new FormData();
+                fd.append('file', file);
+                const r = await fetch('/api/icons?name=' + encodeURIComponent(name), {method: 'POST', body: fd});
+                const d = await r.json();
+                if (d.success) {
+                    showMsg('Icon uploaded successfully', false);
+                    document.getElementById('name').value = '';
+                    document.getElementById('file').value = '';
+                    load();
+                } else {
+                    showMsg(d.error || 'Upload failed', true);
+                }
+            } catch(e) {
+                showMsg('Upload error: ' + e.message, true);
+            }
+            document.getElementById('uploadBtn').disabled = false;
+        }
+
+        async function downloadLM() {
+            const id = parseInt(document.getElementById('lmId').value);
+            const name = document.getElementById('lmName').value.trim() || String(id);
+            if (!id) { showMsg('Please enter LaMetric icon ID', true); return; }
+
+            document.getElementById('lmBtn').disabled = true;
+            try {
+                const r = await fetch('/api/icons/lametric', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({id: id, name: name})
+                });
+                const d = await r.json();
+                if (d.success) {
+                    showMsg('Icon downloaded from LaMetric', false);
+                    document.getElementById('lmId').value = '';
+                    document.getElementById('lmName').value = '';
+                    load();
+                } else {
+                    showMsg(d.error || 'Download failed', true);
+                }
+            } catch(e) {
+                showMsg('Download error: ' + e.message, true);
+            }
+            document.getElementById('lmBtn').disabled = false;
+        }
+
+        async function del(name) {
+            if (!confirm('Delete icon "' + name + '"?')) return;
+            try {
+                const r = await fetch('/api/icons?name=' + encodeURIComponent(name), {method: 'DELETE'});
+                const d = await r.json();
+                if (d.success) {
+                    showMsg('Icon deleted', false);
+                    load();
+                } else {
+                    showMsg(d.error || 'Delete failed', true);
+                }
+            } catch(e) {
+                showMsg('Delete error: ' + e.message, true);
+            }
+        }
+
+        load();
+    </script>
+</body>
+</html>
+)rawliteral";
 
 // ============================================================================
 // Function Prototypes
@@ -145,10 +346,30 @@ void displayShowApp(AppItem* app);
 void displayClear();
 void displaySetBrightness(uint8_t brightness);
 
+int16_t calculateTextWidth(const char* text);
+bool textNeedsScroll(const char* text, int16_t availableWidth);
+void resetScrollState();
+
+int pngDrawCallback(PNGDRAW *pDraw);
+CachedIcon* loadIcon(const char* name);
+CachedIcon* getIcon(const char* name);
+int8_t findLRUSlot();
+void drawIcon(CachedIcon* icon, int16_t x, int16_t y);
+void initIconCache();
+void invalidateCachedIcon(const char* name);
+bool validatePngHeader(const uint8_t* data, size_t len);
+bool validateGifHeader(const uint8_t* data, size_t len);
+bool downloadLaMetricIcon(uint32_t iconId, const char* saveName);
+void handleApiIconsList(AsyncWebServerRequest *request);
+void handleApiIconsServe(AsyncWebServerRequest *request, const String& name);
+void handleApiIconsDelete(AsyncWebServerRequest *request);
+
 bool loadSettings();
 bool saveSettings();
 void initDefaultSettings();
 bool ensureDirectories();
+bool loadApps();
+bool saveApps();
 
 int8_t appAdd(const char* id, const char* text, const char* icon,
               uint32_t textColor, uint32_t bgColor,
@@ -222,6 +443,9 @@ void setup() {
 
         displayShowIP();
         delay(2000);
+
+        Serial.println("[INIT] Initializing icon cache...");
+        initIconCache();
 
         Serial.println("[INIT] Setting up apps...");
         setupApps();
@@ -440,6 +664,34 @@ void displayShowApp(AppItem* app) {
         dma_display->fillScreen(dma_display->color565(br, bg, bb));
     }
 
+    // Layout calculation
+    // +----------64px-----------+
+    // | Icon  |    Text Area    |
+    // | 32x32 |  (scrollable)   |
+    // +-------------------------+
+
+    int16_t textAreaX = 2;
+    int16_t textAreaWidth = DISPLAY_WIDTH - 4;  // 2px margin each side
+    int16_t yPos = 28;  // Vertically centered for 64px panel (text baseline)
+
+    // Try to load icon if specified
+    CachedIcon* icon = nullptr;
+    if (strlen(app->icon) > 0) {
+        icon = getIcon(app->icon);
+    }
+
+    // Adjust layout if icon is present
+    if (icon && icon->valid) {
+        // Draw icon vertically centered on the left
+        int16_t iconX = 2;
+        int16_t iconY = (DISPLAY_HEIGHT - icon->height) / 2;
+        drawIcon(icon, iconX, iconY);
+
+        // Text area starts after icon + gap
+        textAreaX = iconX + icon->width + 4;  // 4px gap after icon
+        textAreaWidth = DISPLAY_WIDTH - textAreaX - 2;  // 2px right margin
+    }
+
     // Text color
     uint8_t r = (app->textColor >> 16) & 0xFF;
     uint8_t g = (app->textColor >> 8) & 0xFF;
@@ -447,12 +699,28 @@ void displayShowApp(AppItem* app) {
     dma_display->setTextColor(dma_display->color565(r, g, b));
     dma_display->setTextSize(1);
 
-    // Calculate text position (centered vertically)
-    // Icon would be on left if present (TODO: implement icon rendering)
-    int xPos = 2;
-    int yPos = 28;
+    // Calculate text width and check if scrolling needed
+    int16_t textWidth = calculateTextWidth(app->text);
+    bool needsScroll = textWidth > textAreaWidth;
 
-    // Simple text display for now
+    // Update scroll state if this is new text or scroll requirements changed
+    if (appScrollState.textWidth != textWidth || appScrollState.availableWidth != textAreaWidth) {
+        appScrollState.textWidth = textWidth;
+        appScrollState.availableWidth = textAreaWidth;
+        appScrollState.needsScroll = needsScroll;
+        if (!needsScroll) {
+            appScrollState.scrollOffset = 0;
+            appScrollState.scrollPhase = 0;
+        }
+    }
+
+    // Calculate x position with scroll offset
+    int16_t xPos = textAreaX;
+    if (needsScroll) {
+        xPos = textAreaX - appScrollState.scrollOffset;
+    }
+
+    // Draw text (clipping handled by display library)
     dma_display->setCursor(xPos, yPos);
     dma_display->print(app->text);
 
@@ -472,6 +740,433 @@ void displaySetBrightness(uint8_t brightness) {
     currentBrightness = constrain(brightness, MIN_BRIGHTNESS, MAX_BRIGHTNESS);
     dma_display->setBrightness8(currentBrightness);
     Serial.printf("[DISPLAY] Brightness set to %d\n", currentBrightness);
+}
+
+int16_t calculateTextWidth(const char* text) {
+    // Default 5x7 font with 1px spacing = 6 pixels per character
+    return strlen(text) * 6;
+}
+
+bool textNeedsScroll(const char* text, int16_t availableWidth) {
+    return calculateTextWidth(text) > availableWidth;
+}
+
+void resetScrollState() {
+    appScrollState.scrollOffset = 0;
+    appScrollState.lastScrollTime = millis();
+    appScrollState.scrollPhase = 0;  // Start with pause
+    appScrollState.needsScroll = false;
+    appScrollState.textWidth = 0;
+    appScrollState.availableWidth = DISPLAY_WIDTH - 4;  // 2px margin each side
+}
+
+// ============================================================================
+// Icon Functions
+// ============================================================================
+
+void initIconCache() {
+    for (uint8_t i = 0; i < MAX_ICON_CACHE; i++) {
+        iconCache[i].name[0] = '\0';
+        iconCache[i].pixels = nullptr;
+        iconCache[i].width = 0;
+        iconCache[i].height = 0;
+        iconCache[i].valid = false;
+        iconCache[i].lastUsed = 0;
+    }
+    Serial.println("[ICON] Cache initialized");
+}
+
+int pngDrawCallback(PNGDRAW *pDraw) {
+    if (!pngDecodeTarget || pDraw->y >= 32) return 1;
+
+    uint16_t* dest = pngDecodeTarget + (pDraw->y * pngDecodeWidth);
+    uint16_t pixel;
+
+    for (int x = 0; x < pDraw->iWidth && x < pngDecodeWidth; x++) {
+        // Get RGBA values from source
+        uint8_t r, g, b, a;
+        if (pDraw->iPixelType == PNG_PIXEL_TRUECOLOR_ALPHA || pDraw->iPixelType == PNG_PIXEL_INDEXED) {
+            // For RGBA or indexed with alpha
+            uint8_t* src = pDraw->pPixels + (x * 4);
+            r = src[0];
+            g = src[1];
+            b = src[2];
+            a = src[3];
+        } else if (pDraw->iPixelType == PNG_PIXEL_TRUECOLOR) {
+            // For RGB without alpha
+            uint8_t* src = pDraw->pPixels + (x * 3);
+            r = src[0];
+            g = src[1];
+            b = src[2];
+            a = 255;
+        } else {
+            // Grayscale or other
+            r = g = b = pDraw->pPixels[x];
+            a = 255;
+        }
+
+        // Convert to RGB565
+        if (a < 128) {
+            pixel = 0;  // Transparent = black
+        } else {
+            pixel = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+        }
+        dest[x] = pixel;
+    }
+    return 1;
+}
+
+int8_t findLRUSlot() {
+    int8_t lruIndex = -1;
+    unsigned long oldestTime = UINT32_MAX;
+
+    for (uint8_t i = 0; i < MAX_ICON_CACHE; i++) {
+        // First check for empty slots
+        if (!iconCache[i].valid) {
+            return i;
+        }
+        // Then find least recently used
+        if (iconCache[i].lastUsed < oldestTime) {
+            oldestTime = iconCache[i].lastUsed;
+            lruIndex = i;
+        }
+    }
+
+    // Free the LRU slot
+    if (lruIndex >= 0 && iconCache[lruIndex].pixels) {
+        free(iconCache[lruIndex].pixels);
+        iconCache[lruIndex].pixels = nullptr;
+        iconCache[lruIndex].valid = false;
+        Serial.printf("[ICON] Evicted icon: %s\n", iconCache[lruIndex].name);
+    }
+
+    return lruIndex;
+}
+
+CachedIcon* loadIcon(const char* name) {
+    if (!name || strlen(name) == 0) return nullptr;
+    if (!filesystemReady) return nullptr;
+
+    // Build file path
+    char filePath[64];
+    snprintf(filePath, sizeof(filePath), "%s/%s.png", FS_ICONS_PATH, name);
+
+    // Check if file exists
+    if (!LittleFS.exists(filePath)) {
+        Serial.printf("[ICON] File not found: %s\n", filePath);
+        return nullptr;
+    }
+
+    // Find a cache slot
+    int8_t slot = findLRUSlot();
+    if (slot < 0) {
+        Serial.println("[ICON] No cache slots available");
+        return nullptr;
+    }
+
+    CachedIcon* cached = &iconCache[slot];
+
+    // Open file
+    File file = LittleFS.open(filePath, "r");
+    if (!file) {
+        Serial.printf("[ICON] Failed to open: %s\n", filePath);
+        return nullptr;
+    }
+
+    // Read file into buffer
+    size_t fileSize = file.size();
+    uint8_t* fileBuffer = (uint8_t*)malloc(fileSize);
+    if (!fileBuffer) {
+        file.close();
+        Serial.println("[ICON] Failed to allocate file buffer");
+        return nullptr;
+    }
+    file.read(fileBuffer, fileSize);
+    file.close();
+
+    // Initialize PNG decoder
+    int rc = png.openRAM(fileBuffer, fileSize, pngDrawCallback);
+    if (rc != PNG_SUCCESS) {
+        free(fileBuffer);
+        Serial.printf("[ICON] PNG open failed: %d\n", rc);
+        return nullptr;
+    }
+
+    // Get dimensions (limit to 32x32)
+    uint8_t width = min((int)png.getWidth(), 32);
+    uint8_t height = min((int)png.getHeight(), 32);
+
+    // Allocate pixel buffer
+    cached->pixels = (uint16_t*)malloc(width * height * sizeof(uint16_t));
+    if (!cached->pixels) {
+        png.close();
+        free(fileBuffer);
+        Serial.println("[ICON] Failed to allocate pixel buffer");
+        return nullptr;
+    }
+
+    // Set up decode target
+    pngDecodeTarget = cached->pixels;
+    pngDecodeWidth = width;
+
+    // Clear buffer
+    memset(cached->pixels, 0, width * height * sizeof(uint16_t));
+
+    // Decode PNG
+    rc = png.decode(NULL, 0);
+    png.close();
+    free(fileBuffer);
+
+    if (rc != PNG_SUCCESS) {
+        free(cached->pixels);
+        cached->pixels = nullptr;
+        Serial.printf("[ICON] PNG decode failed: %d\n", rc);
+        return nullptr;
+    }
+
+    // Update cache entry
+    strlcpy(cached->name, name, sizeof(cached->name));
+    cached->width = width;
+    cached->height = height;
+    cached->valid = true;
+    cached->lastUsed = millis();
+
+    Serial.printf("[ICON] Loaded: %s (%dx%d)\n", name, width, height);
+    return cached;
+}
+
+CachedIcon* getIcon(const char* name) {
+    if (!name || strlen(name) == 0) return nullptr;
+
+    // Search cache first
+    for (uint8_t i = 0; i < MAX_ICON_CACHE; i++) {
+        if (iconCache[i].valid && strcmp(iconCache[i].name, name) == 0) {
+            iconCache[i].lastUsed = millis();
+            return &iconCache[i];
+        }
+    }
+
+    // Not in cache, load it
+    return loadIcon(name);
+}
+
+void drawIcon(CachedIcon* icon, int16_t x, int16_t y) {
+    if (!icon || !icon->valid || !icon->pixels) return;
+
+    for (uint8_t py = 0; py < icon->height; py++) {
+        for (uint8_t px = 0; px < icon->width; px++) {
+            uint16_t pixel = icon->pixels[py * icon->width + px];
+            if (pixel != 0) {  // Skip transparent/black pixels
+                dma_display->drawPixel(x + px, y + py, pixel);
+            }
+        }
+    }
+}
+
+void invalidateCachedIcon(const char* name) {
+    if (!name || strlen(name) == 0) return;
+
+    for (uint8_t i = 0; i < MAX_ICON_CACHE; i++) {
+        if (iconCache[i].valid && strcmp(iconCache[i].name, name) == 0) {
+            if (iconCache[i].pixels) {
+                free(iconCache[i].pixels);
+                iconCache[i].pixels = nullptr;
+            }
+            iconCache[i].valid = false;
+            iconCache[i].name[0] = '\0';
+            Serial.printf("[ICON] Invalidated cached icon: %s\n", name);
+            return;
+        }
+    }
+}
+
+bool validatePngHeader(const uint8_t* data, size_t len) {
+    if (len < 8) return false;
+    // PNG magic bytes: 89 50 4E 47 0D 0A 1A 0A
+    return (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
+            data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A);
+}
+
+bool validateGifHeader(const uint8_t* data, size_t len) {
+    if (len < 6) return false;
+    // GIF magic: "GIF87a" or "GIF89a"
+    return (data[0] == 'G' && data[1] == 'I' && data[2] == 'F' &&
+            data[3] == '8' && (data[4] == '7' || data[4] == '9') && data[5] == 'a');
+}
+
+bool downloadLaMetricIcon(uint32_t iconId, const char* saveName) {
+    if (!filesystemReady) {
+        Serial.println("[LAMETRIC] Filesystem not ready");
+        return false;
+    }
+
+    WiFiClientSecure client;
+    client.setInsecure();  // Skip certificate verification for simplicity
+
+    HTTPClient https;
+    bool isPng = true;
+
+    // Try PNG first
+    String url = "https://" LAMETRIC_API_HOST LAMETRIC_ICON_PATH + String(iconId) + "_icon_thumb.png";
+    Serial.printf("[LAMETRIC] Trying PNG: %s\n", url.c_str());
+
+    if (!https.begin(client, url)) {
+        Serial.println("[LAMETRIC] HTTPS begin failed");
+        return false;
+    }
+
+    int httpCode = https.GET();
+
+    // If PNG not found, try GIF
+    if (httpCode != HTTP_CODE_OK) {
+        https.end();
+        url = "https://" LAMETRIC_API_HOST LAMETRIC_ICON_PATH + String(iconId) + "_icon_thumb.gif";
+        Serial.printf("[LAMETRIC] Trying GIF: %s\n", url.c_str());
+
+        if (!https.begin(client, url)) {
+            Serial.println("[LAMETRIC] HTTPS begin failed");
+            return false;
+        }
+
+        httpCode = https.GET();
+        isPng = false;
+    }
+
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("[LAMETRIC] HTTP error: %d\n", httpCode);
+        https.end();
+        return false;
+    }
+
+    // Check file size
+    int contentLength = https.getSize();
+    if (contentLength > MAX_ICON_SIZE) {
+        Serial.printf("[LAMETRIC] Icon too large: %d bytes\n", contentLength);
+        https.end();
+        return false;
+    }
+
+    // Save file with appropriate extension
+    String ext = isPng ? ".png" : ".gif";
+    String path = String(FS_ICONS_PATH) + "/" + saveName + ext;
+
+    File file = LittleFS.open(path, "w");
+    if (!file) {
+        Serial.printf("[LAMETRIC] Failed to create file: %s\n", path.c_str());
+        https.end();
+        return false;
+    }
+
+    // Stream response to file
+    WiFiClient* stream = https.getStreamPtr();
+    uint8_t buffer[256];
+    size_t totalWritten = 0;
+
+    while (https.connected() && (contentLength > 0 || contentLength == -1)) {
+        size_t available = stream->available();
+        if (available) {
+            size_t toRead = min(available, sizeof(buffer));
+            size_t bytesRead = stream->readBytes(buffer, toRead);
+            file.write(buffer, bytesRead);
+            totalWritten += bytesRead;
+            if (contentLength > 0) {
+                contentLength -= bytesRead;
+            }
+        } else {
+            delay(1);
+        }
+    }
+
+    file.close();
+    https.end();
+
+    Serial.printf("[LAMETRIC] Downloaded icon %d as %s (%d bytes)\n", iconId, path.c_str(), totalWritten);
+
+    // Invalidate cache if icon with same name was cached
+    invalidateCachedIcon(saveName);
+
+    return true;
+}
+
+void handleApiIconsList(AsyncWebServerRequest *request) {
+    JsonDocument doc;
+    JsonArray icons = doc["icons"].to<JsonArray>();
+
+    File root = LittleFS.open(FS_ICONS_PATH);
+    if (root && root.isDirectory()) {
+        File file = root.openNextFile();
+        while (file) {
+            if (!file.isDirectory()) {
+                JsonObject obj = icons.add<JsonObject>();
+                String filename = String(file.name());
+                // Remove path prefix if present
+                int lastSlash = filename.lastIndexOf('/');
+                if (lastSlash >= 0) {
+                    filename = filename.substring(lastSlash + 1);
+                }
+                // Remove extension for the name
+                int lastDot = filename.lastIndexOf('.');
+                String name = lastDot > 0 ? filename.substring(0, lastDot) : filename;
+                obj["name"] = name;
+                obj["filename"] = filename;
+                obj["size"] = file.size();
+            }
+            file = root.openNextFile();
+        }
+        root.close();
+    }
+
+    doc["count"] = icons.size();
+    doc["storage"]["used"] = LittleFS.usedBytes();
+    doc["storage"]["total"] = LittleFS.totalBytes();
+
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+}
+
+void handleApiIconsServe(AsyncWebServerRequest *request, const String& name) {
+    // Try PNG first, then GIF
+    String pngPath = String(FS_ICONS_PATH) + "/" + name + ".png";
+    String gifPath = String(FS_ICONS_PATH) + "/" + name + ".gif";
+
+    if (LittleFS.exists(pngPath)) {
+        request->send(LittleFS, pngPath, "image/png");
+    } else if (LittleFS.exists(gifPath)) {
+        request->send(LittleFS, gifPath, "image/gif");
+    } else {
+        request->send(404, "application/json", "{\"error\":\"Icon not found\"}");
+    }
+}
+
+void handleApiIconsDelete(AsyncWebServerRequest *request) {
+    if (!request->hasParam("name")) {
+        request->send(400, "application/json", "{\"error\":\"Missing name parameter\"}");
+        return;
+    }
+
+    String name = request->getParam("name")->value();
+
+    // Invalidate cache first
+    invalidateCachedIcon(name.c_str());
+
+    // Try to delete PNG or GIF
+    String pngPath = String(FS_ICONS_PATH) + "/" + name + ".png";
+    String gifPath = String(FS_ICONS_PATH) + "/" + name + ".gif";
+
+    bool deleted = false;
+    if (LittleFS.exists(pngPath)) {
+        deleted = LittleFS.remove(pngPath);
+    } else if (LittleFS.exists(gifPath)) {
+        deleted = LittleFS.remove(gifPath);
+    }
+
+    if (deleted) {
+        Serial.printf("[ICON] Deleted: %s\n", name.c_str());
+        request->send(200, "application/json", "{\"success\":true}");
+    } else {
+        request->send(404, "application/json", "{\"error\":\"Icon not found\"}");
+    }
 }
 
 // ============================================================================
@@ -543,6 +1238,7 @@ void setupWebServer() {
             "<!DOCTYPE html><html><head><title>PixelCast</title></head>"
             "<body><h1>ESP32-PixelCast</h1>"
             "<p>Version: " VERSION_STRING "</p>"
+            "<p><a href='/icons.html'>Icon Manager</a></p>"
             "<p><a href='/api/stats'>API Stats</a></p>"
             "<p><a href='/api/apps'>Active Apps</a></p>"
             "</body></html>"
@@ -702,12 +1398,188 @@ void setupWebServer() {
         rebootRequestTime = millis();
     });
 
+    // ========================================================================
+    // Icon Management API
+    // ========================================================================
+
+    // GET /icons.html - Web interface for icon management
+    webServer.on("/icons.html", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/html", ICONS_HTML);
+    });
+
+    // GET /api/icons/{name} - Serve icon file (must be before /api/icons to avoid prefix match)
+    webServer.on("^\\/api\\/icons\\/([a-zA-Z0-9_-]+)$", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String iconName = request->pathArg(0);
+        handleApiIconsServe(request, iconName);
+    });
+
+    // GET /api/icons - List all icons
+    webServer.on("/api/icons", HTTP_GET, handleApiIconsList);
+
+    // DELETE /api/icons?name={name} - Delete an icon
+    webServer.on("/api/icons", HTTP_DELETE, handleApiIconsDelete);
+
+    // POST /api/icons/lametric - Download icon from LaMetric
+    // IMPORTANT: Must be registered BEFORE /api/icons POST to avoid path conflict
+    AsyncCallbackJsonWebHandler* lametricHandler = new AsyncCallbackJsonWebHandler(
+        "/api/icons/lametric",
+        [](AsyncWebServerRequest *request, JsonVariant &json) {
+            JsonObject doc = json.as<JsonObject>();
+
+            if (doc.isNull()) {
+                request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
+            }
+
+            uint32_t iconId = doc["id"] | 0;
+            if (iconId == 0) {
+                request->send(400, "application/json", "{\"error\":\"Missing or invalid icon id\"}");
+                return;
+            }
+
+            // Use provided name or icon ID as name
+            String name = doc["name"] | String(iconId);
+
+            Serial.printf("[API] LaMetric download request: id=%d, name=%s\n", iconId, name.c_str());
+
+            if (downloadLaMetricIcon(iconId, name.c_str())) {
+                request->send(200, "application/json", "{\"success\":true}");
+            } else {
+                request->send(500, "application/json", "{\"error\":\"Failed to download icon from LaMetric\"}");
+            }
+        });
+    webServer.addHandler(lametricHandler);
+
+    // POST /api/icons?name={name} - Upload icon (multipart/form-data)
+    webServer.on("/api/icons", HTTP_POST,
+        // Completion handler
+        [](AsyncWebServerRequest *request) {
+            if (uploadValid && uploadSize > 0) {
+                Serial.printf("[ICON] Upload complete: %s (%d bytes)\n",
+                              uploadIconName.c_str(), uploadSize);
+                request->send(200, "application/json", "{\"success\":true}");
+            } else {
+                // Clean up failed upload
+                if (uploadIconName.length() > 0) {
+                    String path = String(FS_ICONS_PATH) + "/" + uploadIconName + ".png";
+                    if (LittleFS.exists(path)) {
+                        LittleFS.remove(path);
+                    }
+                    path = String(FS_ICONS_PATH) + "/" + uploadIconName + ".gif";
+                    if (LittleFS.exists(path)) {
+                        LittleFS.remove(path);
+                    }
+                }
+                request->send(400, "application/json", "{\"error\":\"Upload failed - invalid file format or size\"}");
+            }
+            // Reset upload state
+            uploadIconName = "";
+            uploadValid = false;
+            uploadSize = 0;
+        },
+        // Chunk handler for file upload
+        [](AsyncWebServerRequest *request, String filename, size_t index,
+           uint8_t *data, size_t len, bool final) {
+
+            if (index == 0) {
+                // First chunk - initialize upload
+                if (!request->hasParam("name")) {
+                    Serial.println("[ICON] Upload missing name parameter");
+                    uploadValid = false;
+                    return;
+                }
+
+                uploadIconName = request->getParam("name")->value();
+                uploadSize = 0;
+
+                // Validate file header
+                bool isPng = validatePngHeader(data, len);
+                bool isGif = validateGifHeader(data, len);
+
+                if (!isPng && !isGif) {
+                    Serial.println("[ICON] Invalid file format (not PNG or GIF)");
+                    uploadValid = false;
+                    return;
+                }
+
+                // Determine extension based on format
+                String ext = isPng ? ".png" : ".gif";
+                String path = String(FS_ICONS_PATH) + "/" + uploadIconName + ext;
+
+                uploadFile = LittleFS.open(path, "w");
+                if (!uploadFile) {
+                    Serial.printf("[ICON] Failed to create file: %s\n", path.c_str());
+                    uploadValid = false;
+                    return;
+                }
+
+                uploadValid = true;
+                Serial.printf("[ICON] Upload started: %s\n", path.c_str());
+            }
+
+            // Write data chunk
+            if (uploadValid && uploadFile) {
+                // Check size limit
+                if (uploadSize + len > MAX_ICON_SIZE) {
+                    Serial.println("[ICON] Upload exceeds size limit");
+                    uploadFile.close();
+                    uploadValid = false;
+                    return;
+                }
+
+                size_t written = uploadFile.write(data, len);
+                uploadSize += written;
+            }
+
+            // Final chunk
+            if (final && uploadFile) {
+                uploadFile.close();
+                if (uploadValid) {
+                    // Invalidate cached icon
+                    invalidateCachedIcon(uploadIconName.c_str());
+                }
+            }
+        }
+    );
+
+    // Handle dynamic routes not caught by static handlers
     webServer.onNotFound([](AsyncWebServerRequest *request) {
+        // Handle CORS preflight
         if (request->method() == HTTP_OPTIONS) {
             request->send(200);
-        } else {
-            request->send(404, "application/json", "{\"error\":\"Not found\"}");
+            return;
         }
+
+        String url = request->url();
+        WebRequestMethodComposite method = request->method();
+
+        // Handle DELETE /api/icons?name={name} (fallback if static handler misses)
+        // Use explicit value 0b00000100 (4) for HTTP_DELETE due to enum conflicts with WebServer library
+        const WebRequestMethodComposite HTTP_DELETE_METHOD = 0b00000100;
+        if (method == HTTP_DELETE_METHOD && url == "/api/icons") {
+            handleApiIconsDelete(request);
+            return;
+        }
+
+        // Handle GET /api/icons/{name} for serving icon files (fallback)
+        if (method == HTTP_GET && url.startsWith("/api/icons/")) {
+            String iconName = url.substring(11);  // Remove "/api/icons/"
+            // Sanitize: only allow alphanumeric, underscore, hyphen
+            bool valid = true;
+            for (size_t i = 0; i < iconName.length(); i++) {
+                char c = iconName[i];
+                if (!isalnum(c) && c != '_' && c != '-') {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid && iconName.length() > 0) {
+                handleApiIconsServe(request, iconName);
+                return;
+            }
+        }
+
+        request->send(404, "application/json", "{\"error\":\"Not found\"}");
     });
 
     webServer.begin();
@@ -1047,6 +1919,91 @@ bool saveSettings() {
     return true;
 }
 
+bool loadApps() {
+    if (!filesystemReady) {
+        Serial.println("[APPS] Filesystem not ready, cannot load apps");
+        return false;
+    }
+
+    File file = LittleFS.open(FS_APPS_FILE, "r");
+    if (!file) {
+        Serial.println("[APPS] Apps file not found, starting fresh");
+        return false;
+    }
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
+
+    if (error) {
+        Serial.printf("[APPS] JSON parse error: %s\n", error.c_str());
+        return false;
+    }
+
+    int loadedCount = 0;
+    JsonArray appsArray = doc["apps"];
+    for (JsonObject appObj : appsArray) {
+        const char* id = appObj["id"] | "";
+        const char* text = appObj["text"] | "";
+        const char* icon = appObj["icon"] | "";
+        uint32_t textColor = appObj["textColor"] | 0xFFFFFF;
+        uint32_t bgColor = appObj["backgroundColor"] | 0;
+        uint16_t duration = appObj["duration"] | settings.defaultDuration;
+        uint32_t lifetime = appObj["lifetime"] | 0;
+        int8_t priority = appObj["priority"] | 0;
+
+        if (strlen(id) > 0) {
+            int8_t result = appAdd(id, text, icon, textColor, bgColor,
+                                   duration, lifetime, priority, false);
+            if (result >= 0) {
+                loadedCount++;
+            }
+        }
+    }
+
+    Serial.printf("[APPS] Loaded %d custom apps from storage\n", loadedCount);
+    return loadedCount > 0;
+}
+
+bool saveApps() {
+    if (!filesystemReady) {
+        Serial.println("[APPS] Filesystem not ready, cannot save apps");
+        return false;
+    }
+
+    JsonDocument doc;
+    doc["version"] = 1;
+    JsonArray appsArray = doc["apps"].to<JsonArray>();
+
+    int savedCount = 0;
+    for (uint8_t i = 0; i < MAX_APPS; i++) {
+        if (apps[i].active && !apps[i].isSystem) {
+            JsonObject appObj = appsArray.add<JsonObject>();
+            appObj["id"] = apps[i].id;
+            appObj["text"] = apps[i].text;
+            appObj["icon"] = apps[i].icon;
+            appObj["textColor"] = apps[i].textColor;
+            appObj["backgroundColor"] = apps[i].backgroundColor;
+            appObj["duration"] = apps[i].duration;
+            appObj["lifetime"] = apps[i].lifetime;
+            appObj["priority"] = apps[i].priority;
+            savedCount++;
+        }
+    }
+
+    File file = LittleFS.open(FS_APPS_FILE, "w");
+    if (!file) {
+        Serial.println("[APPS] Failed to open apps file for writing");
+        return false;
+    }
+
+    serializeJsonPretty(doc, file);
+    file.close();
+
+    Serial.printf("[APPS] Saved %d custom apps to storage\n", savedCount);
+    return true;
+}
+
 // ============================================================================
 // Application Manager Functions
 // ============================================================================
@@ -1069,6 +2026,9 @@ void setupApps() {
                settings.defaultDuration, 0, 0, true);
         Serial.println("[APPS] Date app added");
     }
+
+    // Load persisted custom apps
+    loadApps();
 
     Serial.printf("[APPS] Initialized with %d apps\n", appCount);
     appRotationEnabled = settings.autoRotate;
@@ -1093,6 +2053,10 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
         app->createdAt = millis();
         app->active = true;
         Serial.printf("[APPS] Updated app: %s\n", id);
+        // Persist non-system apps
+        if (!app->isSystem) {
+            saveApps();
+        }
         return existingIndex;
     }
 
@@ -1128,6 +2092,11 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
     appCount++;
     Serial.printf("[APPS] Added app: %s (slot %d, total %d)\n", id, emptySlot, appCount);
 
+    // Persist non-system apps
+    if (!isSystem) {
+        saveApps();
+    }
+
     return emptySlot;
 }
 
@@ -1150,6 +2119,10 @@ bool appRemove(const char* id) {
     }
 
     Serial.printf("[APPS] Removed app: %s\n", id);
+
+    // Persist the removal
+    saveApps();
+
     return true;
 }
 
@@ -1235,6 +2208,7 @@ void loopApps() {
         current = appGetNext();
         if (current) {
             lastAppSwitch = now;
+            resetScrollState();
         }
         return;
     }
@@ -1244,6 +2218,7 @@ void loopApps() {
         current = appGetNext();
         if (current) {
             lastAppSwitch = now;
+            resetScrollState();
             Serial.printf("[APPS] Switched to: %s\n", current->id);
         }
     }
@@ -1266,16 +2241,54 @@ void loopTime() {
 void loopDisplay() {
     if (!wifiConnected) return;
 
-    // Update display based on current app
-    if (millis() - lastDisplayUpdate > 1000) {
-        AppItem* current = appGetCurrent();
+    unsigned long now = millis();
+    AppItem* current = appGetCurrent();
+    bool needsRedraw = false;
+
+    // Handle scroll animation (50ms updates for smooth scrolling)
+    if (current && appScrollState.needsScroll) {
+        if (now - lastScrollUpdate >= SCROLL_SPEED) {
+            lastScrollUpdate = now;
+
+            switch (appScrollState.scrollPhase) {
+                case 0:  // pause_start
+                    if (now - appScrollState.lastScrollTime >= SCROLL_PAUSE) {
+                        appScrollState.scrollPhase = 1;
+                        appScrollState.lastScrollTime = now;
+                    }
+                    break;
+
+                case 1:  // scrolling
+                    appScrollState.scrollOffset++;
+                    // Check if text has scrolled completely
+                    if (appScrollState.scrollOffset >= appScrollState.textWidth - appScrollState.availableWidth + 10) {
+                        appScrollState.scrollPhase = 2;
+                        appScrollState.lastScrollTime = now;
+                    }
+                    needsRedraw = true;
+                    break;
+
+                case 2:  // pause_end
+                    if (now - appScrollState.lastScrollTime >= SCROLL_PAUSE) {
+                        // Reset to beginning
+                        appScrollState.scrollOffset = 0;
+                        appScrollState.scrollPhase = 0;
+                        appScrollState.lastScrollTime = now;
+                    }
+                    break;
+            }
+        }
+    }
+
+    // Regular display update (1000ms for non-scrolling content like clock)
+    if (now - lastDisplayUpdate > 1000 || needsRedraw) {
         if (current) {
             displayShowApp(current);
         } else {
             // Fallback: show time if no apps
             displayShowTime();
         }
-        lastDisplayUpdate = millis();
+        lastDisplayUpdate = now;
     }
 }
 

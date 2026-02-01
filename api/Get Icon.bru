@@ -1,0 +1,20 @@
+meta {
+  name: Get Icon
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/api/icons/sun
+  body: none
+  auth: none
+}
+
+docs {
+  Retrieve an icon file by name.
+
+  URL parameter:
+  - name: Icon name (in the URL path, without extension)
+
+  Returns the PNG or GIF file with appropriate content type.
+}

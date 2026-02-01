@@ -123,6 +123,18 @@
     #define MAX_ICON_CACHE 8
 #endif
 
+// ============================================================================
+// Icon Management
+// ============================================================================
+#ifndef MAX_ICON_SIZE
+    #define MAX_ICON_SIZE 8192          // 8KB max per icon
+#endif
+#ifndef MAX_ICON_DIMENSION
+    #define MAX_ICON_DIMENSION 64       // Max 64x64 pixels
+#endif
+#define LAMETRIC_API_HOST "developer.lametric.com"
+#define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"
+
 // App defaults
 #define DEFAULT_APP_DURATION    10000   // 10 seconds
 #define DEFAULT_APP_LIFETIME    300000  // 5 minutes (0 = permanent)
@@ -196,6 +208,7 @@
 #define FS_CONFIG_PATH "/config"
 #define FS_WWW_PATH "/www"
 #define FS_CONFIG_FILE "/config/settings.json"
+#define FS_APPS_FILE "/config/apps.json"
 
 // ============================================================================
 // Indicator Configuration

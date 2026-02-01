@@ -1,0 +1,20 @@
+meta {
+  name: Delete Icon
+  type: http
+  seq: 12
+}
+
+delete {
+  url: {{baseUrl}}/api/icons?name=sun
+  body: none
+  auth: none
+}
+
+docs {
+  Delete an icon from the device.
+
+  Query parameter:
+  - name: Icon name to delete (without extension)
+
+  The icon will be removed from both storage and cache.
+}

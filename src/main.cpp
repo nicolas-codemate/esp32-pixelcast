@@ -154,6 +154,22 @@ struct Settings {
     char mqttPrefix[32];
 } settings;
 
+// Weather Data (populated by POST /api/weather)
+struct WeatherData {
+    char currentIcon[32];
+    int16_t currentTemp;
+    uint8_t currentHumidity;
+    struct ForecastDay {
+        char icon[32];
+        int16_t tempMin;
+        int16_t tempMax;
+        char dayName[4];  // "LUN", "MAR", etc.
+    } forecast[2];
+    unsigned long lastUpdate;
+    bool valid;
+};
+WeatherData weatherData;
+
 // Timing
 unsigned long lastStatsPublish = 0;
 unsigned long lastDisplayUpdate = 0;
@@ -349,6 +365,10 @@ void displayShowIP();
 void displayShowTime();
 void displayShowDate();
 void displayShowApp(AppItem* app);
+void displayShowWeatherClock();
+void drawDropIcon(int16_t x, int16_t y, uint16_t color);
+void drawSeparatorLine(int16_t y, uint16_t color);
+void drawIconAtScale(CachedIcon* icon, int16_t x, int16_t y, uint8_t scale);
 void displayClear();
 void displaySetBrightness(uint8_t brightness);
 
@@ -422,6 +442,9 @@ void setup() {
 
     Serial.println("[INIT] Setting up filesystem...");
     setupFilesystem();
+
+    // Initialize weather data as empty
+    memset(&weatherData, 0, sizeof(weatherData));
 
     Serial.println("[INIT] Loading settings...");
     if (!loadSettings()) {
@@ -674,6 +697,235 @@ void displayShowDate() {
     #endif
 }
 
+// Draw icon at explicit scale (1 = native, 2 = upscale x2)
+void drawIconAtScale(CachedIcon* icon, int16_t x, int16_t y, uint8_t scale) {
+    if (!icon || !icon->valid || !icon->pixels) return;
+
+    for (uint8_t py = 0; py < icon->height; py++) {
+        for (uint8_t px = 0; px < icon->width; px++) {
+            uint16_t pixel = icon->pixels[py * icon->width + px];
+            if (pixel != 0) {
+                if (scale == 2) {
+                    int16_t dx = x + px * 2;
+                    int16_t dy = y + py * 2;
+                    dma_display->drawPixel(dx, dy, pixel);
+                    dma_display->drawPixel(dx + 1, dy, pixel);
+                    dma_display->drawPixel(dx, dy + 1, pixel);
+                    dma_display->drawPixel(dx + 1, dy + 1, pixel);
+                } else {
+                    dma_display->drawPixel(x + px, y + py, pixel);
+                }
+            }
+        }
+    }
+}
+
+// Draw a small water drop icon (5px tall)
+void drawDropIcon(int16_t x, int16_t y, uint16_t color) {
+    //   .X.
+    //   .X.
+    //   XXX
+    //   XXX
+    //   .X.
+    dma_display->drawPixel(x + 1, y,     color);
+    dma_display->drawPixel(x + 1, y + 1, color);
+    dma_display->drawPixel(x,     y + 2, color);
+    dma_display->drawPixel(x + 1, y + 2, color);
+    dma_display->drawPixel(x + 2, y + 2, color);
+    dma_display->drawPixel(x,     y + 3, color);
+    dma_display->drawPixel(x + 1, y + 3, color);
+    dma_display->drawPixel(x + 2, y + 3, color);
+    dma_display->drawPixel(x + 1, y + 4, color);
+}
+
+// Draw a thin horizontal separator line
+void drawSeparatorLine(int16_t y, uint16_t color) {
+    for (int16_t x = 4; x < DISPLAY_WIDTH - 4; x++) {
+        dma_display->drawPixel(x, y, color);
+    }
+}
+
+void displayShowWeatherClock() {
+    // Fallback to time display if weather data is stale or missing
+    unsigned long weatherAge = millis() - weatherData.lastUpdate;
+    if (!weatherData.valid || weatherAge > 3600000) {
+        displayShowTime();
+        return;
+    }
+
+    dma_display->clearScreen();
+
+    uint16_t white = dma_display->color565(255, 255, 255);
+    uint16_t dimGray = dma_display->color565(40, 40, 40);
+    uint16_t cyan = dma_display->color565(0, 180, 255);
+    uint16_t paleBlue = dma_display->color565(100, 160, 255);
+    uint16_t gray = dma_display->color565(140, 140, 140);
+    uint16_t amber = dma_display->color565(255, 180, 50);
+    uint16_t coldBlue = dma_display->color565(80, 140, 255);
+    uint16_t orange = dma_display->color565(255, 130, 0);
+
+    // ============================================================
+    // Layout map (64x64 display)
+    // NULL font: setCursor = top-left of glyph, char is 7px tall
+    // TomThumb: setCursor = baseline, uppercase chars 5px above baseline
+    // ============================================================
+    // y=1-8:    current weather (icon 8x8 + temp + humidity)
+    // y=11:     separator
+    // y=16-22:  HH:MM (NULL font top=16) + :SS (TomThumb baseline=23)
+    // y=27-33:  date (NULL font top=27)
+    // y=36:     separator
+    // y=44:     day names (TomThumb baseline=44, glyphs y=39-43)
+    // y=47-54:  forecast icons (8x8)
+    // y=62:     temps (TomThumb baseline=62, glyphs y=57-61)
+    // ============================================================
+
+    // ---- Current weather (y=1-8) ----
+    CachedIcon* currentIcon = getIcon(weatherData.currentIcon);
+    int16_t weatherTextX = 2;
+    if (currentIcon && currentIcon->valid) {
+        drawIconAtScale(currentIcon, 1, 1, 1);  // Icon at (1,1), native 8x8
+        weatherTextX = 11;  // After 8px icon + 2px gap
+    }
+
+    // Temperature (NULL font, top at y=2 to align with icon)
+    dma_display->setFont(NULL);
+    dma_display->setTextSize(1);
+    dma_display->setTextColor(white);
+
+    char tempStr[8];
+    snprintf(tempStr, sizeof(tempStr), "%d", weatherData.currentTemp);
+    dma_display->setCursor(weatherTextX, 2);
+    dma_display->print(tempStr);
+
+    // Degree symbol (small circle, superscript position)
+    int16_t degreeX = weatherTextX + strlen(tempStr) * 6;
+    dma_display->drawPixel(degreeX + 1, 1, white);
+    dma_display->drawPixel(degreeX,     2, white);
+    dma_display->drawPixel(degreeX + 2, 2, white);
+    dma_display->drawPixel(degreeX + 1, 3, white);
+
+    // "C" after degree (NULL font, same top as temp)
+    int16_t cX = degreeX + 4;
+    dma_display->setCursor(cX, 2);
+    dma_display->print("C");
+
+    // Drop icon + humidity on right side
+    int16_t humidityX = DISPLAY_WIDTH - 18;
+    drawDropIcon(humidityX, 2, cyan);
+
+    // Humidity (TomThumb, baseline=8 to align bottom with temp bottom y=8)
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(cyan);
+    char humStr[6];
+    snprintf(humStr, sizeof(humStr), "%d%%", weatherData.currentHumidity);
+    dma_display->setCursor(humidityX + 5, 8);
+    dma_display->print(humStr);
+
+    // ---- Separator (y=11) ----
+    drawSeparatorLine(11, dimGray);
+
+    // ---- Clock (y=16-22) ----
+    int hours = timeClient.getHours();
+    int minutes = timeClient.getMinutes();
+    int seconds = timeClient.getSeconds();
+
+    if (!settings.clockFormat24h && hours > 12) {
+        hours -= 12;
+    }
+
+    dma_display->setTextColor(paleBlue);
+
+    // HH:MM in NULL font (5 chars * 6px = 30px)
+    char hmStr[6];
+    snprintf(hmStr, sizeof(hmStr), "%02d:%02d", hours, minutes);
+    dma_display->setFont(NULL);
+    dma_display->setTextSize(1);
+
+    int16_t hmX = (DISPLAY_WIDTH - 30) / 2 - 6;  // Shift left for seconds
+    dma_display->setCursor(hmX, 16);
+    dma_display->print(hmStr);
+
+    // Seconds in TomThumb (baseline=23, bottom-aligned with NULL font y=16+6=22)
+    dma_display->setFont(&TomThumb);
+    char secStr[4];
+    snprintf(secStr, sizeof(secStr), ":%02d", seconds);
+    dma_display->setCursor(hmX + 31, 23);
+    dma_display->print(secStr);
+
+    // ---- Date (y=27-33) ----
+    unsigned long epochTime = timeClient.getEpochTime();
+    struct tm* timeinfo = gmtime((time_t*)&epochTime);
+
+    static const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
+    static const char* monthNamesFr[] = {"JAN", "FEV", "MAR", "AVR", "MAI", "JUN",
+                                         "JUL", "AOU", "SEP", "OCT", "NOV", "DEC"};
+
+    char dateStr[16];
+    snprintf(dateStr, sizeof(dateStr), "%s %02d %s",
+             dayNamesFr[timeinfo->tm_wday],
+             timeinfo->tm_mday,
+             monthNamesFr[timeinfo->tm_mon]);
+
+    dma_display->setFont(NULL);
+    dma_display->setTextSize(1);
+    dma_display->setTextColor(gray);
+
+    int16_t dateWidth = strlen(dateStr) * 6;
+    int16_t dateX = (DISPLAY_WIDTH - dateWidth) / 2;
+    dma_display->setCursor(dateX, 27);
+    dma_display->print(dateStr);
+
+    // ---- Separator (y=36) ----
+    drawSeparatorLine(36, dimGray);
+
+    // ---- Forecast (y=39-61) ----
+    // Two columns: left center x=16, right center x=48
+    for (int i = 0; i < 2; i++) {
+        int16_t colCenter = (i == 0) ? 16 : 48;
+
+        // Day name (TomThumb, baseline=44, glyphs y=39-43)
+        dma_display->setFont(&TomThumb);
+        dma_display->setTextColor(amber);
+        int16_t dayNameWidth = strlen(weatherData.forecast[i].dayName) * 4;
+        dma_display->setCursor(colCenter - dayNameWidth / 2, 44);
+        dma_display->print(weatherData.forecast[i].dayName);
+
+        // Forecast icon (8x8 native, y=47-54)
+        CachedIcon* forecastIcon = getIcon(weatherData.forecast[i].icon);
+        if (forecastIcon && forecastIcon->valid) {
+            drawIconAtScale(forecastIcon, colCenter - 4, 47, 1);
+        }
+
+        // Min temp in blue (TomThumb, baseline=62, glyphs y=57-61)
+        char minStr[8];
+        snprintf(minStr, sizeof(minStr), "%d", weatherData.forecast[i].tempMin);
+        dma_display->setFont(&TomThumb);
+        dma_display->setTextColor(coldBlue);
+        int16_t minWidth = strlen(minStr) * 4;
+        dma_display->setCursor(colCenter - minWidth - 2, 62);
+        dma_display->print(minStr);
+
+        // Slash
+        dma_display->setTextColor(gray);
+        dma_display->setCursor(colCenter - 2, 62);
+        dma_display->print("/");
+
+        // Max temp in orange
+        char maxStr[8];
+        snprintf(maxStr, sizeof(maxStr), "%d", weatherData.forecast[i].tempMax);
+        dma_display->setTextColor(orange);
+        dma_display->setCursor(colCenter + 2, 62);
+        dma_display->print(maxStr);
+    }
+
+    // Reset font
+    dma_display->setFont(NULL);
+
+    #if DOUBLE_BUFFER
+        dma_display->flipDMABuffer();
+    #endif
+}
+
 void displayShowApp(AppItem* app) {
     if (!app) return;
 
@@ -685,6 +937,11 @@ void displayShowApp(AppItem* app) {
 
     if (strcmp(app->id, "date") == 0) {
         displayShowDate();
+        return;
+    }
+
+    if (strcmp(app->id, "weatherclock") == 0) {
+        displayShowWeatherClock();
         return;
     }
 
@@ -1542,6 +1799,80 @@ void setupWebServer() {
         });
     webServer.addHandler(settingsHandler);
 
+    // GET /api/weather - Return current weather data
+    webServer.on("/api/weather", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+
+        doc["valid"] = weatherData.valid;
+
+        if (weatherData.valid) {
+            unsigned long ageMs = millis() - weatherData.lastUpdate;
+            doc["age"] = ageMs / 1000;
+            doc["stale"] = (ageMs > 3600000);
+
+            JsonObject current = doc["current"].to<JsonObject>();
+            current["icon"] = weatherData.currentIcon;
+            current["temp"] = weatherData.currentTemp;
+            current["humidity"] = weatherData.currentHumidity;
+
+            JsonArray forecastArr = doc["forecast"].to<JsonArray>();
+            for (int i = 0; i < 2; i++) {
+                JsonObject fc = forecastArr.add<JsonObject>();
+                fc["day"] = weatherData.forecast[i].dayName;
+                fc["icon"] = weatherData.forecast[i].icon;
+                fc["temp_min"] = weatherData.forecast[i].tempMin;
+                fc["temp_max"] = weatherData.forecast[i].tempMax;
+            }
+        }
+
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // POST /api/weather - Update weather data
+    AsyncCallbackJsonWebHandler* weatherHandler = new AsyncCallbackJsonWebHandler("/api/weather",
+        [](AsyncWebServerRequest *request, JsonVariant &json) {
+            Serial.println("[API] /weather handler called");
+            JsonObject doc = json.as<JsonObject>();
+
+            if (doc.isNull()) {
+                request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
+            }
+
+            // Parse current weather
+            if (doc["current"].is<JsonObject>()) {
+                JsonObject current = doc["current"];
+                strlcpy(weatherData.currentIcon, current["icon"] | "", sizeof(weatherData.currentIcon));
+                weatherData.currentTemp = current["temp"] | 0;
+                weatherData.currentHumidity = current["humidity"] | 0;
+            } else {
+                request->send(400, "application/json", "{\"error\":\"Missing 'current' object\"}");
+                return;
+            }
+
+            // Parse forecast (optional, up to 2 days)
+            if (doc["forecast"].is<JsonArray>()) {
+                JsonArray forecastArr = doc["forecast"];
+                for (int i = 0; i < 2 && i < (int)forecastArr.size(); i++) {
+                    JsonObject fc = forecastArr[i];
+                    strlcpy(weatherData.forecast[i].icon, fc["icon"] | "", sizeof(weatherData.forecast[i].icon));
+                    weatherData.forecast[i].tempMin = fc["temp_min"] | 0;
+                    weatherData.forecast[i].tempMax = fc["temp_max"] | 0;
+                    strlcpy(weatherData.forecast[i].dayName, fc["day"] | "", sizeof(weatherData.forecast[i].dayName));
+                }
+            }
+
+            weatherData.lastUpdate = millis();
+            weatherData.valid = true;
+
+            Serial.printf("[WEATHER] Updated: %d C, %d%% humidity\n",
+                         weatherData.currentTemp, weatherData.currentHumidity);
+            request->send(200, "application/json", "{\"success\":true}");
+        });
+    webServer.addHandler(weatherHandler);
+
     // POST /api/reboot - Reboot device (deferred to allow response to be sent)
     webServer.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest *request) {
         Serial.println("[API] Reboot requested");
@@ -2167,20 +2498,27 @@ void setupApps() {
     currentAppIndex = -1;
 
     // Add system apps
-    if (settings.clockEnabled) {
-        appAdd("clock", "Clock", "", settings.clockColor, 0x000000,
-               settings.defaultDuration, 0, 0, true);
-        Serial.println("[APPS] Clock app added");
-    }
+    // NOTE: clock and date disabled while weatherclock is in development
+    // if (settings.clockEnabled) {
+    //     appAdd("clock", "Clock", "", settings.clockColor, 0x000000,
+    //            settings.defaultDuration, 0, 0, true);
+    //     Serial.println("[APPS] Clock app added");
+    // }
+    //
+    // if (settings.dateEnabled) {
+    //     appAdd("date", "Date", "", settings.dateColor, 0x000000,
+    //            settings.defaultDuration, 0, 0, true);
+    //     Serial.println("[APPS] Date app added");
+    // }
 
-    if (settings.dateEnabled) {
-        appAdd("date", "Date", "", settings.dateColor, 0x000000,
-               settings.defaultDuration, 0, 0, true);
-        Serial.println("[APPS] Date app added");
-    }
+    // WeatherClock system app (replaces clock+date when weather data is available)
+    appAdd("weatherclock", "WeatherClock", "", settings.clockColor, 0x000000,
+           settings.defaultDuration, 0, 1, true);
+    Serial.println("[APPS] WeatherClock app added");
 
     // Load persisted custom apps
-    loadApps();
+    // NOTE: disabled during weatherclock development to avoid old "weather" app interference
+    // loadApps();
 
     Serial.printf("[APPS] Initialized with %d apps\n", appCount);
     appRotationEnabled = settings.autoRotate;

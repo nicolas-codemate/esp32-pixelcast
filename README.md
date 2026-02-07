@@ -69,19 +69,31 @@
 - ESP32 Trinity or compatible
 - HUB75 64x64 P3 panel
 
-### Initial Flash
+### Initial Flash (USB)
 
 ```bash
 # Clone the repository
 git clone https://github.com/nicolas-codemate/esp32-pixelcast.git
 cd esp32-pixelcast
 
-# Build and flash
+# Build and flash via USB
 pio run -t upload
 
 # Upload filesystem (icons, config)
 pio run -t uploadfs
 ```
+
+### OTA Updates (WiFi)
+
+After the initial USB flash, firmware can be updated over WiFi:
+
+```bash
+# Flash firmware over the air
+pio run -e ota -t upload
+```
+
+The device advertises itself via mDNS as `pixelcast.local` on port 3232 (ArduinoOTA).
+The display shows "OTA UPDATE" during the process.
 
 ### WiFi Configuration
 
@@ -231,23 +243,17 @@ Accessible via `http://pixelcast.local/`:
 ```
 esp32-pixelcast/
 ├── src/
-│   ├── main.cpp              # Entry point
-│   ├── display/              # HUB75 display management
-│   ├── apps/                 # Application manager
-│   ├── notifications/        # Notification system
-│   ├── api/                  # REST + MQTT handlers
-│   ├── web/                  # Web interface
-│   └── utils/                # Utilities
+│   └── main.cpp              # Single-file firmware
 ├── include/
-│   ├── config.h              # Global configuration
-│   └── pins.h                # Pin definitions
+│   └── config.h              # Global configuration & defaults
 ├── lib/                      # Local libraries
 ├── data/                     # Filesystem (LittleFS)
 │   ├── icons/                # PNG/GIF icons
 │   ├── gifs/                 # Animations
-│   └── www/                  # Web interface
-├── docs/                     # Documentation
+│   └── config/               # Runtime settings (settings.json)
+├── api/                      # Bruno collection for API testing
 ├── platformio.ini            # PlatformIO configuration
+├── ROADMAP.md                # Development roadmap
 └── README.md
 ```
 

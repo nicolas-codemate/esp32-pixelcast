@@ -37,6 +37,9 @@
 // PNG decoding
 #include <PNGdec.h>
 
+// Compact font for small text (IP address, status)
+#include <Fonts/TomThumb.h>
+
 // NTP
 #include <NTPClient.h>
 #include <WiFiUdp.h>
@@ -44,6 +47,9 @@
 // HTTPS for LaMetric icon download
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+
+// OTA updates
+#include <ArduinoOTA.h>
 
 // ============================================================================
 // Application System - Structures
@@ -437,6 +443,23 @@ void setup() {
         Serial.println("[INIT] Setting up MQTT...");
         setupMQTT();
 
+        Serial.println("[INIT] Setting up OTA...");
+        ArduinoOTA.setHostname(MDNS_NAME);
+        ArduinoOTA.onStart([]() {
+            Serial.println("[OTA] Update starting...");
+            dma_display->fillScreen(0);
+            dma_display->setCursor(4, 28);
+            dma_display->setTextColor(dma_display->color565(255, 165, 0));
+            dma_display->print("OTA UPDATE");
+        });
+        ArduinoOTA.onEnd([]() {
+            Serial.println("[OTA] Update complete!");
+        });
+        ArduinoOTA.onError([](ota_error_t error) {
+            Serial.printf("[OTA] Error[%u]\n", error);
+        });
+        ArduinoOTA.begin();
+
         Serial.println("[INIT] Setting up NTP...");
         timeClient.setPoolServerName(settings.ntpServer);
         timeClient.setTimeOffset(settings.ntpOffset);
@@ -468,6 +491,7 @@ void loop() {
         ESP.restart();
     }
 
+    ArduinoOTA.handle();
     loopWiFi();
     loopMQTT();
     loopTime();
@@ -541,15 +565,25 @@ void displayShowBoot() {
 
 void displayShowIP() {
     dma_display->clearScreen();
-    dma_display->setTextColor(dma_display->color565(0, 255, 0));
+
+    // "WiFi OK" in default font, centered
+    dma_display->setFont(NULL);
     dma_display->setTextSize(1);
-    dma_display->setCursor(2, 20);
+    dma_display->setTextColor(dma_display->color565(0, 255, 0));
+    dma_display->setCursor(11, 20);
     dma_display->print("WiFi OK");
 
-    dma_display->setTextColor(dma_display->color565(255, 255, 255));
-    dma_display->setCursor(2, 36);
+    // IP address in compact font (TomThumb 3x5px), centered
     String ip = WiFi.localIP().toString();
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(dma_display->color565(255, 255, 255));
+    int16_t ipWidth = ip.length() * 4;  // TomThumb: ~4px per char
+    int16_t ipX = (DISPLAY_WIDTH - ipWidth) / 2;
+    dma_display->setCursor(ipX, 38);
     dma_display->print(ip);
+
+    // Reset to default font
+    dma_display->setFont(NULL);
 
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
@@ -685,9 +719,10 @@ void displayShowApp(AppItem* app) {
 
     // Adjust layout if icon is present - VERTICAL layout
     if (icon && icon->valid) {
-        // Limit icon size to 16x16 max for display
-        uint8_t displayWidth = min(icon->width, (uint8_t)16);
-        uint8_t displayHeight = min(icon->height, (uint8_t)16);
+        // Calculate displayed size (upscale x2 for 8x8 icons)
+        uint8_t scale = (icon->width <= 8 && icon->height <= 8) ? 2 : 1;
+        uint8_t displayWidth = icon->width * scale;
+        uint8_t displayHeight = icon->height * scale;
 
         // Draw icon centered horizontally at top
         int16_t iconX = (DISPLAY_WIDTH - displayWidth) / 2;
@@ -996,9 +1031,9 @@ CachedIcon* loadIcon(const char* name) {
         return nullptr;
     }
 
-    // Get dimensions (limit to 32x32)
-    uint8_t width = min((int)png.getWidth(), 16);
-    uint8_t height = min((int)png.getHeight(), 16);
+    // Get dimensions (limit to 32x32 to preserve RAM)
+    uint8_t width = min((int)png.getWidth(), 32);
+    uint8_t height = min((int)png.getHeight(), 32);
 
     // Allocate pixel buffer
     cached->pixels = (uint16_t*)malloc(width * height * sizeof(uint16_t));
@@ -1057,11 +1092,24 @@ CachedIcon* getIcon(const char* name) {
 void drawIcon(CachedIcon* icon, int16_t x, int16_t y) {
     if (!icon || !icon->valid || !icon->pixels) return;
 
+    // Upscale x2 for small icons (8x8 -> 16x16)
+    uint8_t scale = (icon->width <= 8 && icon->height <= 8) ? 2 : 1;
+
     for (uint8_t py = 0; py < icon->height; py++) {
         for (uint8_t px = 0; px < icon->width; px++) {
             uint16_t pixel = icon->pixels[py * icon->width + px];
             if (pixel != 0) {  // Skip transparent/black pixels
-                dma_display->drawPixel(x + px, y + py, pixel);
+                if (scale == 2) {
+                    // Draw 2x2 block for each pixel
+                    int16_t dx = x + px * 2;
+                    int16_t dy = y + py * 2;
+                    dma_display->drawPixel(dx, dy, pixel);
+                    dma_display->drawPixel(dx + 1, dy, pixel);
+                    dma_display->drawPixel(dx, dy + 1, pixel);
+                    dma_display->drawPixel(dx + 1, dy + 1, pixel);
+                } else {
+                    dma_display->drawPixel(x + px, y + py, pixel);
+                }
             }
         }
     }
@@ -1111,7 +1159,7 @@ bool downloadLaMetricIcon(uint32_t iconId, const char* saveName) {
     bool isPng = true;
 
     // Try PNG first
-    String url = "https://" LAMETRIC_API_HOST LAMETRIC_ICON_PATH + String(iconId) + "_icon_thumb.png";
+    String url = "https://" LAMETRIC_API_HOST LAMETRIC_ICON_PATH + String(iconId) + ".png";
     Serial.printf("[LAMETRIC] Trying PNG: %s\n", url.c_str());
 
     if (!https.begin(client, url)) {
@@ -1124,7 +1172,7 @@ bool downloadLaMetricIcon(uint32_t iconId, const char* saveName) {
     // If PNG not found, try GIF
     if (httpCode != HTTP_CODE_OK) {
         https.end();
-        url = "https://" LAMETRIC_API_HOST LAMETRIC_ICON_PATH + String(iconId) + "_icon_thumb.gif";
+        url = "https://" LAMETRIC_API_HOST LAMETRIC_ICON_PATH + String(iconId) + ".gif";
         Serial.printf("[LAMETRIC] Trying GIF: %s\n", url.c_str());
 
         if (!https.begin(client, url)) {

@@ -132,6 +132,18 @@
 #ifndef MAX_ICON_DIMENSION
     #define MAX_ICON_DIMENSION 64       // Max 64x64 pixels
 #endif
+
+// ============================================================================
+// Tracker Layout
+// ============================================================================
+#ifndef MAX_TRACKERS
+    #define MAX_TRACKERS 8
+#endif
+#ifndef MAX_SPARKLINE_POINTS
+    #define MAX_SPARKLINE_POINTS 24
+#endif
+#define TRACKER_STALE_TIMEOUT 3600000   // 1 hour in ms
+#define TRACKER_ID_PREFIX "tracker_"
 #define LAMETRIC_API_HOST "developer.lametric.com"
 #define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"
 

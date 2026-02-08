@@ -1,0 +1,57 @@
+meta {
+  name: Update Weather
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/api/weather
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "current": {
+      "icon": "w_clear_day",
+      "temp": 22,
+      "temp_min": 16,
+      "temp_max": 29,
+      "humidity": 50
+    },
+    "forecast": [
+      { "day": "LUN", "icon": "w_partly_day", "temp_min": 14, "temp_max": 23 },
+      { "day": "MAR", "icon": "w_rain", "temp_min": 10, "temp_max": 17 },
+      { "day": "MER", "icon": "w_cloudy", "temp_min": 11, "temp_max": 18 },
+      { "day": "JEU", "icon": "w_clear_day", "temp_min": 14, "temp_max": 26 },
+      { "day": "VEN", "icon": "w_cloudy", "temp_min": 10, "temp_max": 19 },
+      { "day": "SAM", "icon": "w_partly_day", "temp_min": 15, "temp_max": 28 }
+    ]
+  }
+}
+
+docs {
+  Updates the WeatherClock with current conditions and forecast.
+
+  The WeatherClock is a system app that displays current weather, time,
+  date, and a paginated forecast (pages of 3 columns, auto-scrolling).
+
+  Data older than 1 hour is considered stale and the display falls back
+  to a simple clock.
+
+  Parameters:
+  - current.icon: Icon name (built-in: w_clear_day, w_rain, w_snow, etc.)
+  - current.temp: Current temperature (integer)
+  - current.temp_min: Today's min temperature
+  - current.temp_max: Today's max temperature
+  - current.humidity: Humidity percentage
+  - forecast[]: Array of up to 7 forecast days
+  - forecast[].day: Day abbreviation (3 chars, e.g. "LUN", "MAR")
+  - forecast[].icon: Icon name
+  - forecast[].temp_min: Min temperature
+  - forecast[].temp_max: Max temperature
+}

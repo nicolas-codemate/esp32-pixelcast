@@ -103,6 +103,7 @@ unsigned long rebootRequestTime = 0;
 AppItem apps[MAX_APPS];
 uint8_t appCount = 0;
 int8_t currentAppIndex = -1;
+int8_t lastDisplayedAppIndex = -1;  // Track app switches for display clearing
 unsigned long lastAppSwitch = 0;
 bool appRotationEnabled = true;
 
@@ -177,6 +178,25 @@ struct WeatherData {
 };
 WeatherData weatherData;
 
+// Tracker Data (populated by POST /api/tracker)
+struct TrackerData {
+    char name[16];            // Key: "btc", "eth", "aapl"
+    char symbol[8];           // Display: "BTC", "ETH"
+    char icon[32];            // Icon name (LittleFS)
+    char currencySymbol[8];   // "USD", "EUR"
+    float currentValue;       // Price/value
+    float changePercent;      // +2.14 or -1.5
+    uint16_t sparkline[MAX_SPARKLINE_POINTS];  // Scaled 0-65535
+    uint8_t sparklineCount;
+    uint32_t symbolColor;     // Header color (0xRRGGBB)
+    uint32_t sparklineColor;  // Chart color
+    char bottomText[32];      // Optional footer
+    unsigned long lastUpdate;
+    bool valid;
+};
+TrackerData trackers[MAX_TRACKERS];
+uint8_t trackerCount = 0;
+
 // Timing
 unsigned long lastStatsPublish = 0;
 unsigned long lastDisplayUpdate = 0;
@@ -186,6 +206,10 @@ unsigned long lastScrollUpdate = 0;
 // Forecast pagination
 uint8_t forecastPage = 0;
 unsigned long lastForecastPageSwitch = 0;
+
+// Weather display cache (global so they can be reset on app switch)
+int weatherLastDrawnMinute = -1;
+unsigned long weatherLastUpdateDrawn = 0;
 
 // Icon Upload State
 File uploadFile;
@@ -420,6 +444,17 @@ void appCleanExpired();
 AppItem* appGetNext();
 AppItem* appGetCurrent();
 
+// Tracker management
+TrackerData* trackerFind(const char* name);
+TrackerData* trackerAllocate(const char* name);
+bool trackerRemove(const char* name);
+void trackerInit();
+void displayShowTracker(TrackerData* tracker);
+void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
+void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color);
+void formatTrackerValue(float value, char* buffer, size_t bufSize);
+uint32_t parseColorValue(JsonVariant colorVar, uint32_t defaultColor);
+
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void mqttReconnect();
 void mqttPublishStats();
@@ -456,6 +491,9 @@ void setup() {
 
     // Initialize weather data as empty
     memset(&weatherData, 0, sizeof(weatherData));
+
+    // Initialize tracker system
+    trackerInit();
 
     Serial.println("[INIT] Loading settings...");
     if (!loadSettings()) {
@@ -802,6 +840,295 @@ void drawSeparatorLine(int16_t y, uint16_t color) {
     }
 }
 
+// ============================================================================
+// Tracker Functions
+// ============================================================================
+
+TrackerData* trackerFind(const char* name) {
+    for (uint8_t i = 0; i < MAX_TRACKERS; i++) {
+        if (trackers[i].valid && strcmp(trackers[i].name, name) == 0) {
+            return &trackers[i];
+        }
+    }
+    return nullptr;
+}
+
+TrackerData* trackerAllocate(const char* name) {
+    // Check if already exists
+    TrackerData* existing = trackerFind(name);
+    if (existing) return existing;
+
+    // Find first free slot
+    for (uint8_t i = 0; i < MAX_TRACKERS; i++) {
+        if (!trackers[i].valid) {
+            memset(&trackers[i], 0, sizeof(TrackerData));
+            strlcpy(trackers[i].name, name, sizeof(trackers[i].name));
+            trackers[i].symbolColor = 0xFFFFFF;    // Default white
+            trackers[i].sparklineColor = 0x00D4FF;  // Default cyan
+            trackers[i].valid = true;
+            trackerCount++;
+            return &trackers[i];
+        }
+    }
+    return nullptr;
+}
+
+bool trackerRemove(const char* name) {
+    TrackerData* tracker = trackerFind(name);
+    if (!tracker) return false;
+
+    tracker->valid = false;
+    trackerCount--;
+
+    // Remove corresponding app from rotation
+    char appId[32];
+    snprintf(appId, sizeof(appId), "%s%s", TRACKER_ID_PREFIX, name);
+    appRemove(appId);
+
+    Serial.printf("[TRACKER] Removed: %s\n", name);
+    return true;
+}
+
+void trackerInit() {
+    memset(trackers, 0, sizeof(trackers));
+    trackerCount = 0;
+    Serial.println("[TRACKER] Initialized");
+}
+
+// Parse color from JSON (hex string "#FF8800", RGB array [255,136,0], or raw uint32)
+uint32_t parseColorValue(JsonVariant colorVar, uint32_t defaultColor) {
+    if (colorVar.isNull()) return defaultColor;
+
+    if (colorVar.is<JsonArray>()) {
+        JsonArray arr = colorVar.as<JsonArray>();
+        if (arr.size() == 3) {
+            return ((uint32_t)arr[0].as<uint8_t>() << 16) |
+                   ((uint32_t)arr[1].as<uint8_t>() << 8) |
+                   (uint32_t)arr[2].as<uint8_t>();
+        }
+    } else if (colorVar.is<const char*>()) {
+        const char* str = colorVar.as<const char*>();
+        if (str[0] == '#') str++;
+        return strtoul(str, NULL, 16);
+    } else {
+        return colorVar.as<uint32_t>();
+    }
+    return defaultColor;
+}
+
+// Draw sparkline chart from scaled uint16 data
+void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
+    if (count < 2) return;
+
+    // Find data min/max for vertical scaling
+    uint16_t dataMin = 65535;
+    uint16_t dataMax = 0;
+    for (uint8_t i = 0; i < count; i++) {
+        if (data[i] < dataMin) dataMin = data[i];
+        if (data[i] > dataMax) dataMax = data[i];
+    }
+
+    uint16_t dataRange = dataMax - dataMin;
+    if (dataRange == 0) dataRange = 1;
+
+    // Plot line segments between consecutive points
+    for (uint8_t i = 0; i < count - 1; i++) {
+        int16_t x0 = x + (int32_t)i * (w - 1) / (count - 1);
+        int16_t x1 = x + (int32_t)(i + 1) * (w - 1) / (count - 1);
+        // Invert Y: high value = top of chart
+        int16_t y0 = y + h - 1 - (int32_t)(data[i] - dataMin) * (h - 1) / dataRange;
+        int16_t y1 = y + h - 1 - (int32_t)(data[i + 1] - dataMin) * (h - 1) / dataRange;
+        dma_display->drawLine(x0, y0, x1, y1, color);
+    }
+}
+
+// Draw a small up/down arrow (5x5 pixels)
+void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color) {
+    if (up) {
+        //   ..X..
+        //   .XXX.
+        //   XXXXX
+        //   ..X..
+        //   ..X..
+        dma_display->drawPixel(x + 2, y,     color);
+        dma_display->drawPixel(x + 1, y + 1, color);
+        dma_display->drawPixel(x + 2, y + 1, color);
+        dma_display->drawPixel(x + 3, y + 1, color);
+        for (int16_t i = 0; i < 5; i++) dma_display->drawPixel(x + i, y + 2, color);
+        dma_display->drawPixel(x + 2, y + 3, color);
+        dma_display->drawPixel(x + 2, y + 4, color);
+    } else {
+        //   ..X..
+        //   ..X..
+        //   XXXXX
+        //   .XXX.
+        //   ..X..
+        dma_display->drawPixel(x + 2, y,     color);
+        dma_display->drawPixel(x + 2, y + 1, color);
+        for (int16_t i = 0; i < 5; i++) dma_display->drawPixel(x + i, y + 2, color);
+        dma_display->drawPixel(x + 1, y + 3, color);
+        dma_display->drawPixel(x + 2, y + 3, color);
+        dma_display->drawPixel(x + 3, y + 3, color);
+        dma_display->drawPixel(x + 2, y + 4, color);
+    }
+}
+
+// Smart value formatting with thousand separators
+void formatTrackerValue(float value, char* buffer, size_t bufSize) {
+    if (value >= 1000.0f) {
+        // Integer with thousand separator
+        uint32_t intVal = (uint32_t)value;
+        // Build string with commas from right to left
+        char tmp[20];
+        int len = snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)intVal);
+        int commas = (len - 1) / 3;
+        int outLen = len + commas;
+        if ((size_t)outLen >= bufSize) {
+            snprintf(buffer, bufSize, "%lu", (unsigned long)intVal);
+            return;
+        }
+        buffer[outLen] = '\0';
+        int srcIdx = len - 1;
+        int dstIdx = outLen - 1;
+        int digitCount = 0;
+        while (srcIdx >= 0) {
+            buffer[dstIdx--] = tmp[srcIdx--];
+            digitCount++;
+            if (digitCount % 3 == 0 && srcIdx >= 0) {
+                buffer[dstIdx--] = ',';
+            }
+        }
+    } else if (value >= 1.0f) {
+        snprintf(buffer, bufSize, "%.2f", value);
+    } else {
+        snprintf(buffer, bufSize, "%.5f", value);
+    }
+}
+
+// Display tracker layout on 64x64 matrix
+void displayShowTracker(TrackerData* tracker) {
+    if (!tracker) return;
+
+    dma_display->clearScreen();
+
+    unsigned long trackerAge = millis() - tracker->lastUpdate;
+    bool isStale = (trackerAge > TRACKER_STALE_TIMEOUT);
+
+    // Color helpers
+    uint16_t white = dma_display->color565(255, 255, 255);
+    uint16_t dimWhite = isStale ? dma_display->color565(60, 60, 60) : dma_display->color565(150, 150, 150);
+    uint16_t dimGray = dma_display->color565(40, 40, 40);
+    uint16_t green = isStale ? dma_display->color565(0, 60, 0) : dma_display->color565(0, 200, 0);
+    uint16_t red = isStale ? dma_display->color565(60, 0, 0) : dma_display->color565(200, 0, 0);
+
+    uint8_t symR = (tracker->symbolColor >> 16) & 0xFF;
+    uint8_t symG = (tracker->symbolColor >> 8) & 0xFF;
+    uint8_t symB = tracker->symbolColor & 0xFF;
+    uint16_t symbolColor565 = isStale
+        ? dma_display->color565(symR / 4, symG / 4, symB / 4)
+        : dma_display->color565(symR, symG, symB);
+
+    uint8_t spkR = (tracker->sparklineColor >> 16) & 0xFF;
+    uint8_t spkG = (tracker->sparklineColor >> 8) & 0xFF;
+    uint8_t spkB = tracker->sparklineColor & 0xFF;
+    uint16_t sparklineColor565 = isStale
+        ? dma_display->color565(spkR / 4, spkG / 4, spkB / 4)
+        : dma_display->color565(spkR, spkG, spkB);
+
+    uint16_t valueColor = isStale ? dma_display->color565(60, 60, 60) : white;
+
+    // --- Row 1: Icon + Symbol (y=0..11) ---
+    CachedIcon* icon = nullptr;
+    if (strlen(tracker->icon) > 0) {
+        icon = getIcon(tracker->icon);
+    }
+    if (icon && icon->valid) {
+        // Draw icon at native 8x8 at (2, 2)
+        drawIconAtScale(icon, 2, 2, 1);
+    }
+
+    // Symbol text at (13, 4) in symbolColor
+    dma_display->setFont(NULL);  // Default 5x7 font
+    dma_display->setTextSize(1);
+    dma_display->setTextColor(symbolColor565);
+    dma_display->setCursor(13, 4);
+    dma_display->print(tracker->symbol);
+
+    // --- Row 2: Price value (y=14..22) ---
+    char valueBuf[20];
+    formatTrackerValue(tracker->currentValue, valueBuf, sizeof(valueBuf));
+    dma_display->setTextColor(valueColor);
+    dma_display->setCursor(2, 16);
+    dma_display->print(valueBuf);
+
+    // Currency symbol right-aligned in TomThumb
+    if (strlen(tracker->currencySymbol) > 0) {
+        dma_display->setFont(&TomThumb);
+        dma_display->setTextColor(dimWhite);
+        int16_t currWidth = strlen(tracker->currencySymbol) * 4;
+        dma_display->setCursor(62 - currWidth, 22);
+        dma_display->print(tracker->currencySymbol);
+        dma_display->setFont(NULL);  // Reset to default
+    }
+
+    // --- Row 3: Arrow + Change % (y=25..33) ---
+    bool isPositive = (tracker->changePercent >= 0.0f);
+    uint16_t changeColor = isPositive ? green : red;
+
+    drawTrackerArrow(2, 27, isPositive, changeColor);
+
+    char changeBuf[16];
+    snprintf(changeBuf, sizeof(changeBuf), "%s%.2f%%",
+             isPositive ? "+" : "", tracker->changePercent);
+    dma_display->setTextColor(changeColor);
+    dma_display->setCursor(9, 27);
+    dma_display->print(changeBuf);
+
+    // --- Separator line (y=37) ---
+    drawSeparatorLine(37, dimGray);
+
+    // --- "24h" label right-aligned (y=39) ---
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(dimWhite);
+    dma_display->setCursor(51, 43);
+    dma_display->print("24h");
+    dma_display->setFont(NULL);
+
+    // --- Sparkline chart (y=40..53, x=2..61) ---
+    if (tracker->sparklineCount >= 2) {
+        drawSparkline(tracker->sparkline, tracker->sparklineCount,
+                      2, 40, 60, 14, sparklineColor565);
+    }
+
+    // --- Separator line (y=55) ---
+    drawSeparatorLine(55, dimGray);
+
+    // --- Bottom text centered (y=57..63) ---
+    if (strlen(tracker->bottomText) > 0) {
+        dma_display->setFont(&TomThumb);
+        dma_display->setTextColor(dimWhite);
+        int16_t textWidth = strlen(tracker->bottomText) * 4;
+        int16_t textX = (DISPLAY_WIDTH - textWidth) / 2;
+        dma_display->setCursor(textX, 62);
+        dma_display->print(tracker->bottomText);
+        dma_display->setFont(NULL);
+    }
+
+    // --- Stale badge ---
+    if (isStale) {
+        uint16_t staleRed = dma_display->color565(200, 0, 0);
+        dma_display->setFont(&TomThumb);
+        dma_display->setTextColor(staleRed);
+        dma_display->setCursor(42, 6);
+        dma_display->print("STALE");
+        dma_display->setFont(NULL);
+    }
+
+    #if DOUBLE_BUFFER
+        dma_display->flipDMABuffer();
+    #endif
+}
+
 void displayShowWeatherClock(uint16_t appDuration) {
     // Fallback to time display if weather data is stale or missing
     unsigned long weatherAge = millis() - weatherData.lastUpdate;
@@ -810,9 +1137,8 @@ void displayShowWeatherClock(uint16_t appDuration) {
         return;
     }
 
-    // Track last drawn minute to detect when a full redraw is needed
-    static int lastDrawnMinute = -1;
-    static unsigned long lastWeatherUpdate = 0;
+    // Use global weatherLastDrawnMinute / weatherLastUpdateDrawn
+    // (reset by displayShowApp on app switch to force full redraw)
 
     int hours = timeClient.getHours();
     int minutes = timeClient.getMinutes();
@@ -822,8 +1148,8 @@ void displayShowWeatherClock(uint16_t appDuration) {
         hours -= 12;
     }
 
-    bool needsFullRedraw = (lastDrawnMinute != minutes) ||
-                           (lastWeatherUpdate != weatherData.lastUpdate);
+    bool needsFullRedraw = (weatherLastDrawnMinute != minutes) ||
+                           (weatherLastUpdateDrawn != weatherData.lastUpdate);
 
     // Forecast pagination
     uint8_t forecastPageCount = max((uint8_t)1,
@@ -871,7 +1197,6 @@ void displayShowWeatherClock(uint16_t appDuration) {
 
     if (needsFullRedraw) {
         // Clear and redraw each section individually to avoid full-screen flicker
-        // (DOUBLE_BUFFER is off on Trinity, so the DMA scans the buffer live)
 
         // ---- Current weather (y=0-10) ----
         dma_display->fillRect(0, 0, DISPLAY_WIDTH, 11, black);
@@ -962,8 +1287,8 @@ void displayShowWeatherClock(uint16_t appDuration) {
         // ---- Separator (y=31) ----
         drawSeparatorLine(31, dimGray);
 
-        lastDrawnMinute = minutes;
-        lastWeatherUpdate = weatherData.lastUpdate;
+        weatherLastDrawnMinute = minutes;
+        weatherLastUpdateDrawn = weatherData.lastUpdate;
     }
 
     // ---- Forecast (y=33-63) - redrawn on full redraw or page change ----
@@ -1074,6 +1399,23 @@ void displayShowWeatherClock(uint16_t appDuration) {
 void displayShowApp(AppItem* app) {
     if (!app) return;
 
+    // Detect app switch and clear screen to prevent ghosting
+    int8_t appIndex = appFind(app->id);
+    if (appIndex != lastDisplayedAppIndex) {
+        dma_display->clearScreen();
+        #if DOUBLE_BUFFER
+            dma_display->flipDMABuffer();
+            dma_display->clearScreen();
+        #endif
+        lastDisplayedAppIndex = appIndex;
+        // Reset weather display cache to force full redraw
+        weatherLastDrawnMinute = -1;
+        weatherLastUpdateDrawn = 0;
+        // Reset forecast pagination to first page
+        forecastPage = 0;
+        lastForecastPageSwitch = millis();
+    }
+
     // Handle system apps
     if (strcmp(app->id, "clock") == 0) {
         displayShowTime();
@@ -1088,6 +1430,17 @@ void displayShowApp(AppItem* app) {
     if (strcmp(app->id, "weatherclock") == 0) {
         displayShowWeatherClock(app->duration);
         return;
+    }
+
+    // Tracker layout apps (ID starts with "tracker_")
+    if (strncmp(app->id, TRACKER_ID_PREFIX, strlen(TRACKER_ID_PREFIX)) == 0) {
+        const char* trackerName = app->id + strlen(TRACKER_ID_PREFIX);
+        TrackerData* tracker = trackerFind(trackerName);
+        if (tracker && tracker->valid) {
+            displayShowTracker(tracker);
+            return;
+        }
+        // Fallback to default custom app layout if no data
     }
 
     // Custom apps
@@ -1852,36 +2205,9 @@ void setupWebServer() {
             const char* text = doc["text"] | "";
             const char* icon = doc["icon"] | "";
 
-            // Parse color (can be hex string or RGB array)
-            uint32_t textColor = 0xFFFFFF;
-            if (!doc["color"].isNull()) {
-                if (doc["color"].is<JsonArray>()) {
-                    JsonArray arr = doc["color"];
-                    if (arr.size() == 3) {
-                        textColor = ((uint32_t)arr[0].as<uint8_t>() << 16) |
-                                    ((uint32_t)arr[1].as<uint8_t>() << 8) |
-                                    (uint32_t)arr[2].as<uint8_t>();
-                    }
-                } else if (doc["color"].is<const char*>()) {
-                    textColor = strtoul(doc["color"].as<const char*>() + 1, NULL, 16);
-                } else {
-                    textColor = doc["color"].as<uint32_t>();
-                }
-            }
-
-            uint32_t bgColor = 0;
-            if (!doc["background"].isNull()) {
-                if (doc["background"].is<JsonArray>()) {
-                    JsonArray arr = doc["background"];
-                    if (arr.size() == 3) {
-                        bgColor = ((uint32_t)arr[0].as<uint8_t>() << 16) |
-                                  ((uint32_t)arr[1].as<uint8_t>() << 8) |
-                                  (uint32_t)arr[2].as<uint8_t>();
-                    }
-                } else {
-                    bgColor = doc["background"].as<uint32_t>();
-                }
-            }
+            // Parse colors using shared helper
+            uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
+            uint32_t bgColor = parseColorValue(doc["background"], 0x000000);
 
             uint16_t duration = doc["duration"] | settings.defaultDuration;
             uint32_t lifetime = doc["lifetime"] | 0;
@@ -2029,6 +2355,185 @@ void setupWebServer() {
             request->send(200, "application/json", "{\"success\":true}");
         });
     webServer.addHandler(weatherHandler);
+
+    // ========================================================================
+    // Tracker API
+    // ========================================================================
+
+    // GET /api/trackers - List all active trackers
+    webServer.on("/api/trackers", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        JsonArray arr = doc["trackers"].to<JsonArray>();
+
+        for (uint8_t i = 0; i < MAX_TRACKERS; i++) {
+            if (trackers[i].valid) {
+                JsonObject t = arr.add<JsonObject>();
+                t["name"] = trackers[i].name;
+                t["symbol"] = trackers[i].symbol;
+                t["value"] = trackers[i].currentValue;
+                t["change"] = trackers[i].changePercent;
+                unsigned long ageMs = millis() - trackers[i].lastUpdate;
+                t["age"] = ageMs / 1000;
+                t["stale"] = (ageMs > TRACKER_STALE_TIMEOUT);
+            }
+        }
+        doc["count"] = trackerCount;
+
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // GET /api/tracker?name=btc - Get single tracker data
+    webServer.on("/api/tracker", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!request->hasParam("name")) {
+            request->send(400, "application/json", "{\"error\":\"Missing tracker name\"}");
+            return;
+        }
+
+        String name = request->getParam("name")->value();
+        TrackerData* tracker = trackerFind(name.c_str());
+
+        if (!tracker) {
+            request->send(404, "application/json", "{\"error\":\"Tracker not found\"}");
+            return;
+        }
+
+        JsonDocument doc;
+        doc["name"] = tracker->name;
+        doc["symbol"] = tracker->symbol;
+        doc["icon"] = tracker->icon;
+        doc["currency"] = tracker->currencySymbol;
+        doc["value"] = tracker->currentValue;
+        doc["change"] = tracker->changePercent;
+        doc["symbolColor"] = tracker->symbolColor;
+        doc["sparklineColor"] = tracker->sparklineColor;
+        doc["bottomText"] = tracker->bottomText;
+
+        unsigned long ageMs = millis() - tracker->lastUpdate;
+        doc["age"] = ageMs / 1000;
+        doc["stale"] = (ageMs > TRACKER_STALE_TIMEOUT);
+
+        if (tracker->sparklineCount > 0) {
+            JsonArray sparkArr = doc["sparkline"].to<JsonArray>();
+            for (uint8_t i = 0; i < tracker->sparklineCount; i++) {
+                sparkArr.add(tracker->sparkline[i]);
+            }
+        }
+
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // DELETE /api/tracker?name=btc - Remove tracker
+    webServer.on("/api/tracker", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+        if (!request->hasParam("name")) {
+            request->send(400, "application/json", "{\"error\":\"Missing tracker name\"}");
+            return;
+        }
+
+        String name = request->getParam("name")->value();
+        if (trackerRemove(name.c_str())) {
+            request->send(200, "application/json", "{\"success\":true}");
+        } else {
+            request->send(404, "application/json", "{\"error\":\"Tracker not found\"}");
+        }
+    });
+
+    // POST /api/tracker?name=btc - Create/update tracker
+    AsyncCallbackJsonWebHandler* trackerHandler = new AsyncCallbackJsonWebHandler("/api/tracker",
+        [](AsyncWebServerRequest *request, JsonVariant &json) {
+            Serial.println("[API] /tracker handler called");
+            JsonObject doc = json.as<JsonObject>();
+
+            if (doc.isNull()) {
+                request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
+            }
+
+            // Get tracker name from query param or JSON
+            String name;
+            if (request->hasParam("name")) {
+                name = request->getParam("name")->value();
+            } else if (!doc["name"].isNull()) {
+                name = doc["name"].as<String>();
+            } else {
+                request->send(400, "application/json", "{\"error\":\"Missing tracker name\"}");
+                return;
+            }
+
+            // Allocate or find existing tracker
+            TrackerData* tracker = trackerAllocate(name.c_str());
+            if (!tracker) {
+                request->send(500, "application/json", "{\"error\":\"No tracker slot available\"}");
+                return;
+            }
+
+            // Parse fields
+            if (!doc["symbol"].isNull()) {
+                strlcpy(tracker->symbol, doc["symbol"] | "", sizeof(tracker->symbol));
+            }
+            if (!doc["icon"].isNull()) {
+                strlcpy(tracker->icon, doc["icon"] | "", sizeof(tracker->icon));
+            }
+            if (!doc["currency"].isNull()) {
+                strlcpy(tracker->currencySymbol, doc["currency"] | "", sizeof(tracker->currencySymbol));
+            }
+            if (!doc["value"].isNull()) {
+                tracker->currentValue = doc["value"].as<float>();
+            }
+            if (!doc["change"].isNull()) {
+                tracker->changePercent = doc["change"].as<float>();
+            }
+            if (!doc["bottomText"].isNull()) {
+                strlcpy(tracker->bottomText, doc["bottomText"] | "", sizeof(tracker->bottomText));
+            }
+
+            tracker->symbolColor = parseColorValue(doc["symbolColor"], tracker->symbolColor);
+            tracker->sparklineColor = parseColorValue(doc["sparklineColor"], tracker->sparklineColor);
+
+            // Parse sparkline data (float array -> scaled uint16)
+            if (doc["sparkline"].is<JsonArray>()) {
+                JsonArray sparkArr = doc["sparkline"];
+                uint8_t count = min((int)sparkArr.size(), (int)MAX_SPARKLINE_POINTS);
+
+                if (count >= 2) {
+                    // Find min/max of float values
+                    float minVal = sparkArr[0].as<float>();
+                    float maxVal = minVal;
+                    for (uint8_t i = 1; i < count; i++) {
+                        float v = sparkArr[i].as<float>();
+                        if (v < minVal) minVal = v;
+                        if (v > maxVal) maxVal = v;
+                    }
+
+                    float range = maxVal - minVal;
+                    if (range < 0.0001f) range = 1.0f;
+
+                    // Scale to uint16 (0-65535)
+                    for (uint8_t i = 0; i < count; i++) {
+                        float normalized = (sparkArr[i].as<float>() - minVal) / range;
+                        tracker->sparkline[i] = (uint16_t)(normalized * 65535.0f);
+                    }
+                    tracker->sparklineCount = count;
+                }
+            }
+
+            tracker->lastUpdate = millis();
+
+            // Register/update app in rotation
+            char appId[32];
+            snprintf(appId, sizeof(appId), "%s%s", TRACKER_ID_PREFIX, name.c_str());
+            uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
+            appAdd(appId, tracker->symbol, tracker->icon, 0xFFFFFF, 0x000000,
+                   duration, 0, 0, false);
+
+            Serial.printf("[TRACKER] Updated: %s (%s = %.2f)\n",
+                         name.c_str(), tracker->symbol, tracker->currentValue);
+            request->send(200, "application/json", "{\"success\":true}");
+        });
+    webServer.addHandler(trackerHandler);
 
     // POST /api/reboot - Reboot device (deferred to allow response to be sent)
     webServer.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -2193,11 +2698,36 @@ void setupWebServer() {
         String url = request->url();
         WebRequestMethodComposite method = request->method();
 
-        // Handle DELETE /api/icons?name={name} (fallback if static handler misses)
-        // Use explicit value 0b00000100 (4) for HTTP_DELETE due to enum conflicts with WebServer library
+        // Handle DELETE routes (fallback if static handler misses due to HTTP_DELETE enum conflict)
         const WebRequestMethodComposite HTTP_DELETE_METHOD = 0b00000100;
         if (method == HTTP_DELETE_METHOD && url == "/api/icons") {
             handleApiIconsDelete(request);
+            return;
+        }
+        if (method == HTTP_DELETE_METHOD && url == "/api/tracker") {
+            if (!request->hasParam("name")) {
+                request->send(400, "application/json", "{\"error\":\"Missing tracker name\"}");
+                return;
+            }
+            String name = request->getParam("name")->value();
+            if (trackerRemove(name.c_str())) {
+                request->send(200, "application/json", "{\"success\":true}");
+            } else {
+                request->send(404, "application/json", "{\"error\":\"Tracker not found\"}");
+            }
+            return;
+        }
+        if (method == HTTP_DELETE_METHOD && url == "/api/custom") {
+            if (!request->hasParam("name")) {
+                request->send(400, "application/json", "{\"error\":\"Missing app name\"}");
+                return;
+            }
+            String name = request->getParam("name")->value();
+            if (appRemove(name.c_str())) {
+                request->send(200, "application/json", "{\"success\":true}");
+            } else {
+                request->send(404, "application/json", "{\"error\":\"App not found or is system app\"}");
+            }
             return;
         }
 
@@ -2856,6 +3386,9 @@ void loopApps() {
         if (current) {
             lastAppSwitch = now;
             resetScrollState();
+            // Force immediate redraw
+            displayShowApp(current);
+            lastDisplayUpdate = now;
         }
         return;
     }
@@ -2867,6 +3400,9 @@ void loopApps() {
             lastAppSwitch = now;
             resetScrollState();
             Serial.printf("[APPS] Switched to: %s\n", current->id);
+            // Force immediate redraw on app switch
+            displayShowApp(current);
+            lastDisplayUpdate = now;
         }
     }
 }

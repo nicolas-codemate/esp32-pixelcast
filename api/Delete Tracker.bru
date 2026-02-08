@@ -1,0 +1,19 @@
+meta {
+  name: Delete Tracker
+  type: http
+  seq: 22
+}
+
+delete {
+  url: {{baseUrl}}/api/tracker?name=btc
+  body: none
+  auth: none
+}
+
+params:query {
+  name: btc
+}
+
+docs {
+  Removes a tracker and its corresponding app from rotation.
+}

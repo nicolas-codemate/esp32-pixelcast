@@ -474,6 +474,163 @@ rest_command:
 
 ---
 
+### Tracker
+
+The Tracker layout displays financial or metric data (crypto, stocks, currencies) with a dedicated 64x64 layout: symbol + icon, price, change %, sparkline chart, and optional footer text.
+
+Each tracker is registered as a regular app in the rotation (ID prefixed with `tracker_`). Data is pushed externally and displayed until stale (>1 hour), at which point colors dim and a "STALE" badge appears.
+
+#### Create/Update a tracker
+
+```http
+POST /api/tracker?name={trackerName}
+Content-Type: application/json
+```
+
+**Payload:**
+
+```json
+{
+  "symbol": "BTC",
+  "icon": "bitcoin",
+  "currency": "USD",
+  "value": 98452.30,
+  "change": 2.14,
+  "sparkline": [92100, 89300, 93200, 91800, 95400, 94100, 97600, 96200, 98452],
+  "symbolColor": "#FF8800",
+  "sparklineColor": "#00D4FF",
+  "bottomText": "Vol 24h: 42B",
+  "duration": 10000
+}
+```
+
+**Parameters:**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| symbol | string | "" | Display symbol (max 7 chars, e.g. "BTC", "ETH") |
+| icon | string | "" | Icon name from /icons folder |
+| currency | string | "" | Currency label (max 7 chars, e.g. "USD", "EUR") |
+| value | float | 0 | Current price/value |
+| change | float | 0 | Change percentage (positive or negative) |
+| sparkline | [float] | [] | Up to 24 data points (auto-scaled to chart) |
+| symbolColor | color | white | Header color (hex `"#FF8800"`, RGB `[255,136,0]`, or uint32) |
+| sparklineColor | color | cyan | Chart line color (same formats) |
+| bottomText | string | "" | Optional footer text (max 31 chars) |
+| duration | int | 10000 | Display duration in ms |
+
+**Display layout (64x64):**
+
+```
+y=0-11   Icon (8x8) + symbol in symbolColor
+y=14-22  Price value + currency (right-aligned, dimmed)
+y=25-33  Arrow (up/down) + change% (green/red)
+y=37     Separator line
+y=39     "24h" label (right-aligned)
+y=40-53  Sparkline chart (60x14px)
+y=55     Separator line
+y=57-63  Bottom text (centered)
+```
+
+**Response:**
+
+```json
+{
+  "success": true
+}
+```
+
+#### Get tracker data
+
+```http
+GET /api/tracker?name={trackerName}
+```
+
+**Response:**
+
+```json
+{
+  "name": "btc",
+  "symbol": "BTC",
+  "icon": "bitcoin",
+  "currency": "USD",
+  "value": 98452.3,
+  "change": 2.14,
+  "symbolColor": 16746496,
+  "sparklineColor": 54527,
+  "bottomText": "Vol 24h: 42B",
+  "age": 120,
+  "stale": false,
+  "sparkline": [20050, 0, 27926, 17901, 43680, 34371, 59434, 49409, 65535]
+}
+```
+
+#### List all trackers
+
+```http
+GET /api/trackers
+```
+
+**Response:**
+
+```json
+{
+  "trackers": [
+    { "name": "btc", "symbol": "BTC", "value": 98452.3, "change": 2.14, "age": 120, "stale": false },
+    { "name": "eth", "symbol": "ETH", "value": 3245.67, "change": -1.52, "age": 45, "stale": false }
+  ],
+  "count": 2
+}
+```
+
+#### Delete a tracker
+
+```http
+DELETE /api/tracker?name={trackerName}
+```
+
+Removes the tracker data and its app from rotation.
+
+#### Examples
+
+**curl - BTC tracker with sparkline:**
+
+```bash
+curl -X POST "http://pixelcast.local/api/tracker?name=btc" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "BTC",
+    "icon": "bitcoin",
+    "currency": "USD",
+    "value": 98452.30,
+    "change": 2.14,
+    "sparkline": [92100, 89300, 93200, 91800, 95400, 94100, 97600, 96200, 98452],
+    "symbolColor": "#FF8800",
+    "sparklineColor": "#00D4FF",
+    "bottomText": "Vol 24h: 42B"
+  }'
+```
+
+**curl - ETH tracker (negative change):**
+
+```bash
+curl -X POST "http://pixelcast.local/api/tracker?name=eth" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "ETH",
+    "icon": "ethereum",
+    "currency": "USD",
+    "value": 3245.67,
+    "change": -1.52,
+    "sparkline": [3400, 3350, 3280, 3310, 3260, 3220, 3250, 3245],
+    "symbolColor": "#627EEA",
+    "sparklineColor": "#627EEA",
+    "bottomText": "Vol 24h: 18B"
+  }'
+```
+
+---
+
 ## MQTT API
 
 ### Configuration

@@ -1,0 +1,61 @@
+meta {
+  name: Create Tracker
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/api/tracker?name=btc
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+params:query {
+  name: btc
+}
+
+body:json {
+  {
+    "symbol": "BTC",
+    "icon": "bitcoin",
+    "currency": "USD",
+    "value": 98452.30,
+    "change": 2.14,
+    "sparkline": [92100, 89300, 93200, 91800, 95400, 94100, 97600, 96200, 98452],
+    "symbolColor": "#FF8800",
+    "sparklineColor": "#00D4FF",
+    "bottomText": "Vol 24h: 42B",
+    "duration": 10000
+  }
+}
+
+docs {
+  Creates or updates a tracker app (crypto, stock, currency, etc.).
+
+  Each tracker is registered in the app rotation and displayed with a
+  dedicated layout: icon + symbol, price, change %, sparkline chart,
+  and optional bottom text.
+
+  The tracker name in the query param becomes the unique key.
+  App ID in rotation is prefixed with "tracker_" (e.g. "tracker_btc").
+
+  Parameters:
+  - symbol: Display symbol, max 7 chars (e.g. "BTC", "ETH", "AAPL")
+  - icon: Icon name from /icons folder (optional)
+  - currency: Currency label, max 7 chars (e.g. "USD", "EUR")
+  - value: Current price/value (float)
+  - change: Change percentage (float, positive or negative)
+  - sparkline: Array of float values (up to 24 points, auto-scaled)
+  - symbolColor: Header color - hex "#FF8800", RGB [255,136,0], or uint32
+  - sparklineColor: Chart color - same formats as symbolColor
+  - bottomText: Optional footer text, max 31 chars
+  - duration: Display duration in ms (default: 10000)
+
+  Stale behavior:
+  - Data older than 1 hour dims all colors to 1/4 brightness
+  - A red "STALE" badge appears in the top-right corner
+}

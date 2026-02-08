@@ -1,0 +1,22 @@
+meta {
+  name: Get Tracker
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/api/tracker?name=btc
+  body: none
+  auth: none
+}
+
+params:query {
+  name: btc
+}
+
+docs {
+  Returns data for a single tracker by name.
+
+  Response includes current value, change %, sparkline data,
+  colors, age in seconds, and stale status.
+}

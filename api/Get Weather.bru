@@ -1,0 +1,22 @@
+meta {
+  name: Get Weather
+  type: http
+  seq: 18
+}
+
+get {
+  url: {{baseUrl}}/api/weather
+  body: none
+  auth: none
+}
+
+docs {
+  Returns current weather data, age, and stale status.
+
+  Response includes:
+  - valid: Whether weather data has been received
+  - age: Seconds since last update
+  - stale: True if data is older than 1 hour
+  - current: Current weather conditions
+  - forecast: Array of forecast days
+}

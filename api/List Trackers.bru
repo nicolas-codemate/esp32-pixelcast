@@ -1,0 +1,18 @@
+meta {
+  name: List Trackers
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{baseUrl}}/api/trackers
+  body: none
+  auth: none
+}
+
+docs {
+  Lists all active trackers with summary info.
+
+  Response includes name, symbol, current value, change %,
+  age in seconds, and stale status for each tracker.
+}

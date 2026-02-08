@@ -100,8 +100,8 @@ struct AppItem {
 - [x] Skip expired apps
 
 ### 2.3 Application Rendering
-- [ ] Layout: icon (left) + text (right)
-- [ ] Scrolling text if too long
+- [x] Layout: vertical (icon top centered + text below)
+- [x] Scrolling text if too long
 - [ ] Progress bar (optional)
 - [ ] Bar chart (optional)
 
@@ -224,13 +224,15 @@ pixelcast/
 
 ---
 
-## Phase 6: Media
+## Phase 6: Media 🔄 (Partial)
 
 ### 6.1 Icon Management
-- [ ] PNG format 8x8 to 64x64
-- [ ] Loading from LittleFS
-- [ ] RAM cache (LRU)
-- [ ] On-the-fly color conversion
+- [x] PNG format 8x8 to 32x32
+- [x] Loading from LittleFS
+- [x] RAM cache (LRU, configurable MAX_ICON_CACHE)
+- [x] On-the-fly color conversion (RGB565)
+- [x] LaMetric icon download (8x8 native with x2 upscale to 16x16)
+- [x] Indexed PNG palette support
 
 ### 6.2 Animated GIF Support
 - [ ] AnimatedGIF library integration
@@ -239,9 +241,9 @@ pixelcast/
 - [ ] Adaptive framerate
 
 ### 6.3 Media Upload
-- [ ] REST endpoint for upload
-- [ ] Format/size validation
-- [ ] Web interface for management
+- [x] REST endpoint for upload (POST /api/icons)
+- [x] Format/size validation (PNG/GIF)
+- [x] Web interface for management (/icons.html)
 
 ### 6.4 Visual Effects
 - [ ] Matrix (character rain)
@@ -294,8 +296,8 @@ pixelcast/
 ## Phase 8: Finalization
 
 ### 8.1 OTA Updates
-- [ ] ArduinoOTA for local updates
-- [ ] HTTP OTA for web updates
+- [x] ArduinoOTA for local updates (pio run -e ota -t upload)
+- [ ] HTTP OTA for web updates (ElegantOTA)
 - [ ] Rollback on failure
 
 ### 8.2 Stability
@@ -463,4 +465,4 @@ A Bruno collection is available in `api/` folder for testing all REST endpoints.
 
 ---
 
-*Last updated: January 31, 2026*
+*Last updated: February 7, 2026*

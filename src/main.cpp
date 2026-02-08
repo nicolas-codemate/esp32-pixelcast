@@ -11,6 +11,7 @@
 
 #include <Arduino.h>
 #include "config.h"
+#include "weather_icons.h"
 
 // Display
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
@@ -155,16 +156,22 @@ struct Settings {
 } settings;
 
 // Weather Data (populated by POST /api/weather)
+#define MAX_FORECAST_DAYS 7    // Max storage (1 week)
+#define FORECAST_COLUMNS  3    // Columns displayed simultaneously
+
 struct WeatherData {
     char currentIcon[32];
     int16_t currentTemp;
+    int16_t currentTempMin;
+    int16_t currentTempMax;
     uint8_t currentHumidity;
     struct ForecastDay {
         char icon[32];
         int16_t tempMin;
         int16_t tempMax;
         char dayName[4];  // "LUN", "MAR", etc.
-    } forecast[2];
+    } forecast[MAX_FORECAST_DAYS];
+    uint8_t forecastCount;     // Number of forecast days received
     unsigned long lastUpdate;
     bool valid;
 };
@@ -175,6 +182,10 @@ unsigned long lastStatsPublish = 0;
 unsigned long lastDisplayUpdate = 0;
 unsigned long lastTimeUpdate = 0;
 unsigned long lastScrollUpdate = 0;
+
+// Forecast pagination
+uint8_t forecastPage = 0;
+unsigned long lastForecastPageSwitch = 0;
 
 // Icon Upload State
 File uploadFile;
@@ -365,7 +376,7 @@ void displayShowIP();
 void displayShowTime();
 void displayShowDate();
 void displayShowApp(AppItem* app);
-void displayShowWeatherClock();
+void displayShowWeatherClock(uint16_t appDuration = 10000);
 void drawDropIcon(int16_t x, int16_t y, uint16_t color);
 void drawSeparatorLine(int16_t y, uint16_t color);
 void drawIconAtScale(CachedIcon* icon, int16_t x, int16_t y, uint8_t scale);
@@ -496,6 +507,41 @@ void setup() {
 
         Serial.println("[INIT] Setting up apps...");
         setupApps();
+
+        // Load demo weather data for development (6 days to test 2-page pagination)
+        Serial.println("[INIT] Loading demo weather data (6 days)...");
+        strncpy(weatherData.currentIcon, "w_clear_day", sizeof(weatherData.currentIcon));
+        weatherData.currentTemp = 18;
+        weatherData.currentTempMin = 12;
+        weatherData.currentTempMax = 24;
+        weatherData.currentHumidity = 65;
+        strncpy(weatherData.forecast[0].icon, "w_partly_day", sizeof(weatherData.forecast[0].icon));
+        weatherData.forecast[0].tempMin = 12;
+        weatherData.forecast[0].tempMax = 22;
+        strncpy(weatherData.forecast[0].dayName, "LUN", sizeof(weatherData.forecast[0].dayName));
+        strncpy(weatherData.forecast[1].icon, "w_rain", sizeof(weatherData.forecast[1].icon));
+        weatherData.forecast[1].tempMin = 8;
+        weatherData.forecast[1].tempMax = 15;
+        strncpy(weatherData.forecast[1].dayName, "MAR", sizeof(weatherData.forecast[1].dayName));
+        strncpy(weatherData.forecast[2].icon, "w_snow", sizeof(weatherData.forecast[2].icon));
+        weatherData.forecast[2].tempMin = 0;
+        weatherData.forecast[2].tempMax = 6;
+        strncpy(weatherData.forecast[2].dayName, "MER", sizeof(weatherData.forecast[2].dayName));
+        strncpy(weatherData.forecast[3].icon, "w_clear_day", sizeof(weatherData.forecast[3].icon));
+        weatherData.forecast[3].tempMin = 14;
+        weatherData.forecast[3].tempMax = 26;
+        strncpy(weatherData.forecast[3].dayName, "JEU", sizeof(weatherData.forecast[3].dayName));
+        strncpy(weatherData.forecast[4].icon, "w_cloudy", sizeof(weatherData.forecast[4].icon));
+        weatherData.forecast[4].tempMin = 10;
+        weatherData.forecast[4].tempMax = 19;
+        strncpy(weatherData.forecast[4].dayName, "VEN", sizeof(weatherData.forecast[4].dayName));
+        strncpy(weatherData.forecast[5].icon, "w_partly_day", sizeof(weatherData.forecast[5].icon));
+        weatherData.forecast[5].tempMin = 15;
+        weatherData.forecast[5].tempMax = 28;
+        strncpy(weatherData.forecast[5].dayName, "SAM", sizeof(weatherData.forecast[5].dayName));
+        weatherData.forecastCount = 6;
+        weatherData.lastUpdate = millis();
+        weatherData.valid = true;
     }
 
     logMemory();
@@ -745,7 +791,7 @@ void drawSeparatorLine(int16_t y, uint16_t color) {
     }
 }
 
-void displayShowWeatherClock() {
+void displayShowWeatherClock(uint16_t appDuration) {
     // Fallback to time display if weather data is stale or missing
     unsigned long weatherAge = millis() - weatherData.lastUpdate;
     if (!weatherData.valid || weatherAge > 3600000) {
@@ -753,7 +799,37 @@ void displayShowWeatherClock() {
         return;
     }
 
-    dma_display->clearScreen();
+    // Track last drawn minute to detect when a full redraw is needed
+    static int lastDrawnMinute = -1;
+    static unsigned long lastWeatherUpdate = 0;
+
+    int hours = timeClient.getHours();
+    int minutes = timeClient.getMinutes();
+    int seconds = timeClient.getSeconds();
+
+    if (!settings.clockFormat24h && hours > 12) {
+        hours -= 12;
+    }
+
+    bool needsFullRedraw = (lastDrawnMinute != minutes) ||
+                           (lastWeatherUpdate != weatherData.lastUpdate);
+
+    // Forecast pagination
+    uint8_t forecastPageCount = max((uint8_t)1,
+        (uint8_t)((weatherData.forecastCount + FORECAST_COLUMNS - 1) / FORECAST_COLUMNS));
+    unsigned long pageInterval = (unsigned long)appDuration / forecastPageCount;
+
+    bool pageChanged = false;
+    if (forecastPageCount > 1) {
+        unsigned long now = millis();
+        if (now - lastForecastPageSwitch >= pageInterval) {
+            forecastPage = (forecastPage + 1) % forecastPageCount;
+            lastForecastPageSwitch = now;
+            pageChanged = true;
+        }
+    }
+
+    bool needsForecastRedraw = needsFullRedraw || pageChanged;
 
     uint16_t white = dma_display->color565(255, 255, 255);
     uint16_t dimGray = dma_display->color565(40, 40, 40);
@@ -762,76 +838,200 @@ void displayShowWeatherClock() {
     uint16_t gray = dma_display->color565(140, 140, 140);
     uint16_t amber = dma_display->color565(255, 180, 50);
     uint16_t coldBlue = dma_display->color565(80, 140, 255);
-    uint16_t orange = dma_display->color565(255, 130, 0);
+    uint16_t warmRed = dma_display->color565(255, 50, 30);
+    uint16_t black = dma_display->color565(0, 0, 0);
 
     // ============================================================
     // Layout map (64x64 display)
     // NULL font: setCursor = top-left of glyph, char is 7px tall
     // TomThumb: setCursor = baseline, uppercase chars 5px above baseline
     // ============================================================
-    // y=1-8:    current weather (icon 8x8 + temp + humidity)
-    // y=11:     separator
-    // y=16-22:  HH:MM (NULL font top=16) + :SS (TomThumb baseline=23)
-    // y=27-33:  date (NULL font top=27)
-    // y=36:     separator
-    // y=44:     day names (TomThumb baseline=44, glyphs y=39-43)
-    // y=47-54:  forecast icons (8x8)
-    // y=62:     temps (TomThumb baseline=62, glyphs y=57-61)
+    // y=0-8:    current weather (icon 8x8 + temp + min/max)
+    // y=10:     separator
+    // y=13-19:  HH:MM (NULL font top=13) + :SS (TomThumb baseline=20)
+    // y=22-28:  date (NULL font top=22)
+    // y=31:     separator
+    // y=32-63:  forecast (32px) - paginated by FORECAST_COLUMNS
+    //   y=39:     day names (TomThumb baseline=39)
+    //   y=41-48:  forecast icons (8x8)
+    //   y=56:     min temps (TomThumb baseline=56)
+    //   y=63:     max temps (TomThumb baseline=63)
     // ============================================================
 
-    // ---- Current weather (y=1-8) ----
-    CachedIcon* currentIcon = getIcon(weatherData.currentIcon);
-    int16_t weatherTextX = 2;
-    if (currentIcon && currentIcon->valid) {
-        drawIconAtScale(currentIcon, 1, 1, 1);  // Icon at (1,1), native 8x8
-        weatherTextX = 11;  // After 8px icon + 2px gap
+    if (needsFullRedraw) {
+        // Clear and redraw each section individually to avoid full-screen flicker
+        // (DOUBLE_BUFFER is off on Trinity, so the DMA scans the buffer live)
+
+        // ---- Current weather (y=0-10) ----
+        dma_display->fillRect(0, 0, DISPLAY_WIDTH, 11, black);
+        int16_t weatherTextX = 2;
+        const uint16_t* builtinCurrentIcon = getBuiltinWeatherIcon(weatherData.currentIcon);
+        if (builtinCurrentIcon) {
+            drawProgmemIcon(dma_display, builtinCurrentIcon, 1, 1, 1);
+            weatherTextX = 11;
+        } else {
+            CachedIcon* currentIcon = getIcon(weatherData.currentIcon);
+            if (currentIcon && currentIcon->valid) {
+                drawIconAtScale(currentIcon, 1, 1, 1);
+                weatherTextX = 11;
+            }
+        }
+
+        // Temperature (NULL font, top at y=2 to align with icon)
+        dma_display->setFont(NULL);
+        dma_display->setTextSize(1);
+        dma_display->setTextColor(white);
+
+        char tempStr[8];
+        snprintf(tempStr, sizeof(tempStr), "%d", weatherData.currentTemp);
+        dma_display->setCursor(weatherTextX, 2);
+        dma_display->print(tempStr);
+
+        // Degree symbol (small circle, superscript position)
+        int16_t degreeX = weatherTextX + strlen(tempStr) * 6;
+        dma_display->drawPixel(degreeX + 1, 1, white);
+        dma_display->drawPixel(degreeX,     2, white);
+        dma_display->drawPixel(degreeX + 2, 2, white);
+        dma_display->drawPixel(degreeX + 1, 3, white);
+
+        // "C" after degree (NULL font, same top as temp)
+        int16_t cX = degreeX + 4;
+        dma_display->setCursor(cX, 2);
+        dma_display->print("C");
+
+        // Today's min/max on right side (NULL font, right-aligned)
+        char todayMinStr[8], todayMaxStr[8];
+        snprintf(todayMinStr, sizeof(todayMinStr), "%d", weatherData.currentTempMin);
+        snprintf(todayMaxStr, sizeof(todayMaxStr), "%d", weatherData.currentTempMax);
+        int16_t todayMinW = strlen(todayMinStr) * 4;
+        int16_t todaySlashW = 4;
+        int16_t todayMaxW = strlen(todayMaxStr) * 4;
+        int16_t todayTotalW = todayMinW + todaySlashW + todayMaxW;
+        int16_t todayX = DISPLAY_WIDTH - todayTotalW - 1;
+
+        dma_display->setFont(&TomThumb);
+        dma_display->setTextColor(coldBlue);
+        dma_display->setCursor(todayX, 8);
+        dma_display->print(todayMinStr);
+        dma_display->setTextColor(gray);
+        dma_display->setCursor(todayX + todayMinW, 8);
+        dma_display->print("/");
+        dma_display->setTextColor(warmRed);
+        dma_display->setCursor(todayX + todayMinW + todaySlashW, 8);
+        dma_display->print(todayMaxStr);
+
+        // ---- Separator (y=10) ----
+        dma_display->fillRect(0, 10, DISPLAY_WIDTH, 1, black);
+        drawSeparatorLine(10, dimGray);
+
+        // ---- Date (y=21-30) ----
+        dma_display->fillRect(0, 21, DISPLAY_WIDTH, 10, black);
+        unsigned long epochTime = timeClient.getEpochTime();
+        struct tm* timeinfo = gmtime((time_t*)&epochTime);
+
+        static const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
+        static const char* monthNamesFr[] = {"JAN", "FEV", "MAR", "AVR", "MAI", "JUN",
+                                             "JUL", "AOU", "SEP", "OCT", "NOV", "DEC"};
+
+        char dateStr[16];
+        snprintf(dateStr, sizeof(dateStr), "%s %02d %s",
+                 dayNamesFr[timeinfo->tm_wday],
+                 timeinfo->tm_mday,
+                 monthNamesFr[timeinfo->tm_mon]);
+
+        dma_display->setFont(NULL);
+        dma_display->setTextSize(1);
+        dma_display->setTextColor(gray);
+
+        int16_t dateWidth = strlen(dateStr) * 6;
+        int16_t dateX = (DISPLAY_WIDTH - dateWidth) / 2;
+        dma_display->setCursor(dateX, 22);
+        dma_display->print(dateStr);
+
+        // ---- Separator (y=31) ----
+        drawSeparatorLine(31, dimGray);
+
+        lastDrawnMinute = minutes;
+        lastWeatherUpdate = weatherData.lastUpdate;
     }
 
-    // Temperature (NULL font, top at y=2 to align with icon)
-    dma_display->setFont(NULL);
-    dma_display->setTextSize(1);
-    dma_display->setTextColor(white);
+    // ---- Forecast (y=33-63) - redrawn on full redraw or page change ----
+    if (needsForecastRedraw) {
+        dma_display->fillRect(0, 32, DISPLAY_WIDTH, 32, black);
 
-    char tempStr[8];
-    snprintf(tempStr, sizeof(tempStr), "%d", weatherData.currentTemp);
-    dma_display->setCursor(weatherTextX, 2);
-    dma_display->print(tempStr);
+        // Compute which forecast days to display on the current page
+        uint8_t pageStart = forecastPage * FORECAST_COLUMNS;
+        uint8_t displayCount = min((uint8_t)FORECAST_COLUMNS,
+            (uint8_t)(weatherData.forecastCount - pageStart));
 
-    // Degree symbol (small circle, superscript position)
-    int16_t degreeX = weatherTextX + strlen(tempStr) * 6;
-    dma_display->drawPixel(degreeX + 1, 1, white);
-    dma_display->drawPixel(degreeX,     2, white);
-    dma_display->drawPixel(degreeX + 2, 2, white);
-    dma_display->drawPixel(degreeX + 1, 3, white);
+        for (int col = 0; col < displayCount; col++) {
+            int forecastIndex = pageStart + col;
 
-    // "C" after degree (NULL font, same top as temp)
-    int16_t cX = degreeX + 4;
-    dma_display->setCursor(cX, 2);
-    dma_display->print("C");
+            // Dynamic centering based on number of columns on this page
+            int16_t colCenter;
+            if (displayCount == 1) {
+                colCenter = 32;
+            } else if (displayCount == 2) {
+                colCenter = 16 + col * 32;
+            } else {
+                colCenter = 11 + col * 21;
+            }
 
-    // Drop icon + humidity on right side
-    int16_t humidityX = DISPLAY_WIDTH - 18;
-    drawDropIcon(humidityX, 2, cyan);
+            // Day name (TomThumb baseline=39, glyphs y=34-38)
+            dma_display->setFont(&TomThumb);
+            dma_display->setTextColor(amber);
+            int16_t dayNameWidth = strlen(weatherData.forecast[forecastIndex].dayName) * 4;
+            dma_display->setCursor(colCenter - dayNameWidth / 2, 39);
+            dma_display->print(weatherData.forecast[forecastIndex].dayName);
 
-    // Humidity (TomThumb, baseline=8 to align bottom with temp bottom y=8)
-    dma_display->setFont(&TomThumb);
-    dma_display->setTextColor(cyan);
-    char humStr[6];
-    snprintf(humStr, sizeof(humStr), "%d%%", weatherData.currentHumidity);
-    dma_display->setCursor(humidityX + 5, 8);
-    dma_display->print(humStr);
+            // Forecast icon (8x8 native, y=41-48)
+            const uint16_t* builtinForecastIcon = getBuiltinWeatherIcon(weatherData.forecast[forecastIndex].icon);
+            if (builtinForecastIcon) {
+                drawProgmemIcon(dma_display, builtinForecastIcon, colCenter - 4, 41, 1);
+            } else {
+                CachedIcon* forecastIcon = getIcon(weatherData.forecast[forecastIndex].icon);
+                if (forecastIcon && forecastIcon->valid) {
+                    drawIconAtScale(forecastIcon, colCenter - 4, 41, 1);
+                }
+            }
 
-    // ---- Separator (y=11) ----
-    drawSeparatorLine(11, dimGray);
+            // Min temp in blue (TomThumb baseline=56, glyphs y=51-55)
+            char minStr[8];
+            snprintf(minStr, sizeof(minStr), "%d", weatherData.forecast[forecastIndex].tempMin);
+            dma_display->setFont(&TomThumb);
+            dma_display->setTextColor(coldBlue);
+            int16_t minWidth = strlen(minStr) * 4;
+            dma_display->setCursor(colCenter - minWidth / 2, 56);
+            dma_display->print(minStr);
 
-    // ---- Clock (y=16-22) ----
-    int hours = timeClient.getHours();
-    int minutes = timeClient.getMinutes();
-    int seconds = timeClient.getSeconds();
+            // Max temp in red (TomThumb baseline=63, glyphs y=58-62)
+            char maxStr[8];
+            snprintf(maxStr, sizeof(maxStr), "%d", weatherData.forecast[forecastIndex].tempMax);
+            dma_display->setTextColor(warmRed);
+            int16_t maxWidth = strlen(maxStr) * 4;
+            dma_display->setCursor(colCenter - maxWidth / 2, 63);
+            dma_display->print(maxStr);
+        }
 
-    if (!settings.clockFormat24h && hours > 12) {
-        hours -= 12;
+        // Page indicator squares (vertical, right edge, only if multiple pages)
+        if (forecastPageCount > 1) {
+            uint16_t activeDot = dma_display->color565(120, 60, 200);  // Dark violet
+            int squareSize = 2;
+            int gap = 1;
+            int step = squareSize + gap;  // 3px per indicator
+            int totalHeight = forecastPageCount * step - gap;
+            int dotX = 61;               // 2px margin from right edge (x=63)
+            int dotStartY = 61 - totalHeight + 1;  // Bottom-aligned, 2px margin from y=63
+            for (int d = 0; d < forecastPageCount; d++) {
+                uint16_t dotColor = (d == forecastPage) ? activeDot : dimGray;
+                dma_display->fillRect(dotX, dotStartY + d * step, squareSize, squareSize, dotColor);
+            }
+        }
     }
+
+    // ---- Clock (y=13-20) - redrawn every second ----
+    // Clear only the clock region (y=11 to y=20) to avoid full-screen flicker
+    dma_display->fillRect(0, 11, DISPLAY_WIDTH, 10, black);
 
     dma_display->setTextColor(paleBlue);
 
@@ -842,81 +1042,15 @@ void displayShowWeatherClock() {
     dma_display->setTextSize(1);
 
     int16_t hmX = (DISPLAY_WIDTH - 30) / 2 - 6;  // Shift left for seconds
-    dma_display->setCursor(hmX, 16);
+    dma_display->setCursor(hmX, 13);
     dma_display->print(hmStr);
 
-    // Seconds in TomThumb (baseline=23, bottom-aligned with NULL font y=16+6=22)
+    // Seconds in TomThumb (baseline=20, bottom-aligned with NULL font y=13+6=19)
     dma_display->setFont(&TomThumb);
     char secStr[4];
     snprintf(secStr, sizeof(secStr), ":%02d", seconds);
-    dma_display->setCursor(hmX + 31, 23);
+    dma_display->setCursor(hmX + 31, 20);
     dma_display->print(secStr);
-
-    // ---- Date (y=27-33) ----
-    unsigned long epochTime = timeClient.getEpochTime();
-    struct tm* timeinfo = gmtime((time_t*)&epochTime);
-
-    static const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
-    static const char* monthNamesFr[] = {"JAN", "FEV", "MAR", "AVR", "MAI", "JUN",
-                                         "JUL", "AOU", "SEP", "OCT", "NOV", "DEC"};
-
-    char dateStr[16];
-    snprintf(dateStr, sizeof(dateStr), "%s %02d %s",
-             dayNamesFr[timeinfo->tm_wday],
-             timeinfo->tm_mday,
-             monthNamesFr[timeinfo->tm_mon]);
-
-    dma_display->setFont(NULL);
-    dma_display->setTextSize(1);
-    dma_display->setTextColor(gray);
-
-    int16_t dateWidth = strlen(dateStr) * 6;
-    int16_t dateX = (DISPLAY_WIDTH - dateWidth) / 2;
-    dma_display->setCursor(dateX, 27);
-    dma_display->print(dateStr);
-
-    // ---- Separator (y=36) ----
-    drawSeparatorLine(36, dimGray);
-
-    // ---- Forecast (y=39-61) ----
-    // Two columns: left center x=16, right center x=48
-    for (int i = 0; i < 2; i++) {
-        int16_t colCenter = (i == 0) ? 16 : 48;
-
-        // Day name (TomThumb, baseline=44, glyphs y=39-43)
-        dma_display->setFont(&TomThumb);
-        dma_display->setTextColor(amber);
-        int16_t dayNameWidth = strlen(weatherData.forecast[i].dayName) * 4;
-        dma_display->setCursor(colCenter - dayNameWidth / 2, 44);
-        dma_display->print(weatherData.forecast[i].dayName);
-
-        // Forecast icon (8x8 native, y=47-54)
-        CachedIcon* forecastIcon = getIcon(weatherData.forecast[i].icon);
-        if (forecastIcon && forecastIcon->valid) {
-            drawIconAtScale(forecastIcon, colCenter - 4, 47, 1);
-        }
-
-        // Min temp in blue (TomThumb, baseline=62, glyphs y=57-61)
-        char minStr[8];
-        snprintf(minStr, sizeof(minStr), "%d", weatherData.forecast[i].tempMin);
-        dma_display->setFont(&TomThumb);
-        dma_display->setTextColor(coldBlue);
-        int16_t minWidth = strlen(minStr) * 4;
-        dma_display->setCursor(colCenter - minWidth - 2, 62);
-        dma_display->print(minStr);
-
-        // Slash
-        dma_display->setTextColor(gray);
-        dma_display->setCursor(colCenter - 2, 62);
-        dma_display->print("/");
-
-        // Max temp in orange
-        char maxStr[8];
-        snprintf(maxStr, sizeof(maxStr), "%d", weatherData.forecast[i].tempMax);
-        dma_display->setTextColor(orange);
-        dma_display->setCursor(colCenter + 2, 62);
-        dma_display->print(maxStr);
-    }
 
     // Reset font
     dma_display->setFont(NULL);
@@ -941,7 +1075,7 @@ void displayShowApp(AppItem* app) {
     }
 
     if (strcmp(app->id, "weatherclock") == 0) {
-        displayShowWeatherClock();
+        displayShowWeatherClock(app->duration);
         return;
     }
 
@@ -1813,10 +1947,12 @@ void setupWebServer() {
             JsonObject current = doc["current"].to<JsonObject>();
             current["icon"] = weatherData.currentIcon;
             current["temp"] = weatherData.currentTemp;
+            current["temp_min"] = weatherData.currentTempMin;
+            current["temp_max"] = weatherData.currentTempMax;
             current["humidity"] = weatherData.currentHumidity;
 
             JsonArray forecastArr = doc["forecast"].to<JsonArray>();
-            for (int i = 0; i < 2; i++) {
+            for (int i = 0; i < weatherData.forecastCount; i++) {
                 JsonObject fc = forecastArr.add<JsonObject>();
                 fc["day"] = weatherData.forecast[i].dayName;
                 fc["icon"] = weatherData.forecast[i].icon;
@@ -1846,23 +1982,33 @@ void setupWebServer() {
                 JsonObject current = doc["current"];
                 strlcpy(weatherData.currentIcon, current["icon"] | "", sizeof(weatherData.currentIcon));
                 weatherData.currentTemp = current["temp"] | 0;
+                weatherData.currentTempMin = current["temp_min"] | 0;
+                weatherData.currentTempMax = current["temp_max"] | 0;
                 weatherData.currentHumidity = current["humidity"] | 0;
             } else {
                 request->send(400, "application/json", "{\"error\":\"Missing 'current' object\"}");
                 return;
             }
 
-            // Parse forecast (optional, up to 2 days)
+            // Parse forecast (optional, up to MAX_FORECAST_DAYS days)
             if (doc["forecast"].is<JsonArray>()) {
                 JsonArray forecastArr = doc["forecast"];
-                for (int i = 0; i < 2 && i < (int)forecastArr.size(); i++) {
+                int forecastSize = min((int)forecastArr.size(), (int)MAX_FORECAST_DAYS);
+                for (int i = 0; i < forecastSize; i++) {
                     JsonObject fc = forecastArr[i];
                     strlcpy(weatherData.forecast[i].icon, fc["icon"] | "", sizeof(weatherData.forecast[i].icon));
                     weatherData.forecast[i].tempMin = fc["temp_min"] | 0;
                     weatherData.forecast[i].tempMax = fc["temp_max"] | 0;
                     strlcpy(weatherData.forecast[i].dayName, fc["day"] | "", sizeof(weatherData.forecast[i].dayName));
                 }
+                weatherData.forecastCount = forecastSize;
+            } else {
+                weatherData.forecastCount = 0;
             }
+
+            // Reset forecast pagination on new data
+            forecastPage = 0;
+            lastForecastPageSwitch = millis();
 
             weatherData.lastUpdate = millis();
             weatherData.valid = true;

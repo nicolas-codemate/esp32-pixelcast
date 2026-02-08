@@ -270,6 +270,210 @@ POST /api/reboot
 
 ---
 
+### Weather
+
+The WeatherClock is a built-in system app that displays current conditions and a multi-day forecast on the matrix. It replaces the default clock when weather data is available and falls back to a simple time display when data is stale (older than 1 hour).
+
+The forecast supports up to **7 days**, displayed in pages of 3 columns with automatic scrolling. Page timing is proportional to the app duration (default 10s).
+
+#### Update weather data
+
+```http
+POST /api/weather
+Content-Type: application/json
+```
+
+**Payload:**
+
+```json
+{
+  "current": {
+    "icon": "w_clear_day",
+    "temp": 22,
+    "temp_min": 16,
+    "temp_max": 29,
+    "humidity": 50
+  },
+  "forecast": [
+    { "day": "LUN", "icon": "w_partly_day", "temp_min": 14, "temp_max": 23 },
+    { "day": "MAR", "icon": "w_rain", "temp_min": 10, "temp_max": 17 },
+    { "day": "MER", "icon": "w_snow", "temp_min": -2, "temp_max": 3 }
+  ]
+}
+```
+
+**Parameters:**
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| current | object | yes | Current weather conditions |
+| current.icon | string | yes | Icon name (see built-in icons below) |
+| current.temp | int | yes | Current temperature |
+| current.temp_min | int | no | Today's min temperature |
+| current.temp_max | int | no | Today's max temperature |
+| current.humidity | int | no | Humidity percentage |
+| forecast | array | no | Forecast days (up to 7) |
+| forecast[].day | string | yes | Day abbreviation (3 chars, e.g. "LUN", "MAR") |
+| forecast[].icon | string | yes | Icon name |
+| forecast[].temp_min | int | yes | Min temperature |
+| forecast[].temp_max | int | yes | Max temperature |
+
+**Pagination behavior:**
+
+| Forecast days | Pages | Layout |
+|---------------|-------|--------|
+| 1-3 | 1 | Single page, no indicator |
+| 4-6 | 2 | Auto-scroll, 2 indicator dots |
+| 7 | 3 | Auto-scroll, 3 indicator dots (last page centered) |
+
+**Response:**
+
+```json
+{
+  "success": true
+}
+```
+
+#### Read weather data
+
+```http
+GET /api/weather
+```
+
+**Response:**
+
+```json
+{
+  "valid": true,
+  "age": 120,
+  "stale": false,
+  "current": {
+    "icon": "w_clear_day",
+    "temp": 22,
+    "temp_min": 16,
+    "temp_max": 29,
+    "humidity": 50
+  },
+  "forecast": [
+    { "day": "LUN", "icon": "w_partly_day", "temp_min": 14, "temp_max": 23 },
+    { "day": "MAR", "icon": "w_rain", "temp_min": 10, "temp_max": 17 }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| valid | Whether weather data has been received |
+| age | Seconds since last update |
+| stale | True if data is older than 1 hour (display falls back to clock) |
+
+#### Built-in weather icons
+
+These 8x8 pixel icons are stored in PROGMEM (no filesystem needed):
+
+| Name | Description |
+|------|-------------|
+| `w_clear_day` | Sunny |
+| `w_clear_night` | Clear night |
+| `w_partly_day` | Partly cloudy (day) |
+| `w_partly_night` | Partly cloudy (night) |
+| `w_cloudy` | Cloudy |
+| `w_rain` | Rain |
+| `w_heavy_rain` | Heavy rain |
+| `w_thunder` | Thunderstorm |
+| `w_snow` | Snow |
+| `w_fog` | Fog |
+
+You can also use any icon uploaded to the filesystem (e.g. via `POST /api/icons`).
+
+#### Examples
+
+**curl - 3-day forecast (single page):**
+
+```bash
+curl -X POST http://pixelcast.local/api/weather \
+  -H "Content-Type: application/json" \
+  -d '{
+    "current": {
+      "icon": "w_clear_day",
+      "temp": 22,
+      "temp_min": 16,
+      "temp_max": 29,
+      "humidity": 50
+    },
+    "forecast": [
+      { "day": "LUN", "icon": "w_partly_day", "temp_min": 14, "temp_max": 23 },
+      { "day": "MAR", "icon": "w_rain", "temp_min": 10, "temp_max": 17 },
+      { "day": "MER", "icon": "w_cloudy", "temp_min": 11, "temp_max": 18 }
+    ]
+  }'
+```
+
+**curl - 7-day forecast (3 pages with auto-scroll):**
+
+```bash
+curl -X POST http://pixelcast.local/api/weather \
+  -H "Content-Type: application/json" \
+  -d '{
+    "current": {
+      "icon": "w_clear_day",
+      "temp": 22,
+      "temp_min": 16,
+      "temp_max": 29,
+      "humidity": 50
+    },
+    "forecast": [
+      { "day": "LUN", "icon": "w_clear_day", "temp_min": 15, "temp_max": 25 },
+      { "day": "MAR", "icon": "w_partly_day", "temp_min": 14, "temp_max": 23 },
+      { "day": "MER", "icon": "w_rain", "temp_min": 10, "temp_max": 17 },
+      { "day": "JEU", "icon": "w_snow", "temp_min": -2, "temp_max": 3 },
+      { "day": "VEN", "icon": "w_cloudy", "temp_min": 8, "temp_max": 14 },
+      { "day": "SAM", "icon": "w_clear_day", "temp_min": 16, "temp_max": 28 },
+      { "day": "DIM", "icon": "w_partly_day", "temp_min": 13, "temp_max": 22 }
+    ]
+  }'
+```
+
+**Home Assistant - Automation (daily weather update):**
+
+```yaml
+automation:
+  - alias: "Update PixelCast weather"
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+    action:
+      - service: rest_command.pixelcast_weather
+
+rest_command:
+  pixelcast_weather:
+    url: "http://pixelcast.local/api/weather"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {
+        "current": {
+          "icon": "w_clear_day",
+          "temp": {{ states('sensor.outdoor_temperature') | int }},
+          "temp_min": {{ state_attr('weather.home', 'temperature') | int }},
+          "temp_max": {{ state_attr('weather.home', 'temperature') | int }},
+          "humidity": {{ states('sensor.outdoor_humidity') | int }}
+        },
+        "forecast": [
+          {% for f in state_attr('weather.home', 'forecast')[:7] %}
+          {
+            "day": "{{ as_timestamp(f.datetime) | timestamp_custom('%a') | upper | truncate(3, true, '') }}",
+            "icon": "w_{{ f.condition }}",
+            "temp_min": {{ f.templow | int }},
+            "temp_max": {{ f.temperature | int }}
+          }{% if not loop.last %},{% endif %}
+          {% endfor %}
+        ]
+      }
+```
+
+---
+
 ## MQTT API
 
 ### Configuration

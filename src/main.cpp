@@ -639,20 +639,31 @@ void displayShowIP() {
     dma_display->setFont(NULL);
     dma_display->setTextSize(1);
     dma_display->setTextColor(dma_display->color565(0, 255, 0));
-    dma_display->setCursor(11, 20);
+    dma_display->setCursor(11, 12);
     dma_display->print("WiFi OK");
 
-    // IP address in compact font (TomThumb 3x5px), centered
+    // IP address in default font, split across 2 lines for readability
+    // e.g. "192.168" on line 1, "1.100" on line 2
     String ip = WiFi.localIP().toString();
-    dma_display->setFont(&TomThumb);
     dma_display->setTextColor(dma_display->color565(255, 255, 255));
-    int16_t ipWidth = ip.length() * 4;  // TomThumb: ~4px per char
-    int16_t ipX = (DISPLAY_WIDTH - ipWidth) / 2;
-    dma_display->setCursor(ipX, 38);
-    dma_display->print(ip);
 
-    // Reset to default font
-    dma_display->setFont(NULL);
+    // Find the second dot to split the IP into 2 halves
+    int firstDot = ip.indexOf('.');
+    int secondDot = ip.indexOf('.', firstDot + 1);
+    String line1 = ip.substring(0, secondDot);
+    String line2 = ip.substring(secondDot + 1);
+
+    // Line 1: first two octets (NULL font, 6px per char)
+    int16_t line1Width = line1.length() * 6;
+    int16_t line1X = (DISPLAY_WIDTH - line1Width) / 2;
+    dma_display->setCursor(line1X, 28);
+    dma_display->print(line1);
+
+    // Line 2: last two octets
+    int16_t line2Width = line2.length() * 6;
+    int16_t line2X = (DISPLAY_WIDTH - line2Width) / 2;
+    dma_display->setCursor(line2X, 40);
+    dma_display->print(line2);
 
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
@@ -834,7 +845,7 @@ void displayShowWeatherClock(uint16_t appDuration) {
     uint16_t white = dma_display->color565(255, 255, 255);
     uint16_t dimGray = dma_display->color565(40, 40, 40);
     uint16_t cyan = dma_display->color565(0, 180, 255);
-    uint16_t paleBlue = dma_display->color565(100, 160, 255);
+    uint16_t mintGreen = dma_display->color565(100, 255, 180);
     uint16_t gray = dma_display->color565(140, 140, 140);
     uint16_t amber = dma_display->color565(255, 180, 50);
     uint16_t coldBlue = dma_display->color565(80, 140, 255);
@@ -1033,7 +1044,7 @@ void displayShowWeatherClock(uint16_t appDuration) {
     // Clear only the clock region (y=11 to y=20) to avoid full-screen flicker
     dma_display->fillRect(0, 11, DISPLAY_WIDTH, 10, black);
 
-    dma_display->setTextColor(paleBlue);
+    dma_display->setTextColor(mintGreen);
 
     // HH:MM in NULL font (5 chars * 6px = 30px)
     char hmStr[6];

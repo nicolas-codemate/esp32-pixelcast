@@ -117,6 +117,39 @@ struct AppItem {
 
 ---
 
+## Phase 2b: Data Dashboards ✅
+
+### 2b.1 WeatherClock System App
+- [x] `WeatherData` structure (current conditions + forecast)
+- [x] Up to 7-day forecast support (`MAX_FORECAST_DAYS`)
+- [x] REST API: `POST /api/weather` (update), `GET /api/weather` (read)
+- [x] Built-in PROGMEM weather icons (no filesystem dependency)
+- [x] Dashboard layout: current temp/icon + forecast grid
+- [x] Forecast pagination with auto-scroll (3 columns per page)
+- [x] Dynamic centering based on column count (1/2/3 columns)
+- [x] Page indicator dots (right edge, vertical)
+- [x] Stale data detection (>1h fallback to clock)
+- [x] Registered as system app (always available)
+
+### 2b.2 Tracker System App
+- [x] `TrackerData` structure (symbol, value, change%, sparkline, colors, bottomText)
+- [x] Up to 8 concurrent trackers (`MAX_TRACKERS`)
+- [x] REST API: `POST /api/tracker`, `GET /api/tracker`, `GET /api/trackers`, `DELETE /api/tracker`
+- [x] Dynamic app registration (auto-creates app in rotation on first POST)
+- [x] App IDs prefixed with `tracker_` (e.g. `tracker_btc`)
+- [x] Sparkline chart (24 points, float array scaled to uint16)
+- [x] Layout: icon+symbol / price+currency / arrow+change% / separator / 24h+sparkline / separator / bottomText
+- [x] Customizable colors (text, price, sparkline, change, bottomText)
+- [x] Stale data detection (>1h: dims colors to 1/4, shows "STALE" badge)
+- [x] `parseColorValue()` extracted as reusable helper
+
+**Deliverables:**
+- [x] Working weather dashboard with forecast
+- [x] Working tracker display with sparkline
+- [x] Bruno API collections for both features
+
+---
+
 ## Phase 3: Notifications
 
 ### 3.1 Notification Manager
@@ -176,6 +209,12 @@ struct Notification {
 | GET | `/api/settings` | Read settings | ✅ |
 | POST | `/api/reboot` | Reboot | ✅ |
 | POST | `/api/brightness` | Set brightness | ✅ |
+| POST | `/api/weather` | Update weather data | ✅ |
+| GET | `/api/weather` | Read weather data + stale status | ✅ |
+| POST | `/api/tracker` | Create/Update a tracker | ✅ |
+| GET | `/api/tracker` | Read single tracker data | ✅ |
+| GET | `/api/trackers` | List all active trackers | ✅ |
+| DELETE | `/api/tracker` | Remove tracker from rotation | ✅ |
 
 > **Note**: Avoid using wildcard patterns (`/api/*`) with HTTP_OPTIONS in ESPAsyncWebServer as it interferes with POST handlers.
 
@@ -206,6 +245,8 @@ pixelcast/
 ├── notify            # → Notification
 ├── dismiss           # → Acknowledge
 ├── indicator{1-3}    # → Indicators
+├── weather           # → Update weather data
+├── tracker/{name}    # → Create/Update tracker
 ├── settings          # → Settings
 ├── brightness        # → Brightness
 ├── reboot            # → Reboot
@@ -465,4 +506,4 @@ A Bruno collection is available in `api/` folder for testing all REST endpoints.
 
 ---
 
-*Last updated: February 7, 2026*
+*Last updated: February 14, 2026*

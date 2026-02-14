@@ -61,7 +61,6 @@ struct AppItem {
     char text[64];
     char icon[32];
     uint32_t textColor;
-    uint32_t backgroundColor;
     uint16_t duration;          // Display duration in ms
     uint32_t lifetime;          // Expiration time (0 = permanent)
     uint32_t createdAt;         // Creation timestamp
@@ -196,6 +195,27 @@ struct TrackerData {
 };
 TrackerData trackers[MAX_TRACKERS];
 uint8_t trackerCount = 0;
+
+// Notification Data
+struct NotificationItem {
+    char id[24];              // Unique ID ("notif_<millis>" or user-provided)
+    char text[128];           // Notification text (longer than app's 64 chars)
+    char icon[32];            // Icon filename
+    uint32_t textColor;       // RGB color
+    uint32_t backgroundColor; // RGB color for area outside card frame (0 = none)
+    uint16_t duration;        // Display duration in ms (0 = hold mode)
+    bool hold;                // Explicit hold flag (never auto-expires)
+    bool urgent;              // Jumps to front of queue
+    bool stack;               // Queue sequentially (true) vs replace current (false)
+    bool active;              // Slot in use
+    unsigned long displayedAt; // Timestamp when first displayed (0 = not yet shown)
+};
+NotificationItem notifications[MAX_NOTIFICATIONS];
+uint8_t notificationCount = 0;
+int8_t currentNotifIndex = -1;
+int8_t savedAppIndex = -1;          // App to restore after notifications end
+ScrollState notifScrollState;
+unsigned long lastNotifScrollUpdate = 0;
 
 // Timing
 unsigned long lastStatsPublish = 0;
@@ -434,11 +454,11 @@ bool loadApps();
 bool saveApps();
 
 int8_t appAdd(const char* id, const char* text, const char* icon,
-              uint32_t textColor, uint32_t bgColor,
-              uint16_t duration, uint32_t lifetime, int8_t priority, bool isSystem);
+              uint32_t textColor, uint16_t duration,
+              uint32_t lifetime, int8_t priority, bool isSystem);
 bool appRemove(const char* id);
 bool appUpdate(const char* id, const char* text, const char* icon,
-               uint32_t textColor, uint32_t bgColor);
+               uint32_t textColor);
 int8_t appFind(const char* id);
 void appCleanExpired();
 AppItem* appGetNext();
@@ -454,6 +474,19 @@ void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, in
 void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color);
 void formatTrackerValue(float value, char* buffer, size_t bufSize);
 uint32_t parseColorValue(JsonVariant colorVar, uint32_t defaultColor);
+
+// Notification management
+void notifInit();
+int8_t notifAdd(const char* id, const char* text, const char* icon,
+                uint32_t textColor, uint32_t bgColor, uint16_t duration,
+                bool hold, bool urgent, bool stack);
+bool notifDismiss();
+void notifClearAll();
+NotificationItem* notifGetCurrent();
+NotificationItem* notifGetNext();
+bool notifIsExpired(NotificationItem* notif);
+void displayShowNotification(NotificationItem* notif);
+void resetNotifScrollState();
 
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void mqttReconnect();
@@ -494,6 +527,9 @@ void setup() {
 
     // Initialize tracker system
     trackerInit();
+
+    // Initialize notification system
+    notifInit();
 
     Serial.println("[INIT] Loading settings...");
     if (!loadSettings()) {
@@ -650,6 +686,7 @@ void setupDisplay() {
     }
 
     dma_display->setBrightness8(currentBrightness);
+    dma_display->setTextWrap(false);  // Prevent ghost characters on text scroll
     dma_display->clearScreen();
 
     Serial.printf("[DISPLAY] Initialized %dx%d panel (E_PIN=%d)\n", PANEL_WIDTH, PANEL_HEIGHT, E_PIN);
@@ -893,6 +930,134 @@ void trackerInit() {
     memset(trackers, 0, sizeof(trackers));
     trackerCount = 0;
     Serial.println("[TRACKER] Initialized");
+}
+
+// ============================================================================
+// Notification Queue Management
+// ============================================================================
+
+void notifInit() {
+    memset(notifications, 0, sizeof(notifications));
+    notificationCount = 0;
+    currentNotifIndex = -1;
+    savedAppIndex = -1;
+    memset(&notifScrollState, 0, sizeof(notifScrollState));
+    Serial.println("[NOTIF] Initialized");
+}
+
+int8_t notifAdd(const char* id, const char* text, const char* icon,
+                uint32_t textColor, uint32_t bgColor, uint16_t duration,
+                bool hold, bool urgent, bool stack) {
+    // Replace mode: clear all existing notifications first
+    if (!stack) {
+        notifClearAll();
+    }
+
+    // Find a free slot
+    int8_t freeSlot = -1;
+    for (uint8_t i = 0; i < MAX_NOTIFICATIONS; i++) {
+        if (!notifications[i].active) {
+            freeSlot = i;
+            break;
+        }
+    }
+
+    if (freeSlot < 0) {
+        Serial.println("[NOTIF] Queue full, dropping notification");
+        return -1;
+    }
+
+    NotificationItem* notif = &notifications[freeSlot];
+    memset(notif, 0, sizeof(NotificationItem));
+
+    // Generate ID if not provided
+    if (id && strlen(id) > 0) {
+        strlcpy(notif->id, id, sizeof(notif->id));
+    } else {
+        snprintf(notif->id, sizeof(notif->id), "notif_%lu", millis());
+    }
+
+    strlcpy(notif->text, text, sizeof(notif->text));
+    if (icon) {
+        strlcpy(notif->icon, icon, sizeof(notif->icon));
+    }
+
+    notif->textColor = textColor;
+    notif->backgroundColor = bgColor;
+    notif->duration = duration;
+    notif->hold = hold;
+    notif->urgent = urgent;
+    notif->stack = stack;
+    notif->active = true;
+    notif->displayedAt = 0;  // Not yet shown
+
+    notificationCount++;
+
+    // If urgent, force it to be picked up next
+    if (urgent) {
+        currentNotifIndex = freeSlot;
+    }
+
+    Serial.printf("[NOTIF] Added: %s (duration=%d, hold=%d, urgent=%d, stack=%d)\n",
+                  notif->id, duration, hold, urgent, stack);
+    return freeSlot;
+}
+
+bool notifDismiss() {
+    if (currentNotifIndex < 0 || !notifications[currentNotifIndex].active) {
+        return false;
+    }
+
+    Serial.printf("[NOTIF] Dismissed: %s\n", notifications[currentNotifIndex].id);
+    notifications[currentNotifIndex].active = false;
+    notificationCount--;
+    currentNotifIndex = -1;
+    return true;
+}
+
+void notifClearAll() {
+    for (uint8_t i = 0; i < MAX_NOTIFICATIONS; i++) {
+        notifications[i].active = false;
+    }
+    notificationCount = 0;
+    currentNotifIndex = -1;
+    Serial.println("[NOTIF] Cleared all");
+}
+
+NotificationItem* notifGetCurrent() {
+    if (currentNotifIndex >= 0 && notifications[currentNotifIndex].active) {
+        return &notifications[currentNotifIndex];
+    }
+    return nullptr;
+}
+
+NotificationItem* notifGetNext() {
+    if (notificationCount == 0) return nullptr;
+
+    // First pass: find urgent notifications not yet displayed
+    for (uint8_t i = 0; i < MAX_NOTIFICATIONS; i++) {
+        if (notifications[i].active && notifications[i].urgent && notifications[i].displayedAt == 0) {
+            currentNotifIndex = i;
+            return &notifications[i];
+        }
+    }
+
+    // Second pass: find any active notification not yet displayed
+    for (uint8_t i = 0; i < MAX_NOTIFICATIONS; i++) {
+        if (notifications[i].active && notifications[i].displayedAt == 0) {
+            currentNotifIndex = i;
+            return &notifications[i];
+        }
+    }
+
+    return nullptr;
+}
+
+bool notifIsExpired(NotificationItem* notif) {
+    if (!notif || !notif->active) return true;
+    if (notif->hold || notif->duration == 0) return false;
+    if (notif->displayedAt == 0) return false;  // Not yet shown
+    return (millis() - notif->displayedAt) > notif->duration;
 }
 
 // Parse color from JSON (hex string "#FF8800", RGB array [255,136,0], or raw uint32)
@@ -1446,14 +1611,6 @@ void displayShowApp(AppItem* app) {
     // Custom apps
     dma_display->clearScreen();
 
-    // Background color
-    if (app->backgroundColor != 0) {
-        uint8_t br = (app->backgroundColor >> 16) & 0xFF;
-        uint8_t bg = (app->backgroundColor >> 8) & 0xFF;
-        uint8_t bb = app->backgroundColor & 0xFF;
-        dma_display->fillScreen(dma_display->color565(br, bg, bb));
-    }
-
     // Layout calculation - VERTICAL layout for 64x64 panel
     // +----------64px-----------+
     // |      Icon (8-16px)      |  <- centered, top
@@ -1553,6 +1710,131 @@ void resetScrollState() {
     appScrollState.needsScroll = false;
     appScrollState.textWidth = 0;
     appScrollState.availableWidth = DISPLAY_WIDTH - 4;  // 2px margin each side
+}
+
+void resetNotifScrollState() {
+    notifScrollState.scrollOffset = 0;
+    notifScrollState.lastScrollTime = millis();
+    notifScrollState.scrollPhase = 0;
+    notifScrollState.needsScroll = false;
+    notifScrollState.textWidth = 0;
+    notifScrollState.availableWidth = DISPLAY_WIDTH - 4;  // Full width minus 2px padding each side
+}
+
+// ============================================================================
+// Notification Display
+// ============================================================================
+
+void displayShowNotification(NotificationItem* notif) {
+    if (!notif || !notif->active) return;
+
+    // Mark display timestamp on first render
+    if (notif->displayedAt == 0) {
+        notif->displayedAt = millis();
+    }
+
+    // Layout: horizontal separators with background color margins
+    // [bg margin 4px] [separator line] [content: icon + text] [separator line] [bg margin 4px]
+    const int16_t marginHeight = 6;
+    const int16_t separatorTopY = marginHeight;                            // y=4
+    const int16_t separatorBottomY = DISPLAY_HEIGHT - marginHeight - 1;    // y=59
+    const int16_t contentY = separatorTopY + 2;                            // y=6
+    const int16_t contentH = separatorBottomY - contentY - 1;             // 52
+    const int16_t textPadding = 2;                                         // Horizontal text padding
+    const int16_t textAreaWidth = DISPLAY_WIDTH - textPadding * 2;         // 60
+
+    // Colors
+    uint8_t tr = (notif->textColor >> 16) & 0xFF;
+    uint8_t tg = (notif->textColor >> 8) & 0xFF;
+    uint8_t tb = notif->textColor & 0xFF;
+    uint16_t lineColor = dma_display->color565(tr, tg, tb);
+    uint16_t black = dma_display->color565(0, 0, 0);
+
+    uint16_t bgFill = black;
+    if (notif->backgroundColor != 0) {
+        uint8_t br = (notif->backgroundColor >> 16) & 0xFF;
+        uint8_t bg = (notif->backgroundColor >> 8) & 0xFF;
+        uint8_t bb = notif->backgroundColor & 0xFF;
+        bgFill = dma_display->color565(br, bg, bb);
+    }
+
+    // === Build frame (no clearScreen to avoid DMA flicker) ===
+
+    // 1. Background color margins (top and bottom strips)
+    dma_display->fillRect(0, 0, DISPLAY_WIDTH, marginHeight, bgFill);
+    dma_display->fillRect(0, DISPLAY_HEIGHT - marginHeight, DISPLAY_WIDTH, marginHeight, bgFill);
+
+    // 2. Content area (black)
+    dma_display->fillRect(0, marginHeight, DISPLAY_WIDTH, DISPLAY_HEIGHT - marginHeight * 2, black);
+
+    // 3. Separator lines
+    uint16_t separatorColor = (bgFill != black) ? bgFill : lineColor;
+    dma_display->drawFastHLine(0, separatorTopY, DISPLAY_WIDTH, separatorColor);
+    dma_display->drawFastHLine(0, separatorBottomY, DISPLAY_WIDTH, separatorColor);
+
+    // 4. Load icon
+    CachedIcon* icon = nullptr;
+    uint8_t iconDisplayW = 0;
+    uint8_t iconDisplayH = 0;
+    if (strlen(notif->icon) > 0) {
+        icon = getIcon(notif->icon);
+        if (icon && icon->valid) {
+            uint8_t scale = (icon->width <= 8 && icon->height <= 8) ? 2 : 1;
+            iconDisplayW = icon->width * scale;
+            iconDisplayH = icon->height * scale;
+        } else {
+            icon = nullptr;
+        }
+    }
+
+    // 5. Vertical centering of content (icon + text)
+    const int16_t textHeight = 7;
+    const int16_t iconTextGap = 4;
+    int16_t totalContentH = textHeight;
+    if (icon) {
+        totalContentH = iconDisplayH + iconTextGap + textHeight;
+    }
+    int16_t contentStartY = contentY + (contentH - totalContentH) / 2;
+
+    // 6. Draw icon centered horizontally
+    int16_t textYPos;
+    if (icon) {
+        int16_t iconX = (DISPLAY_WIDTH - iconDisplayW) / 2;
+        drawIcon(icon, iconX, contentStartY);
+        textYPos = contentStartY + iconDisplayH + iconTextGap;
+    } else {
+        textYPos = contentStartY;
+    }
+
+    // 7. Draw text (full width, scrolls off-screen naturally - no clipping needed)
+    dma_display->setTextColor(lineColor);
+    dma_display->setTextSize(1);
+
+    int16_t textWidth = calculateTextWidth(notif->text);
+    bool needsScroll = textWidth > textAreaWidth;
+
+    if (notifScrollState.textWidth != textWidth || notifScrollState.availableWidth != textAreaWidth) {
+        notifScrollState.textWidth = textWidth;
+        notifScrollState.availableWidth = textAreaWidth;
+        notifScrollState.needsScroll = needsScroll;
+        if (!needsScroll) {
+            notifScrollState.scrollOffset = 0;
+            notifScrollState.scrollPhase = 0;
+        }
+    }
+
+    int16_t xPos;
+    if (!needsScroll) {
+        xPos = textPadding + (textAreaWidth - textWidth) / 2;
+    } else {
+        xPos = textPadding - notifScrollState.scrollOffset;
+    }
+
+    printTextWithSpecialChars(notif->text, xPos, textYPos);
+
+    #if DOUBLE_BUFFER
+        dma_display->flipDMABuffer();
+    #endif
 }
 
 // Print text with special character handling
@@ -2207,13 +2489,12 @@ void setupWebServer() {
 
             // Parse colors using shared helper
             uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
-            uint32_t bgColor = parseColorValue(doc["background"], 0x000000);
 
             uint16_t duration = doc["duration"] | settings.defaultDuration;
             uint32_t lifetime = doc["lifetime"] | 0;
             int8_t priority = doc["priority"] | 0;
 
-            int8_t result = appAdd(name.c_str(), text, icon, textColor, bgColor,
+            int8_t result = appAdd(name.c_str(), text, icon, textColor,
                                    duration, lifetime, priority, false);
 
             if (result >= 0) {
@@ -2526,7 +2807,7 @@ void setupWebServer() {
             char appId[32];
             snprintf(appId, sizeof(appId), "%s%s", TRACKER_ID_PREFIX, name.c_str());
             uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
-            appAdd(appId, tracker->symbol, tracker->icon, 0xFFFFFF, 0x000000,
+            appAdd(appId, tracker->symbol, tracker->icon, 0xFFFFFF,
                    duration, 0, 0, false);
 
             Serial.printf("[TRACKER] Updated: %s (%s = %.2f)\n",
@@ -2534,6 +2815,91 @@ void setupWebServer() {
             request->send(200, "application/json", "{\"success\":true}");
         });
     webServer.addHandler(trackerHandler);
+
+    // ========================================================================
+    // Notification API
+    // ========================================================================
+
+    // POST /api/notify/dismiss - Dismiss current notification
+    // IMPORTANT: Must be registered BEFORE /api/notify JSON handler to avoid prefix match
+    webServer.on("/api/notify/dismiss", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (notifDismiss()) {
+            resetNotifScrollState();
+            request->send(200, "application/json", "{\"success\":true}");
+        } else {
+            request->send(404, "application/json", "{\"error\":\"No active notification\"}");
+        }
+    });
+
+    // GET /api/notify/list - List all active notifications
+    // IMPORTANT: Must be registered BEFORE /api/notify JSON handler to avoid prefix match
+    webServer.on("/api/notify/list", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        doc["count"] = notificationCount;
+        doc["currentIndex"] = currentNotifIndex;
+
+        JsonArray arr = doc["notifications"].to<JsonArray>();
+        for (uint8_t i = 0; i < MAX_NOTIFICATIONS; i++) {
+            if (!notifications[i].active) continue;
+            JsonObject obj = arr.add<JsonObject>();
+            obj["id"] = notifications[i].id;
+            obj["text"] = notifications[i].text;
+            obj["icon"] = notifications[i].icon;
+            obj["duration"] = notifications[i].duration;
+            obj["hold"] = notifications[i].hold;
+            obj["urgent"] = notifications[i].urgent;
+            obj["stack"] = notifications[i].stack;
+            obj["displayed"] = notifications[i].displayedAt > 0;
+            obj["current"] = (i == (uint8_t)currentNotifIndex);
+        }
+
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // POST /api/notify - Send a notification
+    AsyncCallbackJsonWebHandler* notifyHandler = new AsyncCallbackJsonWebHandler("/api/notify",
+        [](AsyncWebServerRequest *request, JsonVariant &json) {
+            Serial.println("[API] /notify handler called");
+            JsonObject doc = json.as<JsonObject>();
+
+            if (doc.isNull()) {
+                request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
+            }
+
+            // Text is required
+            if (doc["text"].isNull() || strlen(doc["text"] | "") == 0) {
+                request->send(400, "application/json", "{\"error\":\"Missing text\"}");
+                return;
+            }
+
+            const char* text = doc["text"] | "";
+            const char* id = doc["id"] | "";
+            const char* icon = doc["icon"] | "";
+            uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
+            uint32_t bgColor = parseColorValue(doc["background"], 0x000000);
+            uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_NOTIF_DURATION;
+            bool hold = doc["hold"] | false;
+            bool urgent = doc["urgent"] | false;
+            bool stack = doc["stack"] | true;
+
+            int8_t slot = notifAdd(id, text, icon, textColor, bgColor,
+                                   duration, hold, urgent, stack);
+
+            if (slot < 0) {
+                request->send(503, "application/json", "{\"error\":\"Notification queue full\"}");
+                return;
+            }
+
+            // Return the assigned ID
+            char response[128];
+            snprintf(response, sizeof(response),
+                     "{\"success\":true,\"id\":\"%s\"}", notifications[slot].id);
+            request->send(200, "application/json", response);
+        });
+    webServer.addHandler(notifyHandler);
 
     // POST /api/reboot - Reboot device (deferred to allow response to be sent)
     webServer.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -3117,13 +3483,12 @@ bool loadApps() {
         const char* text = appObj["text"] | "";
         const char* icon = appObj["icon"] | "";
         uint32_t textColor = appObj["textColor"] | 0xFFFFFF;
-        uint32_t bgColor = appObj["backgroundColor"] | 0;
         uint16_t duration = appObj["duration"] | settings.defaultDuration;
         uint32_t lifetime = appObj["lifetime"] | 0;
         int8_t priority = appObj["priority"] | 0;
 
         if (strlen(id) > 0) {
-            int8_t result = appAdd(id, text, icon, textColor, bgColor,
+            int8_t result = appAdd(id, text, icon, textColor,
                                    duration, lifetime, priority, false);
             if (result >= 0) {
                 loadedCount++;
@@ -3153,7 +3518,6 @@ bool saveApps() {
             appObj["text"] = apps[i].text;
             appObj["icon"] = apps[i].icon;
             appObj["textColor"] = apps[i].textColor;
-            appObj["backgroundColor"] = apps[i].backgroundColor;
             appObj["duration"] = apps[i].duration;
             appObj["lifetime"] = apps[i].lifetime;
             appObj["priority"] = apps[i].priority;
@@ -3187,19 +3551,19 @@ void setupApps() {
     // Add system apps
     // NOTE: clock and date disabled while weatherclock is in development
     // if (settings.clockEnabled) {
-    //     appAdd("clock", "Clock", "", settings.clockColor, 0x000000,
+    //     appAdd("clock", "Clock", "", settings.clockColor,
     //            settings.defaultDuration, 0, 0, true);
     //     Serial.println("[APPS] Clock app added");
     // }
     //
     // if (settings.dateEnabled) {
-    //     appAdd("date", "Date", "", settings.dateColor, 0x000000,
+    //     appAdd("date", "Date", "", settings.dateColor,
     //            settings.defaultDuration, 0, 0, true);
     //     Serial.println("[APPS] Date app added");
     // }
 
     // WeatherClock system app (replaces clock+date when weather data is available)
-    appAdd("weatherclock", "WeatherClock", "", settings.clockColor, 0x000000,
+    appAdd("weatherclock", "WeatherClock", "", settings.clockColor,
            settings.defaultDuration, 0, 1, true);
     Serial.println("[APPS] WeatherClock app added");
 
@@ -3212,8 +3576,8 @@ void setupApps() {
 }
 
 int8_t appAdd(const char* id, const char* text, const char* icon,
-              uint32_t textColor, uint32_t bgColor,
-              uint16_t duration, uint32_t lifetime, int8_t priority, bool isSystem) {
+              uint32_t textColor, uint16_t duration,
+              uint32_t lifetime, int8_t priority, bool isSystem) {
 
     // Check if app with same ID exists
     int8_t existingIndex = appFind(id);
@@ -3223,7 +3587,6 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
         strlcpy(app->text, text, sizeof(app->text));
         if (icon) strlcpy(app->icon, icon, sizeof(app->icon));
         app->textColor = textColor;
-        app->backgroundColor = bgColor;
         app->duration = duration;
         app->lifetime = lifetime;
         app->priority = priority;
@@ -3258,7 +3621,6 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
     if (icon) strlcpy(app->icon, icon, sizeof(app->icon));
     else app->icon[0] = '\0';
     app->textColor = textColor;
-    app->backgroundColor = bgColor;
     app->duration = duration > 0 ? duration : settings.defaultDuration;
     app->lifetime = lifetime;
     app->createdAt = millis();
@@ -3304,7 +3666,7 @@ bool appRemove(const char* id) {
 }
 
 bool appUpdate(const char* id, const char* text, const char* icon,
-               uint32_t textColor, uint32_t bgColor) {
+               uint32_t textColor) {
     int8_t index = appFind(id);
     if (index < 0) return false;
 
@@ -3312,7 +3674,6 @@ bool appUpdate(const char* id, const char* text, const char* icon,
     if (text) strlcpy(app->text, text, sizeof(app->text));
     if (icon) strlcpy(app->icon, icon, sizeof(app->icon));
     if (textColor != 0) app->textColor = textColor;
-    if (bgColor != 0xFFFFFFFF) app->backgroundColor = bgColor;
     app->createdAt = millis();
 
     Serial.printf("[APPS] Updated app: %s\n", id);
@@ -3374,10 +3735,78 @@ AppItem* appGetCurrent() {
 
 void loopApps() {
     if (!wifiConnected) return;
+
+    // ---- Notification priority check (before app rotation) ----
+    unsigned long now = millis();
+
+    NotificationItem* currentNotif = notifGetCurrent();
+
+    // Check if current notification has expired
+    if (currentNotif && notifIsExpired(currentNotif)) {
+        notifDismiss();
+        resetNotifScrollState();
+        currentNotif = notifGetNext();  // Try next in queue
+        if (currentNotif) {
+            resetNotifScrollState();
+            // Draw twice to flush both DMA buffers
+            displayShowNotification(currentNotif);
+            displayShowNotification(currentNotif);
+            lastDisplayUpdate = now;
+        }
+    }
+
+    // If no current notification, check if new ones are queued
+    if (!notifGetCurrent()) {
+        currentNotif = notifGetNext();
+        if (currentNotif) {
+            // Save current app index to restore later (first time only)
+            if (savedAppIndex < 0) {
+                savedAppIndex = currentAppIndex;
+            }
+            resetNotifScrollState();
+            // Draw twice to flush both DMA buffers (prevents weather ghosting)
+            displayShowNotification(currentNotif);
+            displayShowNotification(currentNotif);
+            lastDisplayUpdate = now;
+        }
+    }
+
+    // If a notification is active, skip app rotation
+    if (notifGetCurrent()) {
+        return;
+    }
+
+    // Just finished all notifications: restore app rotation
+    if (savedAppIndex >= 0) {
+        currentAppIndex = savedAppIndex;
+        savedAppIndex = -1;
+        lastAppSwitch = now;
+        resetScrollState();
+        // Reset weather clock cache to force full redraw (not just seconds update)
+        weatherLastDrawnMinute = -1;
+        weatherLastUpdateDrawn = 0;
+        Serial.println("[NOTIF] All dismissed, resuming app rotation");
+        // Clear both DMA buffers to remove any notification pixel remnants,
+        // then force immediate app redraw on both buffers
+        dma_display->clearScreen();
+        #if DOUBLE_BUFFER
+            dma_display->flipDMABuffer();
+        #endif
+        dma_display->clearScreen();
+        #if DOUBLE_BUFFER
+            dma_display->flipDMABuffer();
+        #endif
+        AppItem* restored = appGetCurrent();
+        if (restored) {
+            displayShowApp(restored);
+            displayShowApp(restored);
+            lastDisplayUpdate = now;
+        }
+    }
+
+    // ---- Normal app rotation ----
     if (appCount == 0) return;
 
-    // Check if it's time to switch apps
-    unsigned long now = millis();
     AppItem* current = appGetCurrent();
 
     if (current == nullptr) {
@@ -3425,8 +3854,55 @@ void loopDisplay() {
     if (!wifiConnected) return;
 
     unsigned long now = millis();
-    AppItem* current = appGetCurrent();
     bool needsRedraw = false;
+
+    // ---- Notification display (priority over apps) ----
+    NotificationItem* currentNotif = notifGetCurrent();
+    if (currentNotif) {
+        // Handle notification scroll animation
+        if (notifScrollState.needsScroll) {
+            if (now - lastNotifScrollUpdate >= SCROLL_SPEED) {
+                lastNotifScrollUpdate = now;
+
+                switch (notifScrollState.scrollPhase) {
+                    case 0:  // pause_start
+                        if (now - notifScrollState.lastScrollTime >= SCROLL_PAUSE) {
+                            notifScrollState.scrollPhase = 1;
+                            notifScrollState.lastScrollTime = now;
+                        }
+                        break;
+
+                    case 1:  // scrolling
+                        notifScrollState.scrollOffset++;
+                        if (notifScrollState.scrollOffset >= notifScrollState.textWidth - notifScrollState.availableWidth + 10) {
+                            notifScrollState.scrollPhase = 2;
+                            notifScrollState.lastScrollTime = now;
+                        }
+                        needsRedraw = true;
+                        break;
+
+                    case 2:  // pause_end
+                        if (now - notifScrollState.lastScrollTime >= SCROLL_PAUSE) {
+                            notifScrollState.scrollOffset = 0;
+                            notifScrollState.scrollPhase = 0;
+                            notifScrollState.lastScrollTime = now;
+                        }
+                        break;
+                }
+            }
+        }
+
+        // Redraw notification on scroll or periodic update
+        if (now - lastDisplayUpdate > 1000 || needsRedraw) {
+            displayShowNotification(currentNotif);
+            lastDisplayUpdate = now;
+        }
+        return;  // Skip app display while notification is active
+    }
+
+    // ---- Normal app display ----
+    AppItem* current = appGetCurrent();
+    needsRedraw = false;
 
     // Handle scroll animation (50ms updates for smooth scrolling)
     if (current && appScrollState.needsScroll) {

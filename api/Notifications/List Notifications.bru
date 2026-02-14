@@ -1,0 +1,21 @@
+meta {
+  name: List Notifications
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/notify/list
+  body: none
+  auth: none
+}
+
+docs {
+  Lists all active notifications in the queue.
+
+  Response:
+  - count: Number of active notifications
+  - currentIndex: Index of the currently displayed notification (-1 if none)
+  - notifications: Array of notification objects with id, text, icon,
+    duration, hold, urgent, stack, displayed (bool), current (bool)
+}

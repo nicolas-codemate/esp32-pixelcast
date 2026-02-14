@@ -202,6 +202,7 @@ struct NotificationItem {
     char text[128];           // Notification text (longer than app's 64 chars)
     char icon[32];            // Icon filename
     uint32_t textColor;       // RGB color
+    uint32_t backgroundColor; // RGB color for area outside card frame (0 = none)
     uint16_t duration;        // Display duration in ms (0 = hold mode)
     bool hold;                // Explicit hold flag (never auto-expires)
     bool urgent;              // Jumps to front of queue
@@ -477,7 +478,7 @@ uint32_t parseColorValue(JsonVariant colorVar, uint32_t defaultColor);
 // Notification management
 void notifInit();
 int8_t notifAdd(const char* id, const char* text, const char* icon,
-                uint32_t textColor, uint16_t duration,
+                uint32_t textColor, uint32_t bgColor, uint16_t duration,
                 bool hold, bool urgent, bool stack);
 bool notifDismiss();
 void notifClearAll();
@@ -945,7 +946,7 @@ void notifInit() {
 }
 
 int8_t notifAdd(const char* id, const char* text, const char* icon,
-                uint32_t textColor, uint16_t duration,
+                uint32_t textColor, uint32_t bgColor, uint16_t duration,
                 bool hold, bool urgent, bool stack) {
     // Replace mode: clear all existing notifications first
     if (!stack) {
@@ -982,6 +983,7 @@ int8_t notifAdd(const char* id, const char* text, const char* icon,
     }
 
     notif->textColor = textColor;
+    notif->backgroundColor = bgColor;
     notif->duration = duration;
     notif->hold = hold;
     notif->urgent = urgent;
@@ -1716,7 +1718,7 @@ void resetNotifScrollState() {
     notifScrollState.scrollPhase = 0;
     notifScrollState.needsScroll = false;
     notifScrollState.textWidth = 0;
-    notifScrollState.availableWidth = DISPLAY_WIDTH - 4;
+    notifScrollState.availableWidth = DISPLAY_WIDTH - 4;  // Full width minus 2px padding each side
 }
 
 // ============================================================================
@@ -1731,44 +1733,86 @@ void displayShowNotification(NotificationItem* notif) {
         notif->displayedAt = millis();
     }
 
-    dma_display->clearScreen();
+    // Layout: horizontal separators with background color margins
+    // [bg margin 4px] [separator line] [content: icon + text] [separator line] [bg margin 4px]
+    const int16_t marginHeight = 6;
+    const int16_t separatorTopY = marginHeight;                            // y=4
+    const int16_t separatorBottomY = DISPLAY_HEIGHT - marginHeight - 1;    // y=59
+    const int16_t contentY = separatorTopY + 2;                            // y=6
+    const int16_t contentH = separatorBottomY - contentY - 1;             // 52
+    const int16_t textPadding = 2;                                         // Horizontal text padding
+    const int16_t textAreaWidth = DISPLAY_WIDTH - textPadding * 2;         // 60
 
-    // Layout: icon centered top, text below (same as custom app)
-    int16_t textAreaX = 2;
-    int16_t textAreaWidth = DISPLAY_WIDTH - 4;
-    int16_t textYPos = 28;  // Default Y for text
+    // Colors
+    uint8_t tr = (notif->textColor >> 16) & 0xFF;
+    uint8_t tg = (notif->textColor >> 8) & 0xFF;
+    uint8_t tb = notif->textColor & 0xFF;
+    uint16_t lineColor = dma_display->color565(tr, tg, tb);
+    uint16_t black = dma_display->color565(0, 0, 0);
 
-    // Try to load icon if specified
+    uint16_t bgFill = black;
+    if (notif->backgroundColor != 0) {
+        uint8_t br = (notif->backgroundColor >> 16) & 0xFF;
+        uint8_t bg = (notif->backgroundColor >> 8) & 0xFF;
+        uint8_t bb = notif->backgroundColor & 0xFF;
+        bgFill = dma_display->color565(br, bg, bb);
+    }
+
+    // === Build frame (no clearScreen to avoid DMA flicker) ===
+
+    // 1. Background color margins (top and bottom strips)
+    dma_display->fillRect(0, 0, DISPLAY_WIDTH, marginHeight, bgFill);
+    dma_display->fillRect(0, DISPLAY_HEIGHT - marginHeight, DISPLAY_WIDTH, marginHeight, bgFill);
+
+    // 2. Content area (black)
+    dma_display->fillRect(0, marginHeight, DISPLAY_WIDTH, DISPLAY_HEIGHT - marginHeight * 2, black);
+
+    // 3. Separator lines
+    uint16_t separatorColor = (bgFill != black) ? bgFill : lineColor;
+    dma_display->drawFastHLine(0, separatorTopY, DISPLAY_WIDTH, separatorColor);
+    dma_display->drawFastHLine(0, separatorBottomY, DISPLAY_WIDTH, separatorColor);
+
+    // 4. Load icon
     CachedIcon* icon = nullptr;
+    uint8_t iconDisplayW = 0;
+    uint8_t iconDisplayH = 0;
     if (strlen(notif->icon) > 0) {
         icon = getIcon(notif->icon);
+        if (icon && icon->valid) {
+            uint8_t scale = (icon->width <= 8 && icon->height <= 8) ? 2 : 1;
+            iconDisplayW = icon->width * scale;
+            iconDisplayH = icon->height * scale;
+        } else {
+            icon = nullptr;
+        }
     }
 
-    // Adjust layout if icon is present
-    if (icon && icon->valid) {
-        uint8_t scale = (icon->width <= 8 && icon->height <= 8) ? 2 : 1;
-        uint8_t displayWidth = icon->width * scale;
-        uint8_t displayHeight = icon->height * scale;
+    // 5. Vertical centering of content (icon + text)
+    const int16_t textHeight = 7;
+    const int16_t iconTextGap = 4;
+    int16_t totalContentH = textHeight;
+    if (icon) {
+        totalContentH = iconDisplayH + iconTextGap + textHeight;
+    }
+    int16_t contentStartY = contentY + (contentH - totalContentH) / 2;
 
-        int16_t iconX = (DISPLAY_WIDTH - displayWidth) / 2;
-        int16_t iconY = 2;
-        drawIcon(icon, iconX, iconY);
-
-        textYPos = iconY + displayHeight + 6;
+    // 6. Draw icon centered horizontally
+    int16_t textYPos;
+    if (icon) {
+        int16_t iconX = (DISPLAY_WIDTH - iconDisplayW) / 2;
+        drawIcon(icon, iconX, contentStartY);
+        textYPos = contentStartY + iconDisplayH + iconTextGap;
+    } else {
+        textYPos = contentStartY;
     }
 
-    // Text color
-    uint8_t r = (notif->textColor >> 16) & 0xFF;
-    uint8_t g = (notif->textColor >> 8) & 0xFF;
-    uint8_t b = notif->textColor & 0xFF;
-    dma_display->setTextColor(dma_display->color565(r, g, b));
+    // 7. Draw text (full width, scrolls off-screen naturally - no clipping needed)
+    dma_display->setTextColor(lineColor);
     dma_display->setTextSize(1);
 
-    // Calculate text width and check if scrolling needed
     int16_t textWidth = calculateTextWidth(notif->text);
     bool needsScroll = textWidth > textAreaWidth;
 
-    // Update scroll state if text or width changed
     if (notifScrollState.textWidth != textWidth || notifScrollState.availableWidth != textAreaWidth) {
         notifScrollState.textWidth = textWidth;
         notifScrollState.availableWidth = textAreaWidth;
@@ -1779,13 +1823,13 @@ void displayShowNotification(NotificationItem* notif) {
         }
     }
 
-    // Calculate x position with scroll offset
-    int16_t xPos = textAreaX;
-    if (needsScroll) {
-        xPos = textAreaX - notifScrollState.scrollOffset;
+    int16_t xPos;
+    if (!needsScroll) {
+        xPos = textPadding + (textAreaWidth - textWidth) / 2;
+    } else {
+        xPos = textPadding - notifScrollState.scrollOffset;
     }
 
-    // Draw text
     printTextWithSpecialChars(notif->text, xPos, textYPos);
 
     #if DOUBLE_BUFFER
@@ -2835,12 +2879,13 @@ void setupWebServer() {
             const char* id = doc["id"] | "";
             const char* icon = doc["icon"] | "";
             uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
+            uint32_t bgColor = parseColorValue(doc["background"], 0x000000);
             uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_NOTIF_DURATION;
             bool hold = doc["hold"] | false;
             bool urgent = doc["urgent"] | false;
             bool stack = doc["stack"] | true;
 
-            int8_t slot = notifAdd(id, text, icon, textColor,
+            int8_t slot = notifAdd(id, text, icon, textColor, bgColor,
                                    duration, hold, urgent, stack);
 
             if (slot < 0) {

@@ -19,6 +19,7 @@ body:json {
     "text": "Hello from Bruno",
     "icon": "alert",
     "color": "#00FF00",
+    "background": "#0A1A0A",
     "duration": 5000,
     "hold": false,
     "urgent": false,
@@ -36,7 +37,8 @@ docs {
   - text: Notification text, max 127 chars (required)
   - id: Unique ID, auto-generated "notif_<millis>" if omitted (optional)
   - icon: Icon name from /icons folder (optional)
-  - color: Text color - hex "#FF0000", RGB [255,0,0], or uint32 (default: white)
+  - color: Text color and separator lines - hex "#FF0000", RGB [255,0,0], or uint32 (default: white)
+  - background: Margin strip color above/below separators (default: black/none)
   - duration: Display duration in ms, 0 = hold indefinitely (default: 5000)
   - hold: If true, never auto-expires (default: false)
   - urgent: If true, jumps to front of queue (default: false)

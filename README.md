@@ -139,7 +139,8 @@ curl -X POST "http://pixelcast.local/api/notify" \
 | `text` | string | *required* | Notification text (max 127 chars) |
 | `id` | string | auto | Unique ID (auto-generated `notif_<millis>` if omitted) |
 | `icon` | string | - | Icon name from `/icons` folder |
-| `color` | color | white | Text color (`"#FF0000"`, `[255,0,0]`, or uint32) |
+| `color` | color | white | Text color and separator lines (`"#FF0000"`, `[255,0,0]`, or uint32) |
+| `background` | color | black | Margin strip color above/below separators |
 | `duration` | int | 5000 | Display duration in ms |
 | `hold` | bool | false | If true, never auto-expires |
 | `urgent` | bool | false | If true, jumps to front of queue |

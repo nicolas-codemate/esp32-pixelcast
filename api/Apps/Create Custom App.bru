@@ -19,7 +19,7 @@ body:json {
     "name": "weather",
     "text": "22°C Sunny",
     "icon": "sunny",
-    "color": [255, 200, 0],
+    "color": "#FFC800",
     "duration": 10000,
     "lifetime": 0,
     "priority": 0
@@ -33,7 +33,7 @@ docs {
   - name: Unique identifier for the app (required)
   - text: Text to display (required)
   - icon: Icon name from /icons folder (optional, e.g. "sunny" loads /icons/sunny.png)
-  - color: RGB array [r, g, b] or hex integer (default: white)
+  - color: Hex "#FFC800", RGB array [255,200,0], or uint32 (default: white)
   - duration: Display duration in ms (default: 10000)
   - lifetime: Auto-expire after ms, 0 = permanent (default: 0)
   - priority: -10 to 10, higher = more important (default: 0)

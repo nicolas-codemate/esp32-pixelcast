@@ -1,0 +1,31 @@
+meta {
+  name: Set Indicator 3 Fade
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/indicator3
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "color": "#0000FF",
+    "mode": "fade",
+    "fadePeriod": 2000
+  }
+}
+
+docs {
+  Sets the bottom-right corner indicator (indicator 3) with fade mode.
+
+  This example sets a blue indicator that fades in and out over a 2-second cycle.
+  The fade uses a triangle wave and never fully disappears (min ~4% brightness).
+  See "Set Indicator 1" for full parameter documentation.
+}

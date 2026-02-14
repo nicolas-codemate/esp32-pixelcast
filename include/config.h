@@ -226,12 +226,16 @@
 // Indicator Configuration
 // ============================================================================
 #define NUM_INDICATORS 3
-#define INDICATOR_SIZE 4  // 4x4 pixels
+#define INDICATOR_CORE_SIZE 3      // 3x3 colored core
+#define INDICATOR_BORDER_SIZE 1    // 1px black contour
+#define INDICATOR_FOOTPRINT 5      // CORE + 2*BORDER = 5x5 total
+#define INDICATOR_BLINK_INTERVAL 500   // Default blink interval (ms)
+#define INDICATOR_FADE_PERIOD 2000     // Default fade cycle period (ms)
 
 // Indicator positions (corners)
 // Indicator 1: Top-left
-// Indicator 2: Top-right  
-// Indicator 3: Bottom-left
+// Indicator 2: Top-right
+// Indicator 3: Bottom-right
 
 // ============================================================================
 // Effects

@@ -56,17 +56,29 @@
 // Application System - Structures
 // ============================================================================
 
+#define MAX_ZONES 4
+
+struct AppZone {
+    char text[32];
+    char icon[32];
+    char label[32];
+    uint32_t textColor;
+};
+
 struct AppItem {
     char id[24];
     char text[64];
     char icon[32];
+    char label[32];
     uint32_t textColor;
     uint16_t duration;          // Display duration in ms
     uint32_t lifetime;          // Expiration time (0 = permanent)
     uint32_t createdAt;         // Creation timestamp
     int8_t priority;            // -10 to 10 (higher = more important)
+    uint8_t zoneCount;          // 0 or 1 = single layout, 2/3/4 = multi-zone
     bool active;
     bool isSystem;              // System apps cannot be deleted
+    AppZone zones[3];           // zones 1-3 (zone 0 = main text/icon/textColor)
 };
 
 // ============================================================================
@@ -128,6 +140,17 @@ struct CachedIcon {
 };
 CachedIcon iconCache[MAX_ICON_CACHE];
 PNG png;
+
+// Failed icon download blacklist (prevents retry every frame)
+#define MAX_FAILED_ICON_DOWNLOADS 8
+#define FAILED_ICON_RETRY_DELAY 300000  // 5 minutes
+
+struct FailedIconDownload {
+    char name[32];
+    unsigned long failedAt;
+};
+
+FailedIconDownload failedIconDownloads[MAX_FAILED_ICON_DOWNLOADS];
 
 // Temporary buffer for PNG decode callback
 uint16_t* pngDecodeTarget = nullptr;
@@ -486,6 +509,9 @@ int8_t appFind(const char* id);
 void appCleanExpired();
 AppItem* appGetNext();
 AppItem* appGetCurrent();
+void appSetZones(int8_t appIndex, JsonArray zonesArray);
+void displayShowMultiZone(AppItem* app);
+void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h);
 
 // Tracker management
 TrackerData* trackerFind(const char* name);
@@ -497,6 +523,7 @@ void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, in
 void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color);
 void formatTrackerValue(float value, char* buffer, size_t bufSize);
 uint32_t parseColorValue(JsonVariant colorVar, uint32_t defaultColor);
+void formatColorHex(uint32_t color, char* buffer, size_t bufSize);
 
 // Notification management
 void notifInit();
@@ -1120,6 +1147,14 @@ uint32_t parseColorValue(JsonVariant colorVar, uint32_t defaultColor) {
     return defaultColor;
 }
 
+// Format a uint32 color (0xRRGGBB) as hex string "#RRGGBB" into a buffer
+void formatColorHex(uint32_t color, char* buffer, size_t bufSize) {
+    snprintf(buffer, bufSize, "#%02X%02X%02X",
+             (uint8_t)((color >> 16) & 0xFF),
+             (uint8_t)((color >> 8) & 0xFF),
+             (uint8_t)(color & 0xFF));
+}
+
 // Draw sparkline chart from scaled uint16 data
 void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
     if (count < 2) return;
@@ -1650,7 +1685,13 @@ void displayShowApp(AppItem* app) {
         // Fallback to default custom app layout if no data
     }
 
-    // Custom apps
+    // Multi-zone layout apps
+    if (app->zoneCount >= 2) {
+        displayShowMultiZone(app);
+        return;
+    }
+
+    // Custom apps (single-zone)
     dma_display->clearScreen();
 
     // Layout calculation - VERTICAL layout for 64x64 panel
@@ -1717,6 +1758,206 @@ void displayShowApp(AppItem* app) {
 
     // Draw text with special character handling
     printTextWithSpecialChars(app->text, xPos, textYPos);
+
+    // Draw label below text if present (TomThumb font, dimmed color)
+    if (app->label[0] != '\0') {
+        dma_display->setFont(&TomThumb);
+        uint8_t labelR = r / 2;
+        uint8_t labelG = g / 2;
+        uint8_t labelB = b / 2;
+        dma_display->setTextColor(dma_display->color565(labelR, labelG, labelB));
+
+        // TomThumb: ~4px per char, setCursor uses baseline (5px above baseline for uppercase)
+        int16_t labelWidth = strlen(app->label) * 4;
+        int16_t labelX = (DISPLAY_WIDTH - labelWidth) / 2;
+        if (labelX < 2) labelX = 2;
+        int16_t labelY = textYPos + 10;  // 7px font height + 3px gap
+        dma_display->setCursor(labelX, labelY);
+        dma_display->print(app->label);
+
+        // Restore default font
+        dma_display->setFont(NULL);
+    }
+
+    drawIndicators();
+
+    #if DOUBLE_BUFFER
+        dma_display->flipDMABuffer();
+    #endif
+}
+
+// ============================================================================
+// Multi-Zone Display Rendering
+// ============================================================================
+
+// Render a single zone within its bounding box
+void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h) {
+    if (!zone) return;
+
+    // Set text color
+    uint8_t r = (zone->textColor >> 16) & 0xFF;
+    uint8_t g = (zone->textColor >> 8) & 0xFF;
+    uint8_t b = zone->textColor & 0xFF;
+    dma_display->setTextColor(dma_display->color565(r, g, b));
+    dma_display->setTextSize(1);
+
+    // Try to load icon
+    CachedIcon* icon = nullptr;
+    if (strlen(zone->icon) > 0) {
+        icon = getIcon(zone->icon);
+    }
+
+    bool isFullWidth = (w >= 48);
+
+    bool hasLabel = (zone->label[0] != '\0');
+
+    if (isFullWidth) {
+        // Full-width zone (64x31): icon left, text right
+        int16_t textX = x + 2;
+        // Shift text up if label present to make room
+        int16_t textY = hasLabel ? y + (h / 2) - 7 : y + (h / 2) - 3;
+
+        if (icon && icon->valid) {
+            // Icon at left, vertically centered in zone
+            uint8_t scale = (icon->width <= 8 && icon->height <= 8) ? 2 : 1;
+            uint8_t displayWidth = icon->width * scale;
+            uint8_t displayHeight = icon->height * scale;
+            int16_t iconX = x + 2;
+            int16_t iconY = y + (h - displayHeight) / 2;
+            drawIconAtScale(icon, iconX, iconY, scale);
+
+            // Text starts after icon
+            textX = iconX + displayWidth + 3;
+        }
+
+        // Truncate text to fit available width
+        int16_t availableWidth = (x + w) - textX;
+        int16_t maxChars = availableWidth / 6;  // 6px per char (5x7 font + 1px spacing)
+        char truncatedText[32];
+        strlcpy(truncatedText, zone->text, sizeof(truncatedText));
+        if ((int16_t)strlen(truncatedText) > maxChars && maxChars > 0) {
+            truncatedText[maxChars] = '\0';
+        }
+
+        printTextWithSpecialChars(truncatedText, textX, textY);
+
+        // Draw label below text in TomThumb font with dimmed color
+        if (hasLabel) {
+            dma_display->setFont(&TomThumb);
+            dma_display->setTextColor(dma_display->color565(r / 2, g / 2, b / 2));
+            int16_t labelY = textY + 10;  // 7px font height + 3px gap
+            dma_display->setCursor(textX, labelY);
+            dma_display->print(zone->label);
+            // Restore default font and color
+            dma_display->setFont(NULL);
+            dma_display->setTextColor(dma_display->color565(r, g, b));
+        }
+    } else {
+        // Half-width zone (32x31): icon top centered, text below
+        int16_t textY = y + h - (hasLabel ? 16 : 10);
+
+        if (icon && icon->valid) {
+            // Icon centered horizontally in zone
+            uint8_t scale = (icon->width <= 8 && icon->height <= 8) ? 2 : 1;
+            uint8_t displayWidth = icon->width * scale;
+            uint8_t displayHeight = icon->height * scale;
+            int16_t iconX = x + (w - displayWidth) / 2;
+            int16_t iconY = y + 2;
+            drawIconAtScale(icon, iconX, iconY, scale);
+
+            // Text below icon
+            textY = iconY + displayHeight + 3;
+        }
+
+        // Truncate text to fit zone width
+        int16_t maxChars = (w - 2) / 6;
+        char truncatedText[32];
+        strlcpy(truncatedText, zone->text, sizeof(truncatedText));
+        if ((int16_t)strlen(truncatedText) > maxChars && maxChars > 0) {
+            truncatedText[maxChars] = '\0';
+        }
+
+        // Center text horizontally in zone
+        int16_t textWidth = strlen(truncatedText) * 6;
+        int16_t textX = x + (w - textWidth) / 2;
+        if (textX < x + 1) textX = x + 1;
+
+        printTextWithSpecialChars(truncatedText, textX, textY);
+
+        // Draw label below text in TomThumb font with dimmed color
+        if (hasLabel) {
+            dma_display->setFont(&TomThumb);
+            dma_display->setTextColor(dma_display->color565(r / 2, g / 2, b / 2));
+            int16_t labelWidth = strlen(zone->label) * 4;
+            int16_t labelX = x + (w - labelWidth) / 2;
+            if (labelX < x + 1) labelX = x + 1;
+            int16_t labelY = textY + 10;  // 7px font height + 3px gap
+            dma_display->setCursor(labelX, labelY);
+            dma_display->print(zone->label);
+            // Restore default font and color
+            dma_display->setFont(NULL);
+            dma_display->setTextColor(dma_display->color565(r, g, b));
+        }
+    }
+}
+
+// Render multi-zone layout for an app
+void displayShowMultiZone(AppItem* app) {
+    if (!app || app->zoneCount < 2) return;
+
+    dma_display->clearScreen();
+
+    // Build array of all zones (zone 0 from main app fields, zones 1-3 from zones[])
+    AppZone zone0;
+    strlcpy(zone0.text, app->text, sizeof(zone0.text));
+    strlcpy(zone0.icon, app->icon, sizeof(zone0.icon));
+    strlcpy(zone0.label, app->label, sizeof(zone0.label));
+    zone0.textColor = app->textColor;
+
+    AppZone* allZones[MAX_ZONES] = { &zone0, nullptr, nullptr, nullptr };
+    for (uint8_t i = 1; i < app->zoneCount && i < MAX_ZONES; i++) {
+        allZones[i] = &app->zones[i - 1];
+    }
+
+    // Separator line color (dark gray)
+    uint16_t separatorColor = dma_display->color565(40, 40, 40);
+
+    switch (app->zoneCount) {
+        case 2: {
+            // Two horizontal rows: zone0 top (64x31), zone1 bottom (64x31)
+            // Separator at y=31
+            dma_display->drawFastHLine(0, 31, 64, separatorColor);
+
+            displayShowZone(allZones[0], 0, 0, 64, 31);
+            displayShowZone(allZones[1], 0, 33, 64, 31);
+            break;
+        }
+        case 3: {
+            // Top row full-width (zone0, 64x31), bottom row split (zone1 + zone2, 31x31 each)
+            // Horizontal separator at y=31
+            dma_display->drawFastHLine(0, 31, 64, separatorColor);
+            // Vertical separator in bottom half at x=31
+            dma_display->drawFastVLine(31, 33, 31, separatorColor);
+
+            displayShowZone(allZones[0], 0, 0, 64, 31);
+            displayShowZone(allZones[1], 0, 33, 31, 31);
+            displayShowZone(allZones[2], 33, 33, 31, 31);
+            break;
+        }
+        case 4: {
+            // Four quadrants (31x31 each)
+            // Horizontal separator at y=31
+            dma_display->drawFastHLine(0, 31, 64, separatorColor);
+            // Vertical separator at x=31
+            dma_display->drawFastVLine(31, 0, 64, separatorColor);
+
+            displayShowZone(allZones[0], 0, 0, 31, 31);
+            displayShowZone(allZones[1], 33, 0, 31, 31);
+            displayShowZone(allZones[2], 0, 33, 31, 31);
+            displayShowZone(allZones[3], 33, 33, 31, 31);
+            break;
+        }
+    }
 
     drawIndicators();
 
@@ -2328,6 +2569,36 @@ CachedIcon* loadIcon(const char* name) {
     return cached;
 }
 
+bool isFailedIconDownload(const char* name) {
+    unsigned long now = millis();
+    for (uint8_t i = 0; i < MAX_FAILED_ICON_DOWNLOADS; i++) {
+        if (failedIconDownloads[i].name[0] != '\0' &&
+            strcmp(failedIconDownloads[i].name, name) == 0 &&
+            (now - failedIconDownloads[i].failedAt) < FAILED_ICON_RETRY_DELAY) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void addFailedIconDownload(const char* name) {
+    // Find oldest entry to evict
+    uint8_t oldestIndex = 0;
+    unsigned long oldestTime = ULONG_MAX;
+    for (uint8_t i = 0; i < MAX_FAILED_ICON_DOWNLOADS; i++) {
+        if (failedIconDownloads[i].name[0] == '\0') {
+            oldestIndex = i;
+            break;
+        }
+        if (failedIconDownloads[i].failedAt < oldestTime) {
+            oldestTime = failedIconDownloads[i].failedAt;
+            oldestIndex = i;
+        }
+    }
+    strlcpy(failedIconDownloads[oldestIndex].name, name, sizeof(failedIconDownloads[oldestIndex].name));
+    failedIconDownloads[oldestIndex].failedAt = millis();
+}
+
 CachedIcon* getIcon(const char* name) {
     if (!name || strlen(name) == 0) return nullptr;
 
@@ -2339,8 +2610,32 @@ CachedIcon* getIcon(const char* name) {
         }
     }
 
-    // Not in cache, load it
-    return loadIcon(name);
+    // Not in cache, try loading from filesystem
+    CachedIcon* result = loadIcon(name);
+    if (result) return result;
+
+    // Auto-download LaMetric icons on demand
+    if (strncmp(name, "lm_", 3) == 0) {
+        const char* idStr = name + 3;
+        // Validate that the rest is numeric
+        bool isNumeric = (*idStr != '\0');
+        for (const char* p = idStr; *p; p++) {
+            if (*p < '0' || *p > '9') { isNumeric = false; break; }
+        }
+        if (isNumeric && !isFailedIconDownload(name)) {
+            uint32_t iconId = strtoul(idStr, nullptr, 10);
+            Serial.printf("[ICON] Auto-downloading LaMetric icon: %s (id=%u)\n", name, iconId);
+            if (downloadLaMetricIcon(iconId, name)) {
+                return loadIcon(name);
+            } else {
+                addFailedIconDownload(name);
+                Serial.printf("[ICON] Download failed, blacklisted for %ds: %s\n",
+                              FAILED_ICON_RETRY_DELAY / 1000, name);
+            }
+        }
+    }
+
+    return nullptr;
 }
 
 void drawIcon(CachedIcon* icon, int16_t x, int16_t y) {
@@ -2701,11 +2996,24 @@ void setupWebServer() {
                 return;
             }
 
-            const char* text = doc["text"] | "";
-            const char* icon = doc["icon"] | "";
+            // Check for multi-zone format
+            JsonArray zonesArray = doc["zones"].as<JsonArray>();
+            bool isMultiZone = !zonesArray.isNull() && zonesArray.size() > 0;
 
-            // Parse colors using shared helper
-            uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
+            if (isMultiZone) {
+                uint8_t zoneCount = zonesArray.size();
+                if (zoneCount == 1 || zoneCount > MAX_ZONES) {
+                    request->send(400, "application/json",
+                        "{\"error\":\"zones array must have 2, 3, or 4 elements\"}");
+                    return;
+                }
+            }
+
+            // For multi-zone, zone 0 provides the main fields; for single-zone, use top-level fields
+            const char* text = isMultiZone ? "" : (doc["text"] | "");
+            const char* icon = isMultiZone ? "" : (doc["icon"] | "");
+            const char* label = isMultiZone ? "" : (doc["label"] | "");
+            uint32_t textColor = isMultiZone ? 0xFFFFFF : parseColorValue(doc["color"], 0xFFFFFF);
 
             uint16_t duration = doc["duration"] | settings.defaultDuration;
             uint32_t lifetime = doc["lifetime"] | 0;
@@ -2715,6 +3023,14 @@ void setupWebServer() {
                                    duration, lifetime, priority, false);
 
             if (result >= 0) {
+                // Copy label for single-zone
+                if (!isMultiZone) {
+                    strlcpy(apps[result].label, label, sizeof(apps[result].label));
+                }
+                // Apply multi-zone data if present
+                if (isMultiZone) {
+                    appSetZones(result, zonesArray);
+                }
                 Serial.printf("[API] Custom app '%s' created/updated\n", name.c_str());
                 request->send(200, "application/json", "{\"success\":true}");
             } else {
@@ -3439,17 +3755,47 @@ void handleApiApps(AsyncWebServerRequest *request) {
             appObj["id"] = apps[i].id;
             appObj["text"] = apps[i].text;
             appObj["icon"] = apps[i].icon;
+            if (apps[i].label[0] != '\0') {
+                appObj["label"] = apps[i].label;
+            }
             appObj["duration"] = apps[i].duration;
             appObj["lifetime"] = apps[i].lifetime;
             appObj["priority"] = apps[i].priority;
             appObj["isSystem"] = apps[i].isSystem;
             appObj["isCurrent"] = (currentAppIndex == i);
 
-            // Color as RGB array
-            JsonArray color = appObj["color"].to<JsonArray>();
-            color.add((apps[i].textColor >> 16) & 0xFF);
-            color.add((apps[i].textColor >> 8) & 0xFF);
-            color.add(apps[i].textColor & 0xFF);
+            // Color as hex string
+            char colorHex[8];
+            formatColorHex(apps[i].textColor, colorHex, sizeof(colorHex));
+            appObj["color"] = colorHex;
+
+            // Multi-zone data
+            if (apps[i].zoneCount >= 2) {
+                appObj["zoneCount"] = apps[i].zoneCount;
+                JsonArray zonesArr = appObj["zones"].to<JsonArray>();
+                // Zone 0 from main fields
+                JsonObject z0 = zonesArr.add<JsonObject>();
+                z0["text"] = apps[i].text;
+                z0["icon"] = apps[i].icon;
+                if (apps[i].label[0] != '\0') {
+                    z0["label"] = apps[i].label;
+                }
+                char z0ColorHex[8];
+                formatColorHex(apps[i].textColor, z0ColorHex, sizeof(z0ColorHex));
+                z0["color"] = z0ColorHex;
+                // Zones 1-N
+                for (uint8_t z = 1; z < apps[i].zoneCount; z++) {
+                    JsonObject zObj = zonesArr.add<JsonObject>();
+                    zObj["text"] = apps[i].zones[z - 1].text;
+                    zObj["icon"] = apps[i].zones[z - 1].icon;
+                    if (apps[i].zones[z - 1].label[0] != '\0') {
+                        zObj["label"] = apps[i].zones[z - 1].label;
+                    }
+                    char zColorHex[8];
+                    formatColorHex(apps[i].zones[z - 1].textColor, zColorHex, sizeof(zColorHex));
+                    zObj["color"] = zColorHex;
+                }
+            }
         }
     }
 
@@ -3703,18 +4049,16 @@ bool saveSettings() {
     doc["apps"]["clock"]["enabled"] = settings.clockEnabled;
     doc["apps"]["clock"]["format24h"] = settings.clockFormat24h;
     doc["apps"]["clock"]["showSeconds"] = settings.clockShowSeconds;
-    JsonArray clockColor = doc["apps"]["clock"]["color"].to<JsonArray>();
-    clockColor.add((settings.clockColor >> 16) & 0xFF);
-    clockColor.add((settings.clockColor >> 8) & 0xFF);
-    clockColor.add(settings.clockColor & 0xFF);
+    char clockColorHex[8];
+    formatColorHex(settings.clockColor, clockColorHex, sizeof(clockColorHex));
+    doc["apps"]["clock"]["color"] = clockColorHex;
 
     // Date app settings
     doc["apps"]["date"]["enabled"] = settings.dateEnabled;
     doc["apps"]["date"]["format"] = settings.dateFormat;
-    JsonArray dateColor = doc["apps"]["date"]["color"].to<JsonArray>();
-    dateColor.add((settings.dateColor >> 16) & 0xFF);
-    dateColor.add((settings.dateColor >> 8) & 0xFF);
-    dateColor.add(settings.dateColor & 0xFF);
+    char dateColorHex[8];
+    formatColorHex(settings.dateColor, dateColorHex, sizeof(dateColorHex));
+    doc["apps"]["date"]["color"] = dateColorHex;
 
     // MQTT settings
     doc["mqtt"]["enabled"] = settings.mqttEnabled;
@@ -3735,10 +4079,9 @@ bool saveSettings() {
             default: break;
         }
         doc["indicators"][key]["mode"] = modeStr;
-        JsonArray color = doc["indicators"][key]["color"].to<JsonArray>();
-        color.add((indicators[i].color >> 16) & 0xFF);
-        color.add((indicators[i].color >> 8) & 0xFF);
-        color.add(indicators[i].color & 0xFF);
+        char indicatorColorHex[8];
+        formatColorHex(indicators[i].color, indicatorColorHex, sizeof(indicatorColorHex));
+        doc["indicators"][key]["color"] = indicatorColorHex;
         doc["indicators"][key]["blinkInterval"] = indicators[i].blinkInterval;
         doc["indicators"][key]["fadePeriod"] = indicators[i].fadePeriod;
     }
@@ -3783,6 +4126,7 @@ bool loadApps() {
         const char* id = appObj["id"] | "";
         const char* text = appObj["text"] | "";
         const char* icon = appObj["icon"] | "";
+        const char* label = appObj["label"] | "";
         uint32_t textColor = appObj["textColor"] | 0xFFFFFF;
         uint16_t duration = appObj["duration"] | settings.defaultDuration;
         uint32_t lifetime = appObj["lifetime"] | 0;
@@ -3792,6 +4136,13 @@ bool loadApps() {
             int8_t result = appAdd(id, text, icon, textColor,
                                    duration, lifetime, priority, false);
             if (result >= 0) {
+                // Restore label
+                strlcpy(apps[result].label, label, sizeof(apps[result].label));
+                // Restore multi-zone data if present
+                JsonArray zonesArr = appObj["zones"].as<JsonArray>();
+                if (!zonesArr.isNull() && zonesArr.size() >= 2) {
+                    appSetZones(result, zonesArr);
+                }
                 loadedCount++;
             }
         }
@@ -3822,6 +4173,38 @@ bool saveApps() {
             appObj["duration"] = apps[i].duration;
             appObj["lifetime"] = apps[i].lifetime;
             appObj["priority"] = apps[i].priority;
+            if (apps[i].label[0] != '\0') {
+                appObj["label"] = apps[i].label;
+            }
+
+            // Serialize multi-zone data
+            if (apps[i].zoneCount >= 2) {
+                appObj["zoneCount"] = apps[i].zoneCount;
+                JsonArray zonesArr = appObj["zones"].to<JsonArray>();
+                // Zone 0 = main app fields (text/icon/textColor/label)
+                JsonObject z0 = zonesArr.add<JsonObject>();
+                z0["text"] = apps[i].text;
+                z0["icon"] = apps[i].icon;
+                if (apps[i].label[0] != '\0') {
+                    z0["label"] = apps[i].label;
+                }
+                char z0ColorHex[8];
+                formatColorHex(apps[i].textColor, z0ColorHex, sizeof(z0ColorHex));
+                z0["color"] = z0ColorHex;
+                // Zones 1..N stored in app->zones[0..N-1]
+                for (uint8_t z = 1; z < apps[i].zoneCount; z++) {
+                    JsonObject zObj = zonesArr.add<JsonObject>();
+                    zObj["text"] = apps[i].zones[z - 1].text;
+                    zObj["icon"] = apps[i].zones[z - 1].icon;
+                    if (apps[i].zones[z - 1].label[0] != '\0') {
+                        zObj["label"] = apps[i].zones[z - 1].label;
+                    }
+                    char zColorHex[8];
+                    formatColorHex(apps[i].zones[z - 1].textColor, zColorHex, sizeof(zColorHex));
+                    zObj["color"] = zColorHex;
+                }
+            }
+
             savedCount++;
         }
     }
@@ -3887,12 +4270,16 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
         AppItem* app = &apps[existingIndex];
         strlcpy(app->text, text, sizeof(app->text));
         if (icon) strlcpy(app->icon, icon, sizeof(app->icon));
+        app->label[0] = '\0';  // Reset label (caller will set if needed)
         app->textColor = textColor;
         app->duration = duration;
         app->lifetime = lifetime;
         app->priority = priority;
         app->createdAt = millis();
         app->active = true;
+        // Reset zone data (caller will set via appSetZones if needed)
+        app->zoneCount = 0;
+        memset(app->zones, 0, sizeof(app->zones));
         Serial.printf("[APPS] Updated app: %s\n", id);
         // Persist non-system apps
         if (!app->isSystem) {
@@ -3921,6 +4308,7 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
     strlcpy(app->text, text, sizeof(app->text));
     if (icon) strlcpy(app->icon, icon, sizeof(app->icon));
     else app->icon[0] = '\0';
+    app->label[0] = '\0';  // Initialize label (caller will set if needed)
     app->textColor = textColor;
     app->duration = duration > 0 ? duration : settings.defaultDuration;
     app->lifetime = lifetime;
@@ -3928,6 +4316,9 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
     app->priority = constrain(priority, -10, 10);
     app->active = true;
     app->isSystem = isSystem;
+    // Initialize zone data (caller will set via appSetZones if needed)
+    app->zoneCount = 0;
+    memset(app->zones, 0, sizeof(app->zones));
 
     appCount++;
     Serial.printf("[APPS] Added app: %s (slot %d, total %d)\n", id, emptySlot, appCount);
@@ -3938,6 +4329,39 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
     }
 
     return emptySlot;
+}
+
+void appSetZones(int8_t appIndex, JsonArray zonesArray) {
+    if (appIndex < 0 || appIndex >= MAX_APPS) return;
+
+    AppItem* app = &apps[appIndex];
+    uint8_t count = zonesArray.size();
+    if (count < 2 || count > MAX_ZONES) return;
+
+    app->zoneCount = count;
+
+    // Zone 0 maps to the app's main text/icon/textColor/label fields
+    JsonObject zone0 = zonesArray[0].as<JsonObject>();
+    strlcpy(app->text, zone0["text"] | "", sizeof(app->text));
+    strlcpy(app->icon, zone0["icon"] | "", sizeof(app->icon));
+    strlcpy(app->label, zone0["label"] | "", sizeof(app->label));
+    app->textColor = parseColorValue(zone0["color"], 0xFFFFFF);
+
+    // Zones 1-3 map to app->zones[0..2]
+    for (uint8_t i = 1; i < count && i < MAX_ZONES; i++) {
+        JsonObject zoneObj = zonesArray[i].as<JsonObject>();
+        strlcpy(app->zones[i - 1].text, zoneObj["text"] | "", sizeof(app->zones[0].text));
+        strlcpy(app->zones[i - 1].icon, zoneObj["icon"] | "", sizeof(app->zones[0].icon));
+        strlcpy(app->zones[i - 1].label, zoneObj["label"] | "", sizeof(app->zones[0].label));
+        app->zones[i - 1].textColor = parseColorValue(zoneObj["color"], 0xFFFFFF);
+    }
+
+    Serial.printf("[APPS] Set %d zones for app: %s\n", count, app->id);
+
+    // Persist non-system apps
+    if (!app->isSystem) {
+        saveApps();
+    }
 }
 
 bool appRemove(const char* id) {

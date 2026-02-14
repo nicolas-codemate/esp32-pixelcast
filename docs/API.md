@@ -29,6 +29,7 @@ Content-Type: application/json
 {
   "text": "Hello World",
   "icon": "smiley",
+  "label": "Subtitle",
   "color": [
     255,
     255,
@@ -63,6 +64,7 @@ Content-Type: application/json
 |------------|---------|---------------|----------------------------------------------------|
 | text       | string  | ""            | Text to display                                    |
 | icon       | string  | null          | Icon name (without extension)                      |
+| label      | string  | ""            | Subtitle displayed below text (TomThumb font, dimmed) |
 | color      | [R,G,B] | [255,255,255] | Text color                                         |
 | background | [R,G,B] | [0,0,0]       | Background color                                   |
 | duration   | int     | 10            | Display duration (seconds)                         |
@@ -88,6 +90,66 @@ Content-Type: application/json
   "success": true
 }
 ```
+
+#### Multi-zone layout
+
+Instead of single text/icon/color, send a `zones` array to create a dashboard-like multi-info screen. Layout is inferred from zone count.
+
+```http
+POST /api/custom?name={appName}
+Content-Type: application/json
+```
+
+**Payload (2 zones - dual rows):**
+
+```json
+{
+  "zones": [
+    { "text": "22.5C", "icon": "thermo", "label": "Salon", "color": "#FF8800" },
+    { "text": "58%", "icon": "humidity", "label": "Humidity", "color": "#00D4FF" }
+  ],
+  "duration": 10000
+}
+```
+
+**Payload (4 zones - quad grid):**
+
+```json
+{
+  "zones": [
+    { "text": "22.5C", "icon": "thermo", "label": "Salon", "color": "#FF8800" },
+    { "text": "58%", "icon": "humidity", "color": "#00D4FF" },
+    { "text": "BTC", "icon": "btc", "color": "#FFD000" },
+    { "text": "OK", "icon": "wifi", "color": "#22FF44" }
+  ],
+  "duration": 15000
+}
+```
+
+**Zone object:**
+
+| Param | Type   | Default       | Description                              |
+|-------|--------|---------------|------------------------------------------|
+| text  | string | ""            | Text to display (truncated)              |
+| icon  | string | null          | Icon name (without extension)            |
+| label | string | ""            | Subtitle below text (TomThumb, dimmed)   |
+| color | mixed  | [255,255,255] | Text color (hex, RGB, uint)              |
+
+**Layout types:**
+
+| Zones | Layout                                        |
+|-------|-----------------------------------------------|
+| 2     | Two horizontal rows (64x31 each)              |
+| 3     | Top full-width (64x31) + bottom 2 cols (31x31)|
+| 4     | Four quadrants (31x31 each)                   |
+
+- Full-width zones: icon left + text right
+- Half-width zones: icon top centered + text below
+- 1px dark separator lines between zones
+- Text is truncated (no scrolling in multi-zone)
+- The `zones` array must have 2, 3, or 4 elements (1 or >4 is rejected)
+- Top-level `duration`, `lifetime`, `priority` still apply
+- Backward compatible: omitting `zones` keeps the single-zone layout
 
 #### Delete an app
 

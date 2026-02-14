@@ -126,9 +126,32 @@ curl -X POST "http://pixelcast.local/api/notify" \
   -d '{
     "text": "New message!",
     "icon": "mail",
-    "color": [0, 150, 255],
-    "duration": 5
+    "color": "#0096FF",
+    "duration": 5000,
+    "hold": false,
+    "urgent": false,
+    "stack": true
   }'
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `text` | string | *required* | Notification text (max 127 chars) |
+| `id` | string | auto | Unique ID (auto-generated `notif_<millis>` if omitted) |
+| `icon` | string | - | Icon name from `/icons` folder |
+| `color` | color | white | Text color (`"#FF0000"`, `[255,0,0]`, or uint32) |
+| `duration` | int | 5000 | Display duration in ms |
+| `hold` | bool | false | If true, never auto-expires |
+| `urgent` | bool | false | If true, jumps to front of queue |
+| `stack` | bool | true | If false, clears queue before adding |
+
+#### Dismiss / List Notifications
+```bash
+# Dismiss the current notification
+curl -X POST "http://pixelcast.local/api/notify/dismiss"
+
+# List all active notifications in queue
+curl "http://pixelcast.local/api/notify/list"
 ```
 
 #### Control an Indicator
@@ -179,43 +202,27 @@ mqtt:
           }
 ```
 
-## Payload Reference
+## API Reference
 
-### Custom App / Notification
-```json
-{
-  "text": "Text to display",
-  "icon": "icon_name",
-  "color": [255, 255, 255],
-  "background": [0, 0, 0],
-  "duration": 10,
-  "lifetime": 300,
-  "pos": 0,
-  "pushIcon": 0,
-  "progress": -1,
-  "progressC": [0, 255, 0],
-  "progressBC": [50, 50, 50],
-  "bar": [],
-  "effect": "none",
-  "effectSettings": {},
-  "stack": false,
-  "hold": false
-}
-```
+### Endpoints
 
-### Parameters
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `text` | string | Text to display |
-| `icon` | string | Icon name (without extension) |
-| `color` | [R,G,B] | Text color |
-| `duration` | int | Display duration (seconds) |
-| `lifetime` | int | Expiration if not updated (seconds) |
-| `progress` | int | Progress bar (0-100, -1 = disabled) |
-| `bar` | [int] | Data for bar chart |
-| `effect` | string | Visual effect (Matrix, Rainbow, etc.) |
-| `stack` | bool | Stack notifications |
-| `hold` | bool | Hold until acknowledgment |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/custom?name={name}` | Create/update custom app |
+| `DELETE` | `/api/custom?name={name}` | Remove custom app |
+| `POST` | `/api/notify` | Send notification |
+| `POST` | `/api/notify/dismiss` | Dismiss current notification |
+| `GET` | `/api/notify/list` | List active notifications |
+| `POST` | `/api/weather` | Update weather data |
+| `GET` | `/api/weather` | Read weather data |
+| `POST` | `/api/tracker?name={name}` | Create/update tracker |
+| `GET` | `/api/tracker?name={name}` | Read tracker data |
+| `GET` | `/api/trackers` | List all trackers |
+| `DELETE` | `/api/tracker?name={name}` | Remove tracker |
+| `GET` | `/api/stats` | System statistics |
+| `GET` | `/api/apps` | List all apps |
+| `POST` | `/api/brightness` | Set brightness (0-255) |
+| `POST` | `/api/reboot` | Restart device |
 
 ## Configuration
 

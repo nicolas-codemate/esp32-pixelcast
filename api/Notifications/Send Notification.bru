@@ -1,0 +1,44 @@
+meta {
+  name: Send Notification
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/notify
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "text": "Hello from Bruno",
+    "icon": "alert",
+    "color": "#00FF00",
+    "duration": 5000,
+    "hold": false,
+    "urgent": false,
+    "stack": true
+  }
+}
+
+docs {
+  Sends a notification that interrupts app rotation.
+
+  Notifications are displayed in a FIFO queue and auto-dismiss
+  after their duration. App rotation resumes when the queue is empty.
+
+  Parameters:
+  - text: Notification text, max 127 chars (required)
+  - id: Unique ID, auto-generated "notif_<millis>" if omitted (optional)
+  - icon: Icon name from /icons folder (optional)
+  - color: Text color - hex "#FF0000", RGB [255,0,0], or uint32 (default: white)
+  - duration: Display duration in ms, 0 = hold indefinitely (default: 5000)
+  - hold: If true, never auto-expires (default: false)
+  - urgent: If true, jumps to front of queue (default: false)
+  - stack: If true, queues after existing notifications. If false, clears queue first (default: true)
+}

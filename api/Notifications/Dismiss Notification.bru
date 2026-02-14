@@ -1,0 +1,20 @@
+meta {
+  name: Dismiss Notification
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/notify/dismiss
+  body: none
+  auth: none
+}
+
+docs {
+  Dismisses the currently displayed notification.
+
+  If more notifications are queued, the next one is displayed.
+  When the queue is empty, app rotation resumes at the previous app.
+
+  Returns 404 if no notification is currently active.
+}

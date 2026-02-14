@@ -1,0 +1,18 @@
+meta {
+  name: Turn Off Indicator
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/api/indicator1
+  body: none
+  auth: none
+}
+
+docs {
+  Turns off an indicator.
+
+  Change the URL to /api/indicator2 or /api/indicator3 to target a different indicator.
+  Alternatively, POST with {"mode":"off"} or an empty body {} also turns off the indicator.
+}

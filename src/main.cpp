@@ -196,6 +196,29 @@ struct TrackerData {
 TrackerData trackers[MAX_TRACKERS];
 uint8_t trackerCount = 0;
 
+// Indicator Data
+enum IndicatorMode : uint8_t {
+    INDICATOR_OFF = 0,
+    INDICATOR_SOLID = 1,
+    INDICATOR_BLINK = 2,
+    INDICATOR_FADE = 3
+};
+
+struct IndicatorData {
+    IndicatorMode mode;
+    uint32_t color;          // 0xRRGGBB
+    uint16_t blinkInterval;  // ms (default INDICATOR_BLINK_INTERVAL)
+    uint16_t fadePeriod;     // ms (default INDICATOR_FADE_PERIOD)
+};
+IndicatorData indicators[NUM_INDICATORS];
+
+struct IndicatorAnimState {
+    unsigned long lastToggle;
+    bool blinkOn;
+    unsigned long cycleStart;
+};
+IndicatorAnimState indicatorAnimState[NUM_INDICATORS];
+
 // Notification Data
 struct NotificationItem {
     char id[24];              // Unique ID ("notif_<millis>" or user-provided)
@@ -488,6 +511,15 @@ bool notifIsExpired(NotificationItem* notif);
 void displayShowNotification(NotificationItem* notif);
 void resetNotifScrollState();
 
+// Indicator management
+void indicatorInit();
+void indicatorSet(uint8_t index, IndicatorMode mode, uint32_t color,
+                  uint16_t blinkInterval, uint16_t fadePeriod);
+void indicatorOff(uint8_t index);
+void drawIndicators();
+bool indicatorNeedsRedraw();
+void handleIndicatorApi(AsyncWebServerRequest *request, JsonVariant &json, uint8_t index);
+
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void mqttReconnect();
 void mqttPublishStats();
@@ -530,6 +562,9 @@ void setup() {
 
     // Initialize notification system
     notifInit();
+
+    // Initialize indicator system (defaults set before loadSettings overrides)
+    indicatorInit();
 
     Serial.println("[INIT] Loading settings...");
     if (!loadSettings()) {
@@ -783,6 +818,8 @@ void displayShowTime() {
     dma_display->setCursor(xPos, 28);
     dma_display->print(timeStr);
 
+    drawIndicators();
+
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
     #endif
@@ -823,6 +860,8 @@ void displayShowDate() {
     int xPos = (DISPLAY_WIDTH - textWidth) / 2;
     dma_display->setCursor(xPos, 28);
     dma_display->print(dateStr);
+
+    drawIndicators();
 
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
@@ -1289,6 +1328,8 @@ void displayShowTracker(TrackerData* tracker) {
         dma_display->setFont(NULL);
     }
 
+    drawIndicators();
+
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
     #endif
@@ -1338,7 +1379,7 @@ void displayShowWeatherClock(uint16_t appDuration) {
     uint16_t cyan = dma_display->color565(0, 180, 255);
     uint16_t mintGreen = dma_display->color565(100, 255, 180);
     uint16_t gray = dma_display->color565(140, 140, 140);
-    uint16_t amber = dma_display->color565(255, 180, 50);
+    uint16_t coral = dma_display->color565(255, 140, 100);
     uint16_t coldBlue = dma_display->color565(80, 140, 255);
     uint16_t warmRed = dma_display->color565(255, 50, 30);
     uint16_t black = dma_display->color565(0, 0, 0);
@@ -1480,7 +1521,7 @@ void displayShowWeatherClock(uint16_t appDuration) {
 
             // Day name (TomThumb baseline=39, glyphs y=34-38)
             dma_display->setFont(&TomThumb);
-            dma_display->setTextColor(amber);
+            dma_display->setTextColor(coral);
             int16_t dayNameWidth = strlen(weatherData.forecast[forecastIndex].dayName) * 4;
             dma_display->setCursor(colCenter - dayNameWidth / 2, 39);
             dma_display->print(weatherData.forecast[forecastIndex].dayName);
@@ -1514,15 +1555,14 @@ void displayShowWeatherClock(uint16_t appDuration) {
             dma_display->print(maxStr);
         }
 
-        // Page indicator squares (vertical, right edge, only if multiple pages)
+        // Page indicator squares (vertical, right edge, just below second separator)
         if (forecastPageCount > 1) {
             uint16_t activeDot = dma_display->color565(120, 60, 200);  // Dark violet
             int squareSize = 2;
             int gap = 1;
             int step = squareSize + gap;  // 3px per indicator
-            int totalHeight = forecastPageCount * step - gap;
             int dotX = 61;               // 2px margin from right edge (x=63)
-            int dotStartY = 61 - totalHeight + 1;  // Bottom-aligned, 2px margin from y=63
+            int dotStartY = 33;          // Just below separator at y=31
             for (int d = 0; d < forecastPageCount; d++) {
                 uint16_t dotColor = (d == forecastPage) ? activeDot : dimGray;
                 dma_display->fillRect(dotX, dotStartY + d * step, squareSize, squareSize, dotColor);
@@ -1555,6 +1595,8 @@ void displayShowWeatherClock(uint16_t appDuration) {
 
     // Reset font
     dma_display->setFont(NULL);
+
+    drawIndicators();
 
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
@@ -1675,6 +1717,8 @@ void displayShowApp(AppItem* app) {
 
     // Draw text with special character handling
     printTextWithSpecialChars(app->text, xPos, textYPos);
+
+    drawIndicators();
 
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
@@ -1832,9 +1876,182 @@ void displayShowNotification(NotificationItem* notif) {
 
     printTextWithSpecialChars(notif->text, xPos, textYPos);
 
+    drawIndicators();
+
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
     #endif
+}
+
+// ============================================================================
+// Indicator Functions
+// ============================================================================
+
+void indicatorInit() {
+    memset(indicators, 0, sizeof(indicators));
+    memset(indicatorAnimState, 0, sizeof(indicatorAnimState));
+
+    // Default colors: red, green, blue
+    indicators[0].color = 0xFF0000;
+    indicators[1].color = 0x00FF00;
+    indicators[2].color = 0x0000FF;
+
+    for (uint8_t i = 0; i < NUM_INDICATORS; i++) {
+        indicators[i].blinkInterval = INDICATOR_BLINK_INTERVAL;
+        indicators[i].fadePeriod = INDICATOR_FADE_PERIOD;
+    }
+}
+
+void indicatorSet(uint8_t index, IndicatorMode mode, uint32_t color,
+                  uint16_t blinkInterval, uint16_t fadePeriod) {
+    if (index >= NUM_INDICATORS) return;
+
+    indicators[index].mode = mode;
+    indicators[index].color = color;
+    indicators[index].blinkInterval = blinkInterval > 0 ? blinkInterval : INDICATOR_BLINK_INTERVAL;
+    indicators[index].fadePeriod = fadePeriod > 0 ? fadePeriod : INDICATOR_FADE_PERIOD;
+
+    // Reset animation state
+    indicatorAnimState[index].lastToggle = millis();
+    indicatorAnimState[index].blinkOn = true;
+    indicatorAnimState[index].cycleStart = millis();
+}
+
+void indicatorOff(uint8_t index) {
+    if (index >= NUM_INDICATORS) return;
+    indicators[index].mode = INDICATOR_OFF;
+}
+
+bool indicatorNeedsRedraw() {
+    for (uint8_t i = 0; i < NUM_INDICATORS; i++) {
+        if (indicators[i].mode == INDICATOR_BLINK || indicators[i].mode == INDICATOR_FADE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void drawIndicators() {
+    unsigned long now = millis();
+
+    for (uint8_t i = 0; i < NUM_INDICATORS; i++) {
+        if (indicators[i].mode == INDICATOR_OFF) continue;
+
+        // Compute corner position
+        int16_t x, y;
+        switch (i) {
+            case 0: x = 0; y = 0; break;                                             // Top-left
+            case 1: x = DISPLAY_WIDTH - INDICATOR_FOOTPRINT; y = 0; break;           // Top-right
+            case 2: x = DISPLAY_WIDTH - INDICATOR_FOOTPRINT;                          // Bottom-right
+                    y = DISPLAY_HEIGHT - INDICATOR_FOOTPRINT; break;
+            default: continue;
+        }
+
+        // Extract base color
+        uint8_t r = (indicators[i].color >> 16) & 0xFF;
+        uint8_t g = (indicators[i].color >> 8) & 0xFF;
+        uint8_t b = indicators[i].color & 0xFF;
+
+        // Apply mode effect
+        switch (indicators[i].mode) {
+            case INDICATOR_SOLID:
+                // Full brightness, no change
+                break;
+
+            case INDICATOR_BLINK: {
+                if (now - indicatorAnimState[i].lastToggle >= indicators[i].blinkInterval) {
+                    indicatorAnimState[i].blinkOn = !indicatorAnimState[i].blinkOn;
+                    indicatorAnimState[i].lastToggle = now;
+                }
+                if (!indicatorAnimState[i].blinkOn) continue;  // Skip drawing when off
+                break;
+            }
+
+            case INDICATOR_FADE: {
+                // Triangle wave: ramp up then ramp down, min brightness 10/255
+                unsigned long elapsed = (now - indicatorAnimState[i].cycleStart) % indicators[i].fadePeriod;
+                uint16_t halfPeriod = indicators[i].fadePeriod / 2;
+                uint8_t brightness;
+                if (elapsed < halfPeriod) {
+                    brightness = 10 + (uint16_t)(245 * elapsed) / halfPeriod;
+                } else {
+                    brightness = 10 + (uint16_t)(245 * (indicators[i].fadePeriod - elapsed)) / halfPeriod;
+                }
+                r = (uint16_t)r * brightness / 255;
+                g = (uint16_t)g * brightness / 255;
+                b = (uint16_t)b * brightness / 255;
+                break;
+            }
+
+            default:
+                continue;
+        }
+
+        // Draw black border (full footprint)
+        dma_display->fillRect(x, y, INDICATOR_FOOTPRINT, INDICATOR_FOOTPRINT,
+                              dma_display->color565(0, 0, 0));
+
+        // Draw colored core (inset by border size)
+        dma_display->fillRect(x + INDICATOR_BORDER_SIZE, y + INDICATOR_BORDER_SIZE,
+                              INDICATOR_CORE_SIZE, INDICATOR_CORE_SIZE,
+                              dma_display->color565(r, g, b));
+    }
+}
+
+void handleIndicatorApi(AsyncWebServerRequest *request, JsonVariant &json, uint8_t index) {
+    if (index >= NUM_INDICATORS) {
+        request->send(400, "application/json", "{\"error\":\"Invalid indicator index\"}");
+        return;
+    }
+
+    JsonObject body = json.as<JsonObject>();
+
+    // Parse mode string
+    const char* modeStr = body["mode"] | "";
+    IndicatorMode mode = INDICATOR_OFF;
+
+    if (strlen(modeStr) > 0) {
+        if (strcmp(modeStr, "solid") == 0) mode = INDICATOR_SOLID;
+        else if (strcmp(modeStr, "blink") == 0) mode = INDICATOR_BLINK;
+        else if (strcmp(modeStr, "fade") == 0) mode = INDICATOR_FADE;
+        else if (strcmp(modeStr, "off") == 0) mode = INDICATOR_OFF;
+        else {
+            request->send(400, "application/json", "{\"error\":\"Invalid mode. Use: off, solid, blink, fade\"}");
+            return;
+        }
+    } else if (!body["color"].isNull()) {
+        // Default to solid if color provided but no mode
+        mode = INDICATOR_SOLID;
+    }
+
+    if (mode == INDICATOR_OFF) {
+        indicatorOff(index);
+        saveSettings();
+        Serial.printf("[API] Indicator %d turned off\n", index + 1);
+        request->send(200, "application/json", "{\"success\":true,\"mode\":\"off\"}");
+        return;
+    }
+
+    // Parse color (reuse parseColorValue helper)
+    uint32_t color = parseColorValue(body["color"], indicators[index].color);
+
+    // Parse optional timing parameters
+    uint16_t blinkInterval = body["blinkInterval"] | (uint16_t)INDICATOR_BLINK_INTERVAL;
+    uint16_t fadePeriod = body["fadePeriod"] | (uint16_t)INDICATOR_FADE_PERIOD;
+
+    indicatorSet(index, mode, color, blinkInterval, fadePeriod);
+    saveSettings();
+
+    Serial.printf("[API] Indicator %d set: mode=%s color=0x%06X\n",
+                  index + 1, modeStr[0] ? modeStr : "solid", color);
+
+    char response[128];
+    snprintf(response, sizeof(response),
+             "{\"success\":true,\"indicator\":%d,\"mode\":\"%s\",\"color\":[%d,%d,%d]}",
+             index + 1,
+             mode == INDICATOR_SOLID ? "solid" : (mode == INDICATOR_BLINK ? "blink" : "fade"),
+             (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF);
+    request->send(200, "application/json", response);
 }
 
 // Print text with special character handling
@@ -2901,6 +3118,36 @@ void setupWebServer() {
         });
     webServer.addHandler(notifyHandler);
 
+    // DELETE /api/indicator{1-3} - Turn off indicator
+    webServer.on("/api/indicator1", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+        indicatorOff(0); saveSettings();
+        Serial.println("[API] Indicator 1 turned off (DELETE)");
+        request->send(200, "application/json", "{\"success\":true,\"mode\":\"off\"}");
+    });
+    webServer.on("/api/indicator2", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+        indicatorOff(1); saveSettings();
+        Serial.println("[API] Indicator 2 turned off (DELETE)");
+        request->send(200, "application/json", "{\"success\":true,\"mode\":\"off\"}");
+    });
+    webServer.on("/api/indicator3", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+        indicatorOff(2); saveSettings();
+        Serial.println("[API] Indicator 3 turned off (DELETE)");
+        request->send(200, "application/json", "{\"success\":true,\"mode\":\"off\"}");
+    });
+
+    // POST /api/indicator{1-3} - Set corner indicators
+    for (uint8_t idx = 0; idx < NUM_INDICATORS; idx++) {
+        String path = "/api/indicator" + String(idx + 1);
+        AsyncCallbackJsonWebHandler* indicatorHandler = new AsyncCallbackJsonWebHandler(
+            path.c_str(),
+            [idx](AsyncWebServerRequest *request, JsonVariant &json) {
+                handleIndicatorApi(request, json, idx);
+            });
+        indicatorHandler->setMethod(HTTP_POST);
+        webServer.addHandler(indicatorHandler);
+    }
+    Serial.println("[WEB] Indicator API endpoints registered");
+
     // POST /api/reboot - Reboot device (deferred to allow response to be sent)
     webServer.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest *request) {
         Serial.println("[API] Reboot requested");
@@ -3080,6 +3327,20 @@ void setupWebServer() {
                 request->send(200, "application/json", "{\"success\":true}");
             } else {
                 request->send(404, "application/json", "{\"error\":\"Tracker not found\"}");
+            }
+            return;
+        }
+        if (method == HTTP_DELETE_METHOD && url.startsWith("/api/indicator")) {
+            // Extract indicator number from URL (last char)
+            char lastChar = url.charAt(url.length() - 1);
+            uint8_t idx = lastChar - '1';  // '1'->0, '2'->1, '3'->2
+            if (idx < NUM_INDICATORS) {
+                indicatorOff(idx);
+                saveSettings();
+                Serial.printf("[API] Indicator %d turned off (DELETE)\n", idx + 1);
+                request->send(200, "application/json", "{\"success\":true,\"mode\":\"off\"}");
+            } else {
+                request->send(400, "application/json", "{\"error\":\"Invalid indicator number\"}");
             }
             return;
         }
@@ -3377,6 +3638,37 @@ bool loadSettings() {
     const char* mqttPfx = doc["mqtt"]["prefix"] | MQTT_PREFIX;
     strlcpy(settings.mqttPrefix, mqttPfx, sizeof(settings.mqttPrefix));
 
+    // Indicator settings
+    for (int i = 0; i < NUM_INDICATORS; i++) {
+        String key = String(i + 1);
+        JsonObject indObj = doc["indicators"][key];
+        if (indObj.isNull()) continue;
+
+        const char* modeStr = indObj["mode"] | "off";
+        IndicatorMode mode = INDICATOR_OFF;
+        if (strcmp(modeStr, "solid") == 0) mode = INDICATOR_SOLID;
+        else if (strcmp(modeStr, "blink") == 0) mode = INDICATOR_BLINK;
+        else if (strcmp(modeStr, "fade") == 0) mode = INDICATOR_FADE;
+
+        // Backward compatibility: old format had "enabled" boolean
+        if (mode == INDICATOR_OFF && indObj["mode"].isNull() && indObj["enabled"].as<bool>()) {
+            mode = INDICATOR_SOLID;
+        }
+
+        uint32_t color = indicators[i].color;  // Keep default if not provided
+        JsonArray colorArr = indObj["color"];
+        if (colorArr.size() == 3) {
+            color = ((uint32_t)colorArr[0].as<uint8_t>() << 16) |
+                    ((uint32_t)colorArr[1].as<uint8_t>() << 8) |
+                    (uint32_t)colorArr[2].as<uint8_t>();
+        }
+
+        uint16_t blinkInterval = indObj["blinkInterval"] | (uint16_t)INDICATOR_BLINK_INTERVAL;
+        uint16_t fadePeriod = indObj["fadePeriod"] | (uint16_t)INDICATOR_FADE_PERIOD;
+
+        indicatorSet(i, mode, color, blinkInterval, fadePeriod);
+    }
+
     Serial.println("[SETTINGS] Configuration loaded successfully");
     Serial.printf("[SETTINGS] Brightness: %d, AutoRotate: %s\n",
                   settings.brightness, settings.autoRotate ? "true" : "false");
@@ -3432,14 +3724,23 @@ bool saveSettings() {
     doc["mqtt"]["password"] = settings.mqttPassword;
     doc["mqtt"]["prefix"] = settings.mqttPrefix;
 
-    // Indicators (default values)
-    for (int i = 1; i <= 3; i++) {
-        String key = String(i);
-        doc["indicators"][key]["enabled"] = false;
+    // Indicators
+    for (int i = 0; i < NUM_INDICATORS; i++) {
+        String key = String(i + 1);
+        const char* modeStr = "off";
+        switch (indicators[i].mode) {
+            case INDICATOR_SOLID: modeStr = "solid"; break;
+            case INDICATOR_BLINK: modeStr = "blink"; break;
+            case INDICATOR_FADE:  modeStr = "fade";  break;
+            default: break;
+        }
+        doc["indicators"][key]["mode"] = modeStr;
         JsonArray color = doc["indicators"][key]["color"].to<JsonArray>();
-        if (i == 1) { color.add(255); color.add(0); color.add(0); }
-        else if (i == 2) { color.add(0); color.add(255); color.add(0); }
-        else { color.add(0); color.add(0); color.add(255); }
+        color.add((indicators[i].color >> 16) & 0xFF);
+        color.add((indicators[i].color >> 8) & 0xFF);
+        color.add(indicators[i].color & 0xFF);
+        doc["indicators"][key]["blinkInterval"] = indicators[i].blinkInterval;
+        doc["indicators"][key]["fadePeriod"] = indicators[i].fadePeriod;
     }
 
     File file = LittleFS.open(FS_CONFIG_FILE, "w");
@@ -3892,8 +4193,9 @@ void loopDisplay() {
             }
         }
 
-        // Redraw notification on scroll or periodic update
-        if (now - lastDisplayUpdate > 1000 || needsRedraw) {
+        // Redraw notification on scroll, periodic update, or indicator animation
+        bool indicatorRedraw = indicatorNeedsRedraw() && (now - lastDisplayUpdate > 50);
+        if (now - lastDisplayUpdate > 1000 || needsRedraw || indicatorRedraw) {
             displayShowNotification(currentNotif);
             lastDisplayUpdate = now;
         }
@@ -3939,8 +4241,9 @@ void loopDisplay() {
         }
     }
 
-    // Regular display update (1000ms for non-scrolling content like clock)
-    if (now - lastDisplayUpdate > 1000 || needsRedraw) {
+    // Regular display update (1000ms for non-scrolling, 50ms for indicator animation)
+    bool indicatorRedraw = indicatorNeedsRedraw() && (now - lastDisplayUpdate > 50);
+    if (now - lastDisplayUpdate > 1000 || needsRedraw || indicatorRedraw) {
         if (current) {
             displayShowApp(current);
         } else {

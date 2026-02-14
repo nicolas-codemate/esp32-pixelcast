@@ -114,7 +114,7 @@ curl -X POST "http://pixelcast.local/api/custom?name=weather" \
   -d '{
     "text": "72°F",
     "icon": "weather_sunny",
-    "color": [255, 200, 0],
+    "color": "#FFC800",
     "duration": 10
   }'
 ```
@@ -157,13 +157,33 @@ curl "http://pixelcast.local/api/notify/list"
 
 #### Control an Indicator
 ```bash
+# Solid red on top-left
 curl -X POST "http://pixelcast.local/api/indicator1" \
   -H "Content-Type: application/json" \
-  -d '{
-    "color": [255, 0, 0],
-    "blink": 500
-  }'
+  -d '{"color": "#FF0000"}'
+
+# Blinking green on top-right
+curl -X POST "http://pixelcast.local/api/indicator2" \
+  -H "Content-Type: application/json" \
+  -d '{"color": "#00FF00", "mode": "blink", "blinkInterval": 250}'
+
+# Fading blue on bottom-right
+curl -X POST "http://pixelcast.local/api/indicator3" \
+  -H "Content-Type: application/json" \
+  -d '{"color": "#0000FF", "mode": "fade"}'
+
+# Turn off
+curl -X DELETE "http://pixelcast.local/api/indicator1"
 ```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `color` | color | *current* | RGB color (`"#FF0000"`, `[255,0,0]`, or uint32) |
+| `mode` | string | `"solid"` | `"off"`, `"solid"`, `"blink"`, or `"fade"` |
+| `blinkInterval` | int | 500 | Blink toggle interval in ms |
+| `fadePeriod` | int | 2000 | Full fade cycle duration in ms |
+
+3 indicators available: top-left (1), top-right (2), bottom-right (3). State persisted across reboots.
 
 ### MQTT
 
@@ -199,7 +219,7 @@ mqtt:
           {
             "text": "High temperature: {{ states('sensor.living_room_temperature') }}°F",
             "icon": "temperature",
-            "color": [255, 100, 0]
+            "color": "#FF6400"
           }
 ```
 
@@ -220,6 +240,8 @@ mqtt:
 | `GET` | `/api/tracker?name={name}` | Read tracker data |
 | `GET` | `/api/trackers` | List all trackers |
 | `DELETE` | `/api/tracker?name={name}` | Remove tracker |
+| `POST` | `/api/indicator{1-3}` | Set corner indicator |
+| `DELETE` | `/api/indicator{1-3}` | Turn off corner indicator |
 | `GET` | `/api/stats` | System statistics |
 | `GET` | `/api/apps` | List all apps |
 | `POST` | `/api/brightness` | Set brightness (0-255) |

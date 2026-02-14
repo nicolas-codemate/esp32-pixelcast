@@ -1771,7 +1771,7 @@ void displayShowApp(AppItem* app) {
         int16_t labelWidth = strlen(app->label) * 4;
         int16_t labelX = (DISPLAY_WIDTH - labelWidth) / 2;
         if (labelX < 2) labelX = 2;
-        int16_t labelY = textYPos + 10;  // 7px font height + 3px gap
+        int16_t labelY = textYPos + 12;  // 7px font height + 5px to TomThumb baseline
         dma_display->setCursor(labelX, labelY);
         dma_display->print(app->label);
 
@@ -1811,11 +1811,17 @@ void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h) 
 
     bool hasLabel = (zone->label[0] != '\0');
 
+    // Layout constants for label positioning
+    // NULL font: setCursor = top of glyph, 7px tall -> occupies textY to textY+6
+    // TomThumb: setCursor = baseline, ~5px above -> occupies labelY-4 to labelY
+    // Gap of 2px between text bottom and label top: labelY - 4 = textY + 6 + 2 -> labelY = textY + 12
+
     if (isFullWidth) {
         // Full-width zone (64x31): icon left, text right
         int16_t textX = x + 2;
-        // Shift text up if label present to make room
-        int16_t textY = hasLabel ? y + (h / 2) - 7 : y + (h / 2) - 3;
+        // With label: center text+label block (7+2+5=14px) vertically
+        // Without label: center text (7px) vertically
+        int16_t textY = hasLabel ? y + (h - 14) / 2 : y + (h / 2) - 3;
 
         if (icon && icon->valid) {
             // Icon at left, vertically centered in zone
@@ -1845,7 +1851,7 @@ void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h) 
         if (hasLabel) {
             dma_display->setFont(&TomThumb);
             dma_display->setTextColor(dma_display->color565(r / 2, g / 2, b / 2));
-            int16_t labelY = textY + 10;  // 7px font height + 3px gap
+            int16_t labelY = textY + 12;
             dma_display->setCursor(textX, labelY);
             dma_display->print(zone->label);
             // Restore default font and color
@@ -1853,11 +1859,18 @@ void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h) 
             dma_display->setTextColor(dma_display->color565(r, g, b));
         }
     } else {
-        // Half-width zone (32x31): icon top centered, text below
-        int16_t textY = y + h - (hasLabel ? 16 : 10);
+        // Half-width zone (31x31): icon top centered, text below
+        bool hasIcon = (icon && icon->valid);
 
-        if (icon && icon->valid) {
-            // Icon centered horizontally in zone
+        // Adaptive font: use TomThumb for text when icon+label won't fit in default font
+        // Icon 16px + default text 7px + gap 2px + label 5px = 30px (barely fits)
+        // With TomThumb text: Icon 16px + text 5px + gap 1px + label 5px = 27px (comfortable)
+        bool useCompactText = hasIcon && hasLabel;
+        int16_t charWidth = useCompactText ? 4 : 6;
+
+        int16_t textY;
+
+        if (hasIcon) {
             uint8_t scale = (icon->width <= 8 && icon->height <= 8) ? 2 : 1;
             uint8_t displayWidth = icon->width * scale;
             uint8_t displayHeight = icon->height * scale;
@@ -1865,12 +1878,28 @@ void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h) 
             int16_t iconY = y + 2;
             drawIconAtScale(icon, iconX, iconY, scale);
 
-            // Text below icon
-            textY = iconY + displayHeight + 3;
+            if (useCompactText) {
+                // Both text and label in TomThumb below icon
+                // TomThumb baseline positioning: glyphs ~5px above baseline
+                // Icon bottom: iconY + displayHeight
+                // Text baseline: icon bottom + 2px gap + 4px ascent = +6
+                textY = iconY + displayHeight + 6;
+            } else {
+                // Default font below icon
+                textY = iconY + displayHeight + 3;
+            }
+        } else {
+            // No icon: center content vertically
+            if (hasLabel) {
+                // Default text (7px) + gap (2px) + label (5px) = 14px
+                textY = y + (h - 14) / 2;
+            } else {
+                textY = y + h - 10;
+            }
         }
 
         // Truncate text to fit zone width
-        int16_t maxChars = (w - 2) / 6;
+        int16_t maxChars = (w - 2) / charWidth;
         char truncatedText[32];
         strlcpy(truncatedText, zone->text, sizeof(truncatedText));
         if ((int16_t)strlen(truncatedText) > maxChars && maxChars > 0) {
@@ -1878,23 +1907,35 @@ void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h) 
         }
 
         // Center text horizontally in zone
-        int16_t textWidth = strlen(truncatedText) * 6;
+        int16_t textWidth = strlen(truncatedText) * charWidth;
         int16_t textX = x + (w - textWidth) / 2;
         if (textX < x + 1) textX = x + 1;
 
-        printTextWithSpecialChars(truncatedText, textX, textY);
+        if (useCompactText) {
+            // Text in TomThumb (baseline positioning)
+            dma_display->setFont(&TomThumb);
+            dma_display->setCursor(textX, textY);
+            dma_display->print(truncatedText);
+        } else {
+            // Text in default font (top-left positioning)
+            printTextWithSpecialChars(truncatedText, textX, textY);
+        }
 
-        // Draw label below text in TomThumb font with dimmed color
+        // Draw label below text in TomThumb with dimmed color
         if (hasLabel) {
             dma_display->setFont(&TomThumb);
             dma_display->setTextColor(dma_display->color565(r / 2, g / 2, b / 2));
             int16_t labelWidth = strlen(zone->label) * 4;
             int16_t labelX = x + (w - labelWidth) / 2;
             if (labelX < x + 1) labelX = x + 1;
-            int16_t labelY = textY + 10;  // 7px font height + 3px gap
+            // Label baseline: 6px below text baseline (compact) or 12px below text top (default)
+            int16_t labelY = useCompactText ? textY + 6 : textY + 12;
             dma_display->setCursor(labelX, labelY);
             dma_display->print(zone->label);
-            // Restore default font and color
+        }
+
+        // Restore default font and color
+        if (useCompactText || hasLabel) {
             dma_display->setFont(NULL);
             dma_display->setTextColor(dma_display->color565(r, g, b));
         }

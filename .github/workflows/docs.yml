@@ -44,6 +44,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install bundlers
+        run: npm install -g @apidevtools/swagger-cli @asyncapi/cli
+
+      - name: Bundle OpenAPI spec
+        run: swagger-cli bundle docs/api/openapi.yaml -o docs/api/openapi-bundled.yaml -t yaml
+
+      - name: Bundle AsyncAPI spec
+        run: asyncapi bundle docs/api/asyncapi.yaml -o docs/api/asyncapi-bundled.yaml
+
       - name: Configure Pages
         uses: actions/configure-pages@v4
 

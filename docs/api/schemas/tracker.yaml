@@ -80,11 +80,17 @@ TrackerResponse:
       type: number
       format: float
     symbolColor:
-      type: integer
-      description: Color as unsigned 32-bit integer (0xRRGGBB).
+      type: string
+      pattern: "^#[0-9a-fA-F]{6}$"
+      description: Hex color string.
+      examples:
+        - "#FF8800"
     sparklineColor:
-      type: integer
-      description: Color as unsigned 32-bit integer (0xRRGGBB).
+      type: string
+      pattern: "^#[0-9a-fA-F]{6}$"
+      description: Hex color string.
+      examples:
+        - "#00D4FF"
     bottomText:
       type: string
     age:

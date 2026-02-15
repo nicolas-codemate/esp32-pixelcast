@@ -33,9 +33,8 @@ IndicatorResponse:
       type: string
       enum: [solid, blink, fade, off]
     color:
-      type: array
-      items:
-        type: integer
-      minItems: 3
-      maxItems: 3
-      description: "RGB array [R, G, B]."
+      type: string
+      pattern: "^#[0-9a-fA-F]{6}$"
+      description: "Hex color string."
+      examples:
+        - "#FF0000"

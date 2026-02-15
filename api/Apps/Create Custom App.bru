@@ -46,6 +46,12 @@ docs {
   - Icons are cached in memory (LRU with 8 slots max)
   - Layout: icon centered top, text area below (scrollable)
 
+  Colored text segments (text and label fields):
+  - Simple string: "text": "22.5C"
+  - String with color: "text": {"text": "22.5C", "color": "#FF0000"}
+  - Segment array: "text": [{"t": "22.5", "c": "#FF8800"}, {"t": "C", "c": "#666666"}]
+  - Up to 8 segments per field, works in single-zone and multi-zone
+
   Multi-zone layout:
   - Instead of text/icon/color, send a "zones" array with 2-4 zone objects
   - Each zone has: text, icon, label, color

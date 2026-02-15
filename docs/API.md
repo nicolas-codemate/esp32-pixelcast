@@ -62,10 +62,10 @@ Content-Type: application/json
 
 | Param      | Type    | Default       | Description                                        |
 |------------|---------|---------------|----------------------------------------------------|
-| text       | string  | ""            | Text to display                                    |
+| text       | mixed   | ""            | Text to display (see colored segments below)       |
 | icon       | string  | null          | Icon name (without extension)                      |
-| label      | string  | ""            | Subtitle displayed below text (TomThumb font, dimmed) |
-| color      | [R,G,B] | [255,255,255] | Text color                                         |
+| label      | mixed   | ""            | Subtitle below text (see colored segments below)   |
+| color      | [R,G,B] | [255,255,255] | Default text color                                 |
 | background | [R,G,B] | [0,0,0]       | Background color                                   |
 | duration   | int     | 10            | Display duration (seconds)                         |
 | lifetime   | int     | 0             | Expiration if not updated (seconds, 0 = permanent) |
@@ -82,6 +82,31 @@ Content-Type: application/json
 - `rainbow`: Rainbow
 - `fade`: Fade
 - `pulse`: Pulsation
+
+**Colored text segments:**
+
+The `text` and `label` fields accept three formats:
+
+1. **Simple string** (backward compatible):
+```json
+"text": "22.5°C"
+```
+
+2. **String with custom color** (overrides `color`):
+```json
+"text": {"text": "22.5°C", "color": "#FF0000"}
+```
+
+3. **Array of colored segments** (per-group coloring):
+```json
+"text": [{"t": "22.5", "c": "#FF8800"}, {"t": "°C", "c": "#666666"}]
+```
+
+Each segment has:
+- `t`: text content (concatenated in order)
+- `c`: color for this segment (hex `"#FF8800"`, RGB `[255,136,0]`, or uint32)
+
+Up to 8 segments per field. Works in both single-zone and multi-zone layouts.
 
 **Response:**
 
@@ -128,12 +153,12 @@ Content-Type: application/json
 
 **Zone object:**
 
-| Param | Type   | Default       | Description                              |
-|-------|--------|---------------|------------------------------------------|
-| text  | string | ""            | Text to display (truncated)              |
-| icon  | string | null          | Icon name (without extension)            |
-| label | string | ""            | Subtitle below text (TomThumb, dimmed)   |
-| color | mixed  | [255,255,255] | Text color (hex, RGB, uint)              |
+| Param | Type   | Default       | Description                                           |
+|-------|--------|---------------|-------------------------------------------------------|
+| text  | mixed  | ""            | Text to display (string, {text,color}, or [{t,c},...])|
+| icon  | string | null          | Icon name (without extension)                         |
+| label | mixed  | ""            | Subtitle below text (same formats as text)            |
+| color | mixed  | [255,255,255] | Default text color (hex, RGB, uint)                   |
 
 **Layout types:**
 

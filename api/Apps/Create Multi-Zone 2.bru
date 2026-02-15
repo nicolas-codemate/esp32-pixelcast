@@ -18,8 +18,18 @@ body:json {
   {
     "name": "dual-info",
     "zones": [
-      { "text": "22.5C", "icon": "thermo", "label": "Salon", "color": "#FF8800" },
-      { "text": "58%", "icon": "humidity", "label": "Humidity", "color": "#00D4FF" }
+      {
+        "text": [{"t": "22.5", "c": "#FF8800"}, {"t": "C", "c": "#666666"}],
+        "icon": "thermo",
+        "label": "Salon",
+        "color": "#FF8800"
+      },
+      {
+        "text": "58%",
+        "icon": "humidity",
+        "label": {"text": "Humidity", "color": "#00D4FF"},
+        "color": "#00D4FF"
+      }
     ],
     "duration": 10000
   }
@@ -39,10 +49,10 @@ docs {
   A 1px dark separator line is drawn between the two zones.
 
   Zone fields:
-  - text: Text to display (max 31 chars, truncated to fit)
+  - text: Text (string, {text,color} object, or [{t,c},...] segment array)
   - icon: Icon name from /icons folder (optional)
-  - label: Subtitle below text in smaller font, dimmed (optional)
-  - color: Hex "#FF8800", RGB array [255,136,0], or uint32 (default: white)
+  - label: Subtitle (same formats as text, displayed in smaller font, dimmed)
+  - color: Default color - hex "#FF8800", RGB array [255,136,0], or uint32
 
   The zones array must have exactly 2, 3, or 4 elements.
   Single-element arrays are rejected (use top-level text/icon/color instead).

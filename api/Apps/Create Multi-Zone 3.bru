@@ -1,0 +1,43 @@
+meta {
+  name: Create Multi-Zone 3
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/custom
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "home-status",
+    "zones": [
+      { "text": "22.5C", "icon": "thermo", "label": "Salon", "color": "#FF8800" },
+      { "text": "58%", "icon": "humidity", "label": "Humidity", "color": "#00D4FF" },
+      { "text": "1013", "icon": "pressure", "label": "hPa", "color": "#AAAAFF" }
+    ],
+    "duration": 10000
+  }
+}
+
+docs {
+  Creates a custom app with 3-zone layout (top full + bottom split).
+
+  Layout:
+  +-------64px-------+
+  | [icon] text      |  zone 0 (64x31, full-width)
+  +--------+---------+
+  | [icon] | [icon]  |  zone 1 (31x31)  zone 2 (31x31)
+  | text   | text    |
+  +--------+---------+
+
+  Zone 0 is full-width (icon left + text right).
+  Zones 1-2 are half-width (icon top centered + text below).
+  Separator lines drawn between all zones.
+}

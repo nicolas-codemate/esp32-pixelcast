@@ -1,0 +1,59 @@
+meta {
+  name: Create Multi-Zone 2
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/custom
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "dual-info",
+    "zones": [
+      {
+        "text": [{"t": "22.5", "c": "#FF8800"}, {"t": "C", "c": "#666666"}],
+        "icon": "thermo",
+        "label": "Salon",
+        "color": "#FF8800"
+      },
+      {
+        "text": "58%",
+        "icon": "humidity",
+        "label": {"text": "Humidity", "color": "#00D4FF"},
+        "color": "#00D4FF"
+      }
+    ],
+    "duration": 10000
+  }
+}
+
+docs {
+  Creates a custom app with 2-zone layout (dual horizontal rows).
+
+  Layout:
+  +-------64px-------+
+  | [icon] text      |  zone 0 (64x31)
+  +------------------+
+  | [icon] text      |  zone 1 (64x31)
+  +------------------+
+
+  Each zone is full-width: icon on the left, text on the right.
+  A 1px dark separator line is drawn between the two zones.
+
+  Zone fields:
+  - text: Text (string, {text,color} object, or [{t,c},...] segment array)
+  - icon: Icon name from /icons folder (optional)
+  - label: Subtitle (same formats as text, displayed in smaller font, dimmed)
+  - color: Default color - hex "#FF8800", RGB array [255,136,0], or uint32
+
+  The zones array must have exactly 2, 3, or 4 elements.
+  Single-element arrays are rejected (use top-level text/icon/color instead).
+}

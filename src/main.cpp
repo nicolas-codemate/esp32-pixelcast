@@ -56,17 +56,43 @@
 // Application System - Structures
 // ============================================================================
 
+#define MAX_ZONES 4
+#define MAX_TEXT_SEGMENTS 8
+
+struct TextSegment {
+    uint8_t offset;   // Visual char index where this color starts
+    uint32_t color;   // 0xRRGGBB
+};
+
+struct AppZone {
+    char text[32];
+    char icon[32];
+    char label[32];
+    uint32_t textColor;
+    TextSegment textSegments[MAX_TEXT_SEGMENTS];
+    uint8_t textSegmentCount;
+    TextSegment labelSegments[MAX_TEXT_SEGMENTS];
+    uint8_t labelSegmentCount;
+};
+
 struct AppItem {
     char id[24];
     char text[64];
     char icon[32];
+    char label[32];
     uint32_t textColor;
     uint16_t duration;          // Display duration in ms
     uint32_t lifetime;          // Expiration time (0 = permanent)
     uint32_t createdAt;         // Creation timestamp
     int8_t priority;            // -10 to 10 (higher = more important)
+    uint8_t zoneCount;          // 0 or 1 = single layout, 2/3/4 = multi-zone
     bool active;
     bool isSystem;              // System apps cannot be deleted
+    TextSegment textSegments[MAX_TEXT_SEGMENTS];
+    uint8_t textSegmentCount;
+    TextSegment labelSegments[MAX_TEXT_SEGMENTS];
+    uint8_t labelSegmentCount;
+    AppZone zones[3];           // zones 1-3 (zone 0 = main text/icon/textColor)
 };
 
 // ============================================================================
@@ -128,6 +154,17 @@ struct CachedIcon {
 };
 CachedIcon iconCache[MAX_ICON_CACHE];
 PNG png;
+
+// Failed icon download blacklist (prevents retry every frame)
+#define MAX_FAILED_ICON_DOWNLOADS 8
+#define FAILED_ICON_RETRY_DELAY 300000  // 5 minutes
+
+struct FailedIconDownload {
+    char name[32];
+    unsigned long failedAt;
+};
+
+FailedIconDownload failedIconDownloads[MAX_FAILED_ICON_DOWNLOADS];
 
 // Temporary buffer for PNG decode callback
 uint16_t* pngDecodeTarget = nullptr;
@@ -486,6 +523,9 @@ int8_t appFind(const char* id);
 void appCleanExpired();
 AppItem* appGetNext();
 AppItem* appGetCurrent();
+void appSetZones(int8_t appIndex, JsonArray zonesArray);
+void displayShowMultiZone(AppItem* app);
+void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h);
 
 // Tracker management
 TrackerData* trackerFind(const char* name);
@@ -497,6 +537,16 @@ void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, in
 void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color);
 void formatTrackerValue(float value, char* buffer, size_t bufSize);
 uint32_t parseColorValue(JsonVariant colorVar, uint32_t defaultColor);
+void formatColorHex(uint32_t color, char* buffer, size_t bufSize);
+void parseTextFieldWithSegments(JsonVariant field, char* textBuffer, size_t textBufferSize,
+                                TextSegment* segments, uint8_t* segmentCount, uint32_t defaultColor);
+void serializeTextField(JsonObject& obj, const char* fieldName, const char* text,
+                        const TextSegment* segments, uint8_t segmentCount);
+void printTextWithSegments(const char* text, int16_t x, int16_t y,
+                           uint32_t defaultColor, const TextSegment* segments, uint8_t segmentCount);
+void printLabelWithSegments(const char* text, int16_t x, int16_t y,
+                            uint32_t defaultColor, const TextSegment* segments, uint8_t segmentCount,
+                            bool dimDefault);
 
 // Notification management
 void notifInit();
@@ -591,15 +641,65 @@ void setup() {
         ArduinoOTA.onStart([]() {
             Serial.println("[OTA] Update starting...");
             dma_display->fillScreen(0);
-            dma_display->setCursor(4, 28);
+            dma_display->setTextSize(1);
             dma_display->setTextColor(dma_display->color565(255, 165, 0));
-            dma_display->print("OTA UPDATE");
+            // "OTA" default font, centered (3 chars x 6px = 18px)
+            dma_display->setCursor(23, 4);
+            dma_display->print("OTA");
+            // "UPDATE" same font, centered (6 chars x 6px = 36px)
+            dma_display->setCursor(14, 18);
+            dma_display->print("UPDATE");
+            // Progress bar frame near bottom
+            dma_display->drawRect(4, 46, 56, 7, dma_display->color565(80, 80, 80));
+            #if DOUBLE_BUFFER
+                dma_display->flipDMABuffer();
+            #endif
+        });
+        ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+            static uint8_t lastPercent = 255;
+            uint8_t percent = (uint8_t)((progress * 100) / total);
+            // Only redraw every 5% to avoid slowing down OTA transfer
+            if (percent == lastPercent || (percent % 5 != 0 && percent != 100)) return;
+            lastPercent = percent;
+            uint8_t barWidth = (uint8_t)((progress * 54) / total);
+            if (barWidth > 0) {
+                dma_display->fillRect(5, 47, barWidth, 5,
+                    dma_display->color565(255, 165, 0));
+            }
+            dma_display->fillRect(0, 56, 64, 8, 0);
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d%%", percent);
+            dma_display->setFont(&TomThumb);
+            dma_display->setTextColor(dma_display->color565(150, 150, 150));
+            int16_t textW = strlen(buf) * 4;
+            dma_display->setCursor((64 - textW) / 2, 60);
+            dma_display->print(buf);
+            dma_display->setFont(NULL);
         });
         ArduinoOTA.onEnd([]() {
             Serial.println("[OTA] Update complete!");
+            dma_display->fillScreen(0);
+            dma_display->setTextColor(dma_display->color565(0, 255, 0));
+            dma_display->setCursor(13, 24);
+            dma_display->print("DONE");
+            dma_display->setFont(&TomThumb);
+            dma_display->setTextColor(dma_display->color565(100, 100, 100));
+            dma_display->setCursor(8, 38);
+            dma_display->print("Rebooting...");
+            dma_display->setFont(NULL);
+            #if DOUBLE_BUFFER
+                dma_display->flipDMABuffer();
+            #endif
         });
         ArduinoOTA.onError([](ota_error_t error) {
             Serial.printf("[OTA] Error[%u]\n", error);
+            dma_display->fillScreen(0);
+            dma_display->setTextColor(dma_display->color565(255, 0, 0));
+            dma_display->setCursor(7, 28);
+            dma_display->print("OTA ERR");
+            #if DOUBLE_BUFFER
+                dma_display->flipDMABuffer();
+            #endif
         });
         ArduinoOTA.begin();
 
@@ -1118,6 +1218,99 @@ uint32_t parseColorValue(JsonVariant colorVar, uint32_t defaultColor) {
         return colorVar.as<uint32_t>();
     }
     return defaultColor;
+}
+
+// Format a uint32 color (0xRRGGBB) as hex string "#RRGGBB" into a buffer
+void formatColorHex(uint32_t color, char* buffer, size_t bufSize) {
+    snprintf(buffer, bufSize, "#%02X%02X%02X",
+             (uint8_t)((color >> 16) & 0xFF),
+             (uint8_t)((color >> 8) & 0xFF),
+             (uint8_t)(color & 0xFF));
+}
+
+// Parse polymorphic text field: string, {text,color} object, or [{t,c},...] array
+void parseTextFieldWithSegments(JsonVariant field, char* textBuffer, size_t textBufferSize,
+                                TextSegment* segments, uint8_t* segmentCount, uint32_t defaultColor) {
+    *segmentCount = 0;
+    textBuffer[0] = '\0';
+
+    if (field.isNull()) return;
+
+    // Simple string: "text"
+    if (field.is<const char*>()) {
+        strlcpy(textBuffer, field.as<const char*>(), textBufferSize);
+        return;
+    }
+
+    // Object with text and color: {"text": "hello", "color": "#FF0000"}
+    if (field.is<JsonObject>()) {
+        JsonObject obj = field.as<JsonObject>();
+        strlcpy(textBuffer, obj["text"] | "", textBufferSize);
+        if (!obj["color"].isNull()) {
+            segments[0].offset = 0;
+            segments[0].color = parseColorValue(obj["color"], defaultColor);
+            *segmentCount = 1;
+        }
+        return;
+    }
+
+    // Array of segments: [{"t": "22.5", "c": "#FF8800"}, {"t": "C", "c": "#666666"}]
+    if (field.is<JsonArray>()) {
+        JsonArray arr = field.as<JsonArray>();
+        size_t pos = 0;
+        uint8_t count = 0;
+        for (JsonObject seg : arr) {
+            if (count >= MAX_TEXT_SEGMENTS) break;
+            const char* t = seg["t"] | "";
+            size_t tLen = strlen(t);
+            if (pos + tLen >= textBufferSize) break;
+
+            // Record segment offset and color
+            segments[count].offset = (uint8_t)pos;
+            segments[count].color = parseColorValue(seg["c"], defaultColor);
+            count++;
+
+            // Concatenate text
+            memcpy(textBuffer + pos, t, tLen);
+            pos += tLen;
+        }
+        textBuffer[pos] = '\0';
+        *segmentCount = count;
+        return;
+    }
+}
+
+// Serialize text field in polymorphic format for JSON output
+void serializeTextField(JsonObject& obj, const char* fieldName, const char* text,
+                        const TextSegment* segments, uint8_t segmentCount) {
+    if (segmentCount == 0) {
+        obj[fieldName] = text;
+        return;
+    }
+
+    // Build array of {t, c} segments
+    JsonArray arr = obj[fieldName].to<JsonArray>();
+    size_t textLen = strlen(text);
+    for (uint8_t i = 0; i < segmentCount; i++) {
+        JsonObject seg = arr.add<JsonObject>();
+        // Extract substring from offset to next segment (or end)
+        size_t start = segments[i].offset;
+        size_t end = (i + 1 < segmentCount) ? segments[i + 1].offset : textLen;
+        if (start >= textLen) break;
+        if (end > textLen) end = textLen;
+
+        // Copy substring
+        char buf[64];
+        size_t len = end - start;
+        if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+        memcpy(buf, text + start, len);
+        buf[len] = '\0';
+        seg["t"] = (const char*)buf;
+
+        char colorHex[8];
+        formatColorHex(segments[i].color, colorHex, sizeof(colorHex));
+        seg["c"] = (const char*)colorHex;
+    }
 }
 
 // Draw sparkline chart from scaled uint16 data
@@ -1650,7 +1843,13 @@ void displayShowApp(AppItem* app) {
         // Fallback to default custom app layout if no data
     }
 
-    // Custom apps
+    // Multi-zone layout apps
+    if (app->zoneCount >= 2) {
+        displayShowMultiZone(app);
+        return;
+    }
+
+    // Custom apps (single-zone)
     dma_display->clearScreen();
 
     // Layout calculation - VERTICAL layout for 64x64 panel
@@ -1687,11 +1886,6 @@ void displayShowApp(AppItem* app) {
         textYPos = iconY + displayHeight + 6;  // 6px gap below icon
     }
 
-    // Text color
-    uint8_t r = (app->textColor >> 16) & 0xFF;
-    uint8_t g = (app->textColor >> 8) & 0xFF;
-    uint8_t b = app->textColor & 0xFF;
-    dma_display->setTextColor(dma_display->color565(r, g, b));
     dma_display->setTextSize(1);
 
     // Calculate text width and check if scrolling needed
@@ -1715,8 +1909,206 @@ void displayShowApp(AppItem* app) {
         xPos = textAreaX - appScrollState.scrollOffset;
     }
 
-    // Draw text with special character handling
-    printTextWithSpecialChars(app->text, xPos, textYPos);
+    // Draw text with segment-aware coloring
+    printTextWithSegments(app->text, xPos, textYPos, app->textColor,
+                          app->textSegments, app->textSegmentCount);
+
+    // Draw label below text if present (TomThumb font, dimmed color)
+    if (app->label[0] != '\0') {
+        int16_t labelWidth = strlen(app->label) * 4;
+        int16_t labelX = (DISPLAY_WIDTH - labelWidth) / 2;
+        if (labelX < 2) labelX = 2;
+        int16_t labelY = textYPos + 12;
+        printLabelWithSegments(app->label, labelX, labelY, app->textColor,
+                               app->labelSegments, app->labelSegmentCount, true);
+    }
+
+    drawIndicators();
+
+    #if DOUBLE_BUFFER
+        dma_display->flipDMABuffer();
+    #endif
+}
+
+// ============================================================================
+// Multi-Zone Display Rendering
+// ============================================================================
+
+// Render a single zone within its bounding box
+void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h) {
+    if (!zone) return;
+
+    dma_display->setTextSize(1);
+
+    // Try to load icon
+    CachedIcon* icon = nullptr;
+    if (strlen(zone->icon) > 0) {
+        icon = getIcon(zone->icon);
+    }
+
+    bool isFullWidth = (w >= 48);
+
+    bool hasLabel = (zone->label[0] != '\0');
+
+    // Layout constants for label positioning
+    // NULL font: setCursor = top of glyph, 7px tall -> occupies textY to textY+6
+    // TomThumb: setCursor = baseline, ~5px above -> occupies labelY-4 to labelY
+    // Gap of 2px between text bottom and label top: labelY - 4 = textY + 6 + 2 -> labelY = textY + 12
+
+    if (isFullWidth) {
+        // Full-width zone (64x31): icon left, text+label right
+        int16_t textX = x + 2;
+
+        // With label: spread text (upper) and label (lower) across zone height
+        // Without label: center text vertically
+        // h=31 -> text at y+4 (top=y+4..y+10), label baseline at y+23 (top=y+19..y+23)
+        int16_t textY = hasLabel ? y + 4 : y + (h / 2) - 3;
+
+        if (icon && icon->valid) {
+            // Icon at left, vertically centered in zone
+            uint8_t scale = (icon->width <= 8 && icon->height <= 8) ? 2 : 1;
+            uint8_t displayWidth = icon->width * scale;
+            uint8_t displayHeight = icon->height * scale;
+            int16_t iconX = x + 2;
+            int16_t iconY = y + (h - displayHeight) / 2;
+            drawIconAtScale(icon, iconX, iconY, scale);
+
+            // Text starts after icon
+            textX = iconX + displayWidth + 3;
+        }
+
+        // Truncate text to fit available width
+        int16_t availableWidth = (x + w) - textX;
+        int16_t maxChars = availableWidth / 6;  // 6px per char (5x7 font + 1px spacing)
+        char truncatedText[32];
+        strlcpy(truncatedText, zone->text, sizeof(truncatedText));
+        if ((int16_t)strlen(truncatedText) > maxChars && maxChars > 0) {
+            truncatedText[maxChars] = '\0';
+        }
+
+        printTextWithSegments(truncatedText, textX, textY, zone->textColor,
+                              zone->textSegments, zone->textSegmentCount);
+
+        // Draw label in lower portion of zone (TomThumb, dimmed)
+        if (hasLabel) {
+            int16_t labelY = y + h - 6;  // Near bottom of zone
+            printLabelWithSegments(zone->label, textX, labelY, zone->textColor,
+                                   zone->labelSegments, zone->labelSegmentCount, true);
+        }
+    } else {
+        // Half-width zone (31x31): icon top-left, text beside icon, label at bottom
+        bool hasIcon = (icon && icon->valid);
+
+        int16_t textX = x;
+        int16_t textY = hasLabel ? y + 3 : y + (h / 2) - 3;
+
+        if (hasIcon) {
+            // Icon at top-left, tight margins, native size (no upscale)
+            int16_t iconX = x;
+            int16_t iconY = y + 2;
+            drawIconAtScale(icon, iconX, iconY, 1);
+
+            // Text starts after icon with 1px gap
+            textX = iconX + icon->width + 1;
+        }
+
+        // Check if text fits in default font (6px/char), fallback to TomThumb (4px/char)
+        int16_t availableWidth = (x + w) - textX;
+        int16_t textLen = (int16_t)strlen(zone->text);
+        bool useCompactText = (textLen * 6 > availableWidth);
+        int16_t charWidth = useCompactText ? 4 : 6;
+
+        int16_t maxChars = availableWidth / charWidth;
+        char truncatedText[32];
+        strlcpy(truncatedText, zone->text, sizeof(truncatedText));
+        if (textLen > maxChars && maxChars > 0) {
+            truncatedText[maxChars] = '\0';
+        }
+
+        if (useCompactText) {
+            // TomThumb: baseline positioning, adjust Y (+5px from top for baseline)
+            int16_t compactY = hasLabel ? y + 8 : y + (h / 2) + 2;
+            printLabelWithSegments(truncatedText, textX, compactY, zone->textColor,
+                                   zone->textSegments, zone->textSegmentCount, false);
+        } else {
+            // Default font
+            printTextWithSegments(truncatedText, textX, textY, zone->textColor,
+                                  zone->textSegments, zone->textSegmentCount);
+        }
+
+        // Draw label at bottom of zone with good margin
+        if (hasLabel) {
+            int16_t labelWidth = strlen(zone->label) * 4;
+            int16_t labelX = x + (w - labelWidth) / 2;
+            if (labelX < x) labelX = x;
+            int16_t labelY = y + h - 6;
+            printLabelWithSegments(zone->label, labelX, labelY, zone->textColor,
+                                   zone->labelSegments, zone->labelSegmentCount, true);
+        }
+    }
+}
+
+// Render multi-zone layout for an app
+void displayShowMultiZone(AppItem* app) {
+    if (!app || app->zoneCount < 2) return;
+
+    dma_display->clearScreen();
+
+    // Build array of all zones (zone 0 from main app fields, zones 1-3 from zones[])
+    AppZone zone0;
+    strlcpy(zone0.text, app->text, sizeof(zone0.text));
+    strlcpy(zone0.icon, app->icon, sizeof(zone0.icon));
+    strlcpy(zone0.label, app->label, sizeof(zone0.label));
+    zone0.textColor = app->textColor;
+    memcpy(zone0.textSegments, app->textSegments, sizeof(app->textSegments));
+    zone0.textSegmentCount = app->textSegmentCount;
+    memcpy(zone0.labelSegments, app->labelSegments, sizeof(app->labelSegments));
+    zone0.labelSegmentCount = app->labelSegmentCount;
+
+    AppZone* allZones[MAX_ZONES] = { &zone0, nullptr, nullptr, nullptr };
+    for (uint8_t i = 1; i < app->zoneCount && i < MAX_ZONES; i++) {
+        allZones[i] = &app->zones[i - 1];
+    }
+
+    // Separator line color (dark gray)
+    uint16_t separatorColor = dma_display->color565(40, 40, 40);
+
+    switch (app->zoneCount) {
+        case 2: {
+            // Two horizontal rows: zone0 top (64x31), zone1 bottom (64x31)
+            // Separator at y=31
+            dma_display->drawFastHLine(0, 31, 64, separatorColor);
+
+            displayShowZone(allZones[0], 0, 0, 64, 31);
+            displayShowZone(allZones[1], 0, 33, 64, 31);
+            break;
+        }
+        case 3: {
+            // Top row full-width (zone0, 64x31), bottom row split (zone1 + zone2, 31x31 each)
+            // Horizontal separator at y=31
+            dma_display->drawFastHLine(0, 31, 64, separatorColor);
+            // Vertical separator in bottom half at x=31
+            dma_display->drawFastVLine(31, 33, 31, separatorColor);
+
+            displayShowZone(allZones[0], 0, 0, 64, 31);
+            displayShowZone(allZones[1], 0, 33, 31, 31);
+            displayShowZone(allZones[2], 33, 33, 31, 31);
+            break;
+        }
+        case 4: {
+            // Four quadrants (31x31 each)
+            // Horizontal separator at y=31
+            dma_display->drawFastHLine(0, 31, 64, separatorColor);
+            // Vertical separator at x=31
+            dma_display->drawFastVLine(31, 0, 64, separatorColor);
+
+            displayShowZone(allZones[0], 0, 0, 31, 31);
+            displayShowZone(allZones[1], 33, 0, 31, 31);
+            displayShowZone(allZones[2], 0, 33, 31, 31);
+            displayShowZone(allZones[3], 33, 33, 31, 31);
+            break;
+        }
+    }
 
     drawIndicators();
 
@@ -2130,6 +2522,172 @@ void printTextWithSpecialChars(const char* text, int16_t x, int16_t y) {
     }
 }
 
+// Draw text with per-segment coloring (NULL font, 6px/char)
+// segmentCount==0: uses defaultColor and delegates to printTextWithSpecialChars
+// segmentCount>0: switches color at segment boundaries
+void printTextWithSegments(const char* text, int16_t x, int16_t y,
+                           uint32_t defaultColor, const TextSegment* segments, uint8_t segmentCount) {
+    if (segmentCount == 0) {
+        uint8_t r = (defaultColor >> 16) & 0xFF;
+        uint8_t g = (defaultColor >> 8) & 0xFF;
+        uint8_t b = defaultColor & 0xFF;
+        dma_display->setTextColor(dma_display->color565(r, g, b));
+        printTextWithSpecialChars(text, x, y);
+        return;
+    }
+
+    const uint8_t charWidth = 6;
+    int16_t cursorX = x;
+    dma_display->setCursor(cursorX, y);
+
+    // Start with first segment color or default
+    uint8_t currentSegment = 0;
+    uint32_t currentColor = (segmentCount > 0) ? segments[0].color : defaultColor;
+    uint8_t r = (currentColor >> 16) & 0xFF;
+    uint8_t g = (currentColor >> 8) & 0xFF;
+    uint8_t b = currentColor & 0xFF;
+    uint16_t color565 = dma_display->color565(r, g, b);
+    dma_display->setTextColor(color565);
+
+    uint8_t charIndex = 0;  // Visual char index (UTF-8 multi-byte = 1 visual char)
+    const uint8_t* ptr = (const uint8_t*)text;
+
+    while (*ptr) {
+        // Check if we need to switch to next segment color
+        if (currentSegment + 1 < segmentCount && charIndex >= segments[currentSegment + 1].offset) {
+            currentSegment++;
+            currentColor = segments[currentSegment].color;
+            r = (currentColor >> 16) & 0xFF;
+            g = (currentColor >> 8) & 0xFF;
+            b = currentColor & 0xFF;
+            color565 = dma_display->color565(r, g, b);
+            dma_display->setTextColor(color565);
+        }
+
+        uint8_t c = *ptr;
+
+        // Handle UTF-8 degree symbol (C2 B0)
+        if (c == 0xC2 && *(ptr + 1) == 0xB0) {
+            int16_t dx = cursorX;
+            int16_t dy = y - 6;
+            dma_display->drawPixel(dx + 1, dy, color565);
+            dma_display->drawPixel(dx, dy + 1, color565);
+            dma_display->drawPixel(dx + 2, dy + 1, color565);
+            dma_display->drawPixel(dx + 1, dy + 2, color565);
+            cursorX += 4;
+            ptr += 2;
+            charIndex++;
+            dma_display->setCursor(cursorX, y);
+            continue;
+        }
+
+        // Handle Latin-1 degree symbol (direct byte 0xB0)
+        if (c == 0xB0) {
+            int16_t dx = cursorX;
+            int16_t dy = y - 6;
+            dma_display->drawPixel(dx + 1, dy, color565);
+            dma_display->drawPixel(dx, dy + 1, color565);
+            dma_display->drawPixel(dx + 2, dy + 1, color565);
+            dma_display->drawPixel(dx + 1, dy + 2, color565);
+            cursorX += 4;
+            ptr++;
+            charIndex++;
+            dma_display->setCursor(cursorX, y);
+            continue;
+        }
+
+        // Handle UTF-8 accented characters (common French)
+        if (c == 0xC3) {
+            uint8_t next = *(ptr + 1);
+            char replacement = '?';
+            switch (next) {
+                case 0xA0: case 0xA2: case 0xA4: replacement = 'a'; break;
+                case 0xA8: case 0xA9: case 0xAA: case 0xAB: replacement = 'e'; break;
+                case 0xAC: case 0xAE: case 0xAF: replacement = 'i'; break;
+                case 0xB2: case 0xB4: case 0xB6: replacement = 'o'; break;
+                case 0xB9: case 0xBB: case 0xBC: replacement = 'u'; break;
+                case 0xA7: replacement = 'c'; break;
+                case 0xB1: replacement = 'n'; break;
+                case 0x80: case 0x89: replacement = 'E'; break;
+                case 0x87: replacement = 'C'; break;
+            }
+            dma_display->print(replacement);
+            cursorX += charWidth;
+            ptr += 2;
+            charIndex++;
+            dma_display->setCursor(cursorX, y);
+            continue;
+        }
+
+        // Standard ASCII character
+        if (c >= 32 && c <= 126) {
+            dma_display->print((char)c);
+            cursorX += charWidth;
+            charIndex++;
+        }
+
+        ptr++;
+        dma_display->setCursor(cursorX, y);
+    }
+}
+
+// Draw label text with per-segment coloring (TomThumb font, baseline positioning)
+// dimDefault=true + segmentCount==0: dims defaultColor 50% (standard label behavior)
+// dimDefault=false: uses defaultColor as-is (compact text in half-width zones)
+// segmentCount>0: uses segment colors at full brightness
+void printLabelWithSegments(const char* text, int16_t x, int16_t y,
+                            uint32_t defaultColor, const TextSegment* segments, uint8_t segmentCount,
+                            bool dimDefault) {
+    dma_display->setFont(&TomThumb);
+
+    if (segmentCount == 0) {
+        uint8_t r = (defaultColor >> 16) & 0xFF;
+        uint8_t g = (defaultColor >> 8) & 0xFF;
+        uint8_t b = defaultColor & 0xFF;
+        if (dimDefault) {
+            r = r * 3 / 4;
+            g = g * 3 / 4;
+            b = b * 3 / 4;
+        }
+        dma_display->setTextColor(dma_display->color565(r, g, b));
+        dma_display->setCursor(x, y);
+        dma_display->print(text);
+        dma_display->setFont(NULL);
+        return;
+    }
+
+    // Per-segment coloring - let GFX library handle cursor advancement
+    dma_display->setCursor(x, y);
+
+    uint8_t currentSegment = 0;
+    uint32_t currentColor = segments[0].color;
+    uint8_t r = (currentColor >> 16) & 0xFF;
+    uint8_t g = (currentColor >> 8) & 0xFF;
+    uint8_t b = currentColor & 0xFF;
+    dma_display->setTextColor(dma_display->color565(r, g, b));
+
+    uint8_t charIndex = 0;
+    const char* ptr = text;
+
+    while (*ptr) {
+        // Check if we need to switch to next segment color
+        if (currentSegment + 1 < segmentCount && charIndex >= segments[currentSegment + 1].offset) {
+            currentSegment++;
+            currentColor = segments[currentSegment].color;
+            r = (currentColor >> 16) & 0xFF;
+            g = (currentColor >> 8) & 0xFF;
+            b = currentColor & 0xFF;
+            dma_display->setTextColor(dma_display->color565(r, g, b));
+        }
+
+        dma_display->print(*ptr);
+        charIndex++;
+        ptr++;
+    }
+
+    dma_display->setFont(NULL);
+}
+
 // ============================================================================
 // Icon Functions
 // ============================================================================
@@ -2328,6 +2886,36 @@ CachedIcon* loadIcon(const char* name) {
     return cached;
 }
 
+bool isFailedIconDownload(const char* name) {
+    unsigned long now = millis();
+    for (uint8_t i = 0; i < MAX_FAILED_ICON_DOWNLOADS; i++) {
+        if (failedIconDownloads[i].name[0] != '\0' &&
+            strcmp(failedIconDownloads[i].name, name) == 0 &&
+            (now - failedIconDownloads[i].failedAt) < FAILED_ICON_RETRY_DELAY) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void addFailedIconDownload(const char* name) {
+    // Find oldest entry to evict
+    uint8_t oldestIndex = 0;
+    unsigned long oldestTime = ULONG_MAX;
+    for (uint8_t i = 0; i < MAX_FAILED_ICON_DOWNLOADS; i++) {
+        if (failedIconDownloads[i].name[0] == '\0') {
+            oldestIndex = i;
+            break;
+        }
+        if (failedIconDownloads[i].failedAt < oldestTime) {
+            oldestTime = failedIconDownloads[i].failedAt;
+            oldestIndex = i;
+        }
+    }
+    strlcpy(failedIconDownloads[oldestIndex].name, name, sizeof(failedIconDownloads[oldestIndex].name));
+    failedIconDownloads[oldestIndex].failedAt = millis();
+}
+
 CachedIcon* getIcon(const char* name) {
     if (!name || strlen(name) == 0) return nullptr;
 
@@ -2339,8 +2927,32 @@ CachedIcon* getIcon(const char* name) {
         }
     }
 
-    // Not in cache, load it
-    return loadIcon(name);
+    // Not in cache, try loading from filesystem
+    CachedIcon* result = loadIcon(name);
+    if (result) return result;
+
+    // Auto-download LaMetric icons on demand
+    if (strncmp(name, "lm_", 3) == 0) {
+        const char* idStr = name + 3;
+        // Validate that the rest is numeric
+        bool isNumeric = (*idStr != '\0');
+        for (const char* p = idStr; *p; p++) {
+            if (*p < '0' || *p > '9') { isNumeric = false; break; }
+        }
+        if (isNumeric && !isFailedIconDownload(name)) {
+            uint32_t iconId = strtoul(idStr, nullptr, 10);
+            Serial.printf("[ICON] Auto-downloading LaMetric icon: %s (id=%u)\n", name, iconId);
+            if (downloadLaMetricIcon(iconId, name)) {
+                return loadIcon(name);
+            } else {
+                addFailedIconDownload(name);
+                Serial.printf("[ICON] Download failed, blacklisted for %ds: %s\n",
+                              FAILED_ICON_RETRY_DELAY / 1000, name);
+            }
+        }
+    }
+
+    return nullptr;
 }
 
 void drawIcon(CachedIcon* icon, int16_t x, int16_t y) {
@@ -2701,20 +3313,54 @@ void setupWebServer() {
                 return;
             }
 
-            const char* text = doc["text"] | "";
-            const char* icon = doc["icon"] | "";
+            // Check for multi-zone format
+            JsonArray zonesArray = doc["zones"].as<JsonArray>();
+            bool isMultiZone = !zonesArray.isNull() && zonesArray.size() > 0;
 
-            // Parse colors using shared helper
-            uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
+            if (isMultiZone) {
+                uint8_t zoneCount = zonesArray.size();
+                if (zoneCount == 1 || zoneCount > MAX_ZONES) {
+                    request->send(400, "application/json",
+                        "{\"error\":\"zones array must have 2, 3, or 4 elements\"}");
+                    return;
+                }
+            }
+
+            // For multi-zone, zone 0 provides the main fields; for single-zone, use top-level fields
+            const char* icon = isMultiZone ? "" : (doc["icon"] | "");
+            uint32_t textColor = isMultiZone ? 0xFFFFFF : parseColorValue(doc["color"], 0xFFFFFF);
+
+            // Parse text field (may be string, {text,color} object, or [{t,c},...] array)
+            char parsedText[64] = "";
+            TextSegment textSegs[MAX_TEXT_SEGMENTS];
+            uint8_t textSegCount = 0;
+            if (!isMultiZone) {
+                parseTextFieldWithSegments(doc["text"], parsedText, sizeof(parsedText),
+                                           textSegs, &textSegCount, textColor);
+            }
 
             uint16_t duration = doc["duration"] | settings.defaultDuration;
             uint32_t lifetime = doc["lifetime"] | 0;
             int8_t priority = doc["priority"] | 0;
 
-            int8_t result = appAdd(name.c_str(), text, icon, textColor,
+            int8_t result = appAdd(name.c_str(), parsedText, icon, textColor,
                                    duration, lifetime, priority, false);
 
             if (result >= 0) {
+                if (!isMultiZone) {
+                    // Copy text segments
+                    memcpy(apps[result].textSegments, textSegs, sizeof(textSegs));
+                    apps[result].textSegmentCount = textSegCount;
+                    // Parse label field
+                    parseTextFieldWithSegments(doc["label"], apps[result].label,
+                                               sizeof(apps[result].label),
+                                               apps[result].labelSegments,
+                                               &apps[result].labelSegmentCount, textColor);
+                }
+                // Apply multi-zone data if present
+                if (isMultiZone) {
+                    appSetZones(result, zonesArray);
+                }
                 Serial.printf("[API] Custom app '%s' created/updated\n", name.c_str());
                 request->send(200, "application/json", "{\"success\":true}");
             } else {
@@ -3437,7 +4083,6 @@ void handleApiApps(AsyncWebServerRequest *request) {
         if (apps[i].active) {
             JsonObject appObj = appsArray.add<JsonObject>();
             appObj["id"] = apps[i].id;
-            appObj["text"] = apps[i].text;
             appObj["icon"] = apps[i].icon;
             appObj["duration"] = apps[i].duration;
             appObj["lifetime"] = apps[i].lifetime;
@@ -3445,11 +4090,52 @@ void handleApiApps(AsyncWebServerRequest *request) {
             appObj["isSystem"] = apps[i].isSystem;
             appObj["isCurrent"] = (currentAppIndex == i);
 
-            // Color as RGB array
-            JsonArray color = appObj["color"].to<JsonArray>();
-            color.add((apps[i].textColor >> 16) & 0xFF);
-            color.add((apps[i].textColor >> 8) & 0xFF);
-            color.add(apps[i].textColor & 0xFF);
+            // Color as hex string
+            char colorHex[8];
+            formatColorHex(apps[i].textColor, colorHex, sizeof(colorHex));
+            appObj["color"] = colorHex;
+
+            // Text and label in polymorphic format
+            serializeTextField(appObj, "text", apps[i].text,
+                               apps[i].textSegments, apps[i].textSegmentCount);
+            if (apps[i].label[0] != '\0') {
+                serializeTextField(appObj, "label", apps[i].label,
+                                   apps[i].labelSegments, apps[i].labelSegmentCount);
+            }
+
+            // Multi-zone data
+            if (apps[i].zoneCount >= 2) {
+                appObj["zoneCount"] = apps[i].zoneCount;
+                JsonArray zonesArr = appObj["zones"].to<JsonArray>();
+                // Zone 0 from main fields
+                JsonObject z0 = zonesArr.add<JsonObject>();
+                serializeTextField(z0, "text", apps[i].text,
+                                   apps[i].textSegments, apps[i].textSegmentCount);
+                z0["icon"] = apps[i].icon;
+                if (apps[i].label[0] != '\0') {
+                    serializeTextField(z0, "label", apps[i].label,
+                                       apps[i].labelSegments, apps[i].labelSegmentCount);
+                }
+                char z0ColorHex[8];
+                formatColorHex(apps[i].textColor, z0ColorHex, sizeof(z0ColorHex));
+                z0["color"] = z0ColorHex;
+                // Zones 1-N
+                for (uint8_t z = 1; z < apps[i].zoneCount; z++) {
+                    JsonObject zObj = zonesArr.add<JsonObject>();
+                    serializeTextField(zObj, "text", apps[i].zones[z - 1].text,
+                                       apps[i].zones[z - 1].textSegments,
+                                       apps[i].zones[z - 1].textSegmentCount);
+                    zObj["icon"] = apps[i].zones[z - 1].icon;
+                    if (apps[i].zones[z - 1].label[0] != '\0') {
+                        serializeTextField(zObj, "label", apps[i].zones[z - 1].label,
+                                           apps[i].zones[z - 1].labelSegments,
+                                           apps[i].zones[z - 1].labelSegmentCount);
+                    }
+                    char zColorHex[8];
+                    formatColorHex(apps[i].zones[z - 1].textColor, zColorHex, sizeof(zColorHex));
+                    zObj["color"] = zColorHex;
+                }
+            }
         }
     }
 
@@ -3703,18 +4389,16 @@ bool saveSettings() {
     doc["apps"]["clock"]["enabled"] = settings.clockEnabled;
     doc["apps"]["clock"]["format24h"] = settings.clockFormat24h;
     doc["apps"]["clock"]["showSeconds"] = settings.clockShowSeconds;
-    JsonArray clockColor = doc["apps"]["clock"]["color"].to<JsonArray>();
-    clockColor.add((settings.clockColor >> 16) & 0xFF);
-    clockColor.add((settings.clockColor >> 8) & 0xFF);
-    clockColor.add(settings.clockColor & 0xFF);
+    char clockColorHex[8];
+    formatColorHex(settings.clockColor, clockColorHex, sizeof(clockColorHex));
+    doc["apps"]["clock"]["color"] = clockColorHex;
 
     // Date app settings
     doc["apps"]["date"]["enabled"] = settings.dateEnabled;
     doc["apps"]["date"]["format"] = settings.dateFormat;
-    JsonArray dateColor = doc["apps"]["date"]["color"].to<JsonArray>();
-    dateColor.add((settings.dateColor >> 16) & 0xFF);
-    dateColor.add((settings.dateColor >> 8) & 0xFF);
-    dateColor.add(settings.dateColor & 0xFF);
+    char dateColorHex[8];
+    formatColorHex(settings.dateColor, dateColorHex, sizeof(dateColorHex));
+    doc["apps"]["date"]["color"] = dateColorHex;
 
     // MQTT settings
     doc["mqtt"]["enabled"] = settings.mqttEnabled;
@@ -3735,10 +4419,9 @@ bool saveSettings() {
             default: break;
         }
         doc["indicators"][key]["mode"] = modeStr;
-        JsonArray color = doc["indicators"][key]["color"].to<JsonArray>();
-        color.add((indicators[i].color >> 16) & 0xFF);
-        color.add((indicators[i].color >> 8) & 0xFF);
-        color.add(indicators[i].color & 0xFF);
+        char indicatorColorHex[8];
+        formatColorHex(indicators[i].color, indicatorColorHex, sizeof(indicatorColorHex));
+        doc["indicators"][key]["color"] = indicatorColorHex;
         doc["indicators"][key]["blinkInterval"] = indicators[i].blinkInterval;
         doc["indicators"][key]["fadePeriod"] = indicators[i].fadePeriod;
     }
@@ -3781,17 +4464,36 @@ bool loadApps() {
     JsonArray appsArray = doc["apps"];
     for (JsonObject appObj : appsArray) {
         const char* id = appObj["id"] | "";
-        const char* text = appObj["text"] | "";
         const char* icon = appObj["icon"] | "";
         uint32_t textColor = appObj["textColor"] | 0xFFFFFF;
         uint16_t duration = appObj["duration"] | settings.defaultDuration;
         uint32_t lifetime = appObj["lifetime"] | 0;
         int8_t priority = appObj["priority"] | 0;
 
+        // Parse text field (handles string and [{t,c},...] array from persistence)
+        char parsedText[64] = "";
+        TextSegment textSegs[MAX_TEXT_SEGMENTS];
+        uint8_t textSegCount = 0;
+        parseTextFieldWithSegments(appObj["text"], parsedText, sizeof(parsedText),
+                                   textSegs, &textSegCount, textColor);
+
         if (strlen(id) > 0) {
-            int8_t result = appAdd(id, text, icon, textColor,
+            int8_t result = appAdd(id, parsedText, icon, textColor,
                                    duration, lifetime, priority, false);
             if (result >= 0) {
+                // Restore text segments
+                memcpy(apps[result].textSegments, textSegs, sizeof(textSegs));
+                apps[result].textSegmentCount = textSegCount;
+                // Restore label with segments
+                parseTextFieldWithSegments(appObj["label"], apps[result].label,
+                                           sizeof(apps[result].label),
+                                           apps[result].labelSegments,
+                                           &apps[result].labelSegmentCount, textColor);
+                // Restore multi-zone data if present
+                JsonArray zonesArr = appObj["zones"].as<JsonArray>();
+                if (!zonesArr.isNull() && zonesArr.size() >= 2) {
+                    appSetZones(result, zonesArr);
+                }
                 loadedCount++;
             }
         }
@@ -3816,12 +4518,53 @@ bool saveApps() {
         if (apps[i].active && !apps[i].isSystem) {
             JsonObject appObj = appsArray.add<JsonObject>();
             appObj["id"] = apps[i].id;
-            appObj["text"] = apps[i].text;
             appObj["icon"] = apps[i].icon;
             appObj["textColor"] = apps[i].textColor;
             appObj["duration"] = apps[i].duration;
             appObj["lifetime"] = apps[i].lifetime;
             appObj["priority"] = apps[i].priority;
+            // Serialize text and label in polymorphic format
+            serializeTextField(appObj, "text", apps[i].text,
+                               apps[i].textSegments, apps[i].textSegmentCount);
+            if (apps[i].label[0] != '\0') {
+                serializeTextField(appObj, "label", apps[i].label,
+                                   apps[i].labelSegments, apps[i].labelSegmentCount);
+            }
+
+            // Serialize multi-zone data
+            if (apps[i].zoneCount >= 2) {
+                appObj["zoneCount"] = apps[i].zoneCount;
+                JsonArray zonesArr = appObj["zones"].to<JsonArray>();
+                // Zone 0 = main app fields (text/icon/textColor/label)
+                JsonObject z0 = zonesArr.add<JsonObject>();
+                serializeTextField(z0, "text", apps[i].text,
+                                   apps[i].textSegments, apps[i].textSegmentCount);
+                z0["icon"] = apps[i].icon;
+                if (apps[i].label[0] != '\0') {
+                    serializeTextField(z0, "label", apps[i].label,
+                                       apps[i].labelSegments, apps[i].labelSegmentCount);
+                }
+                char z0ColorHex[8];
+                formatColorHex(apps[i].textColor, z0ColorHex, sizeof(z0ColorHex));
+                z0["color"] = z0ColorHex;
+                // Zones 1..N stored in app->zones[0..N-1]
+                for (uint8_t z = 1; z < apps[i].zoneCount; z++) {
+                    JsonObject zObj = zonesArr.add<JsonObject>();
+                    serializeTextField(zObj, "text", apps[i].zones[z - 1].text,
+                                       apps[i].zones[z - 1].textSegments,
+                                       apps[i].zones[z - 1].textSegmentCount);
+                    zObj["icon"] = apps[i].zones[z - 1].icon;
+                    if (apps[i].zones[z - 1].label[0] != '\0') {
+                        serializeTextField(zObj, "label", apps[i].zones[z - 1].label,
+                                           apps[i].zones[z - 1].labelSegments,
+                                           apps[i].zones[z - 1].labelSegmentCount);
+                    }
+                    char zColorHex[8];
+                    formatColorHex(apps[i].zones[z - 1].textColor, zColorHex, sizeof(zColorHex));
+                    zObj["color"] = zColorHex;
+                }
+            }
+
             savedCount++;
         }
     }
@@ -3887,12 +4630,18 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
         AppItem* app = &apps[existingIndex];
         strlcpy(app->text, text, sizeof(app->text));
         if (icon) strlcpy(app->icon, icon, sizeof(app->icon));
+        app->label[0] = '\0';  // Reset label (caller will set if needed)
         app->textColor = textColor;
+        app->textSegmentCount = 0;
+        app->labelSegmentCount = 0;
         app->duration = duration;
         app->lifetime = lifetime;
         app->priority = priority;
         app->createdAt = millis();
         app->active = true;
+        // Reset zone data (caller will set via appSetZones if needed)
+        app->zoneCount = 0;
+        memset(app->zones, 0, sizeof(app->zones));
         Serial.printf("[APPS] Updated app: %s\n", id);
         // Persist non-system apps
         if (!app->isSystem) {
@@ -3921,13 +4670,19 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
     strlcpy(app->text, text, sizeof(app->text));
     if (icon) strlcpy(app->icon, icon, sizeof(app->icon));
     else app->icon[0] = '\0';
+    app->label[0] = '\0';  // Initialize label (caller will set if needed)
     app->textColor = textColor;
+    app->textSegmentCount = 0;
+    app->labelSegmentCount = 0;
     app->duration = duration > 0 ? duration : settings.defaultDuration;
     app->lifetime = lifetime;
     app->createdAt = millis();
     app->priority = constrain(priority, -10, 10);
     app->active = true;
     app->isSystem = isSystem;
+    // Initialize zone data (caller will set via appSetZones if needed)
+    app->zoneCount = 0;
+    memset(app->zones, 0, sizeof(app->zones));
 
     appCount++;
     Serial.printf("[APPS] Added app: %s (slot %d, total %d)\n", id, emptySlot, appCount);
@@ -3938,6 +4693,49 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
     }
 
     return emptySlot;
+}
+
+void appSetZones(int8_t appIndex, JsonArray zonesArray) {
+    if (appIndex < 0 || appIndex >= MAX_APPS) return;
+
+    AppItem* app = &apps[appIndex];
+    uint8_t count = zonesArray.size();
+    if (count < 2 || count > MAX_ZONES) return;
+
+    app->zoneCount = count;
+
+    // Zone 0 maps to the app's main text/icon/textColor/label fields
+    JsonObject zone0 = zonesArray[0].as<JsonObject>();
+    strlcpy(app->icon, zone0["icon"] | "", sizeof(app->icon));
+    app->textColor = parseColorValue(zone0["color"], 0xFFFFFF);
+    parseTextFieldWithSegments(zone0["text"], app->text, sizeof(app->text),
+                               app->textSegments, &app->textSegmentCount, app->textColor);
+    parseTextFieldWithSegments(zone0["label"], app->label, sizeof(app->label),
+                               app->labelSegments, &app->labelSegmentCount, app->textColor);
+
+    // Zones 1-3 map to app->zones[0..2]
+    for (uint8_t i = 1; i < count && i < MAX_ZONES; i++) {
+        JsonObject zoneObj = zonesArray[i].as<JsonObject>();
+        strlcpy(app->zones[i - 1].icon, zoneObj["icon"] | "", sizeof(app->zones[0].icon));
+        app->zones[i - 1].textColor = parseColorValue(zoneObj["color"], 0xFFFFFF);
+        parseTextFieldWithSegments(zoneObj["text"], app->zones[i - 1].text,
+                                   sizeof(app->zones[0].text),
+                                   app->zones[i - 1].textSegments,
+                                   &app->zones[i - 1].textSegmentCount,
+                                   app->zones[i - 1].textColor);
+        parseTextFieldWithSegments(zoneObj["label"], app->zones[i - 1].label,
+                                   sizeof(app->zones[0].label),
+                                   app->zones[i - 1].labelSegments,
+                                   &app->zones[i - 1].labelSegmentCount,
+                                   app->zones[i - 1].textColor);
+    }
+
+    Serial.printf("[APPS] Set %d zones for app: %s\n", count, app->id);
+
+    // Persist non-system apps
+    if (!app->isSystem) {
+        saveApps();
+    }
 }
 
 bool appRemove(const char* id) {

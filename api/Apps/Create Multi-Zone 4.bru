@@ -1,0 +1,44 @@
+meta {
+  name: Create Multi-Zone 4
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/custom
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "dashboard",
+    "zones": [
+      { "text": "22.5C", "icon": "thermo", "label": "Salon", "color": "#FF8800" },
+      { "text": "58%", "icon": "humidity", "color": "#00D4FF" },
+      { "text": "BTC", "icon": "btc", "label": "$98.4k", "color": "#FFD000" },
+      { "text": "OK", "icon": "wifi", "color": "#22FF44" }
+    ],
+    "duration": 15000
+  }
+}
+
+docs {
+  Creates a custom app with 4-zone quad layout.
+
+  Layout:
+  +--------+--------+
+  | [icon] | [icon] |  zone 0 (31x31)  zone 1 (31x31)
+  | text   | text   |
+  +--------+--------+
+  | [icon] | [icon] |  zone 2 (31x31)  zone 3 (31x31)
+  | text   | text   |
+  +--------+--------+
+
+  All four zones are half-width: icon centered at top, text below.
+  Separator lines (horizontal + vertical) divide the display into quadrants.
+}

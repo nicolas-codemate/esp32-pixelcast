@@ -1,0 +1,3032 @@
+asyncapi: 3.0.0
+info:
+  title: ESP32-PixelCast MQTT API
+  version: 0.1.0
+  description: >
+    MQTT interface for controlling a HUB75 LED matrix panel (64x64) running on
+    ESP32 Trinity. JSON payloads mirror the REST API. MQTT must be enabled via
+    `POST /api/settings` or the settings file.
+
+
+    **Key differences from REST:**
+
+    - Fire-and-forget: no response (errors logged to Serial only).
+
+    - Delete via `{"delete": true}` flag instead of HTTP DELETE.
+
+    - Name can be in topic path or JSON body for custom/tracker.
+
+    - No icon management over MQTT.
+  license:
+    name: MIT
+defaultContentType: application/json
+servers:
+  mosquitto:
+    host: '{brokerHost}:{brokerPort}'
+    protocol: mqtt
+    description: MQTT broker (e.g. Mosquitto).
+    variables:
+      brokerHost:
+        default: localhost
+      brokerPort:
+        default: '1883'
+    bindings:
+      mqtt:
+        clientId: pixelcast_{MAC}
+        keepAlive: 60
+        cleanSession: true
+        lastWill:
+          topic: '{prefix}/status'
+          qos: 0
+          retain: true
+          message: offline
+channels:
+  custom:
+    address: '{prefix}/custom'
+    description: >
+      Create or update a custom app. App name must be in the JSON body. Send
+      `{"delete": true, "name": "appName"}` to delete.
+    parameters:
+      prefix:
+        description: MQTT topic prefix (default "pixelcast").
+        default: pixelcast
+    messages:
+      customAppMessage:
+        payload:
+          type: object
+          description: >
+            Create or update a custom app in the rotation. Supports single-zone
+            (text/icon/color) or multi-zone (zones array) layouts.
+          properties:
+            name:
+              type: string
+              description: >
+                App name (identifier). Can also be passed as `?name=` query
+                parameter.
+            text:
+              description: >
+                Text field accepting three formats: plain string, colored string
+                object, or array of colored segments (max 8).
+              oneOf:
+                - type: string
+                  description: Plain text (uses default color).
+                  examples:
+                    - 22.5C
+                - type: object
+                  required:
+                    - text
+                    - color
+                  properties:
+                    text:
+                      type: string
+                    color:
+                      description: >
+                        Color value. Accepts RGB array, hex string, or unsigned
+                        32-bit integer.
+                      oneOf:
+                        - type: array
+                          items:
+                            type: integer
+                            minimum: 0
+                            maximum: 255
+                          minItems: 3
+                          maxItems: 3
+                          description: RGB array [R, G, B]
+                          examples:
+                            - - 255
+                              - 136
+                              - 0
+                        - type: string
+                          pattern: ^#[0-9a-fA-F]{6}$
+                          description: Hex string
+                          examples:
+                            - '#FF8800'
+                        - type: integer
+                          minimum: 0
+                          maximum: 16777215
+                          description: Unsigned 32-bit integer (0xRRGGBB)
+                          examples:
+                            - 16746496
+                  description: Single string with explicit color override.
+                  examples:
+                    - text: CRITICAL
+                      color: '#FF0000'
+                - type: array
+                  items:
+                    type: object
+                    required:
+                      - t
+                      - c
+                    properties:
+                      t:
+                        type: string
+                        description: Text content for this segment.
+                      c:
+                        description: >
+                          Color value. Accepts RGB array, hex string, or
+                          unsigned 32-bit integer.
+                        oneOf:
+                          - type: array
+                            items:
+                              type: integer
+                              minimum: 0
+                              maximum: 255
+                            minItems: 3
+                            maxItems: 3
+                            description: RGB array [R, G, B]
+                            examples:
+                              - - 255
+                                - 136
+                                - 0
+                          - type: string
+                            pattern: ^#[0-9a-fA-F]{6}$
+                            description: Hex string
+                            examples:
+                              - '#FF8800'
+                          - type: integer
+                            minimum: 0
+                            maximum: 16777215
+                            description: Unsigned 32-bit integer (0xRRGGBB)
+                            examples:
+                              - 16746496
+                    description: A text fragment with its own color.
+                  minItems: 1
+                  maxItems: 8
+                  description: Array of colored segments (concatenated in display order).
+                  examples:
+                    - - t: '22.5'
+                        c: '#FF8800'
+                      - t: C
+                        c: '#666666'
+            icon:
+              type: string
+              description: Icon name (without extension).
+              examples:
+                - smiley
+            label:
+              description: >
+                Text field accepting three formats: plain string, colored string
+                object, or array of colored segments (max 8).
+              oneOf:
+                - type: string
+                  description: Plain text (uses default color).
+                  examples:
+                    - 22.5C
+                - type: object
+                  required:
+                    - text
+                    - color
+                  properties:
+                    text:
+                      type: string
+                    color:
+                      description: >
+                        Color value. Accepts RGB array, hex string, or unsigned
+                        32-bit integer.
+                      oneOf:
+                        - type: array
+                          items:
+                            type: integer
+                            minimum: 0
+                            maximum: 255
+                          minItems: 3
+                          maxItems: 3
+                          description: RGB array [R, G, B]
+                          examples:
+                            - - 255
+                              - 136
+                              - 0
+                        - type: string
+                          pattern: ^#[0-9a-fA-F]{6}$
+                          description: Hex string
+                          examples:
+                            - '#FF8800'
+                        - type: integer
+                          minimum: 0
+                          maximum: 16777215
+                          description: Unsigned 32-bit integer (0xRRGGBB)
+                          examples:
+                            - 16746496
+                  description: Single string with explicit color override.
+                  examples:
+                    - text: CRITICAL
+                      color: '#FF0000'
+                - type: array
+                  items:
+                    type: object
+                    required:
+                      - t
+                      - c
+                    properties:
+                      t:
+                        type: string
+                        description: Text content for this segment.
+                      c:
+                        description: >
+                          Color value. Accepts RGB array, hex string, or
+                          unsigned 32-bit integer.
+                        oneOf:
+                          - type: array
+                            items:
+                              type: integer
+                              minimum: 0
+                              maximum: 255
+                            minItems: 3
+                            maxItems: 3
+                            description: RGB array [R, G, B]
+                            examples:
+                              - - 255
+                                - 136
+                                - 0
+                          - type: string
+                            pattern: ^#[0-9a-fA-F]{6}$
+                            description: Hex string
+                            examples:
+                              - '#FF8800'
+                          - type: integer
+                            minimum: 0
+                            maximum: 16777215
+                            description: Unsigned 32-bit integer (0xRRGGBB)
+                            examples:
+                              - 16746496
+                    description: A text fragment with its own color.
+                  minItems: 1
+                  maxItems: 8
+                  description: Array of colored segments (concatenated in display order).
+                  examples:
+                    - - t: '22.5'
+                        c: '#FF8800'
+                      - t: C
+                        c: '#666666'
+            color:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            duration:
+              type: integer
+              description: Display duration in milliseconds.
+              default: 10000
+              examples:
+                - 10000
+            lifetime:
+              type: integer
+              description: |
+                Auto-expiration in seconds if not updated. 0 = permanent.
+              default: 0
+            priority:
+              type: integer
+              minimum: -10
+              maximum: 10
+              description: Display priority (-10 to 10, higher = more important).
+              default: 0
+            zones:
+              type: array
+              items:
+                type: object
+                properties:
+                  text:
+                    description: >
+                      Text field accepting three formats: plain string, colored
+                      string object, or array of colored segments (max 8).
+                    oneOf:
+                      - type: string
+                        description: Plain text (uses default color).
+                        examples:
+                          - 22.5C
+                      - type: object
+                        required:
+                          - text
+                          - color
+                        properties:
+                          text:
+                            type: string
+                          color:
+                            description: >
+                              Color value. Accepts RGB array, hex string, or
+                              unsigned 32-bit integer.
+                            oneOf:
+                              - type: array
+                                items:
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 255
+                                minItems: 3
+                                maxItems: 3
+                                description: RGB array [R, G, B]
+                                examples:
+                                  - - 255
+                                    - 136
+                                    - 0
+                              - type: string
+                                pattern: ^#[0-9a-fA-F]{6}$
+                                description: Hex string
+                                examples:
+                                  - '#FF8800'
+                              - type: integer
+                                minimum: 0
+                                maximum: 16777215
+                                description: Unsigned 32-bit integer (0xRRGGBB)
+                                examples:
+                                  - 16746496
+                        description: Single string with explicit color override.
+                        examples:
+                          - text: CRITICAL
+                            color: '#FF0000'
+                      - type: array
+                        items:
+                          type: object
+                          required:
+                            - t
+                            - c
+                          properties:
+                            t:
+                              type: string
+                              description: Text content for this segment.
+                            c:
+                              description: >
+                                Color value. Accepts RGB array, hex string, or
+                                unsigned 32-bit integer.
+                              oneOf:
+                                - type: array
+                                  items:
+                                    type: integer
+                                    minimum: 0
+                                    maximum: 255
+                                  minItems: 3
+                                  maxItems: 3
+                                  description: RGB array [R, G, B]
+                                  examples:
+                                    - - 255
+                                      - 136
+                                      - 0
+                                - type: string
+                                  pattern: ^#[0-9a-fA-F]{6}$
+                                  description: Hex string
+                                  examples:
+                                    - '#FF8800'
+                                - type: integer
+                                  minimum: 0
+                                  maximum: 16777215
+                                  description: Unsigned 32-bit integer (0xRRGGBB)
+                                  examples:
+                                    - 16746496
+                          description: A text fragment with its own color.
+                        minItems: 1
+                        maxItems: 8
+                        description: >-
+                          Array of colored segments (concatenated in display
+                          order).
+                        examples:
+                          - - t: '22.5'
+                              c: '#FF8800'
+                            - t: C
+                              c: '#666666'
+                  icon:
+                    type: string
+                    description: Icon name (without extension) from the device filesystem.
+                    examples:
+                      - thermo
+                  label:
+                    description: >
+                      Text field accepting three formats: plain string, colored
+                      string object, or array of colored segments (max 8).
+                    oneOf:
+                      - type: string
+                        description: Plain text (uses default color).
+                        examples:
+                          - 22.5C
+                      - type: object
+                        required:
+                          - text
+                          - color
+                        properties:
+                          text:
+                            type: string
+                          color:
+                            description: >
+                              Color value. Accepts RGB array, hex string, or
+                              unsigned 32-bit integer.
+                            oneOf:
+                              - type: array
+                                items:
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 255
+                                minItems: 3
+                                maxItems: 3
+                                description: RGB array [R, G, B]
+                                examples:
+                                  - - 255
+                                    - 136
+                                    - 0
+                              - type: string
+                                pattern: ^#[0-9a-fA-F]{6}$
+                                description: Hex string
+                                examples:
+                                  - '#FF8800'
+                              - type: integer
+                                minimum: 0
+                                maximum: 16777215
+                                description: Unsigned 32-bit integer (0xRRGGBB)
+                                examples:
+                                  - 16746496
+                        description: Single string with explicit color override.
+                        examples:
+                          - text: CRITICAL
+                            color: '#FF0000'
+                      - type: array
+                        items:
+                          type: object
+                          required:
+                            - t
+                            - c
+                          properties:
+                            t:
+                              type: string
+                              description: Text content for this segment.
+                            c:
+                              description: >
+                                Color value. Accepts RGB array, hex string, or
+                                unsigned 32-bit integer.
+                              oneOf:
+                                - type: array
+                                  items:
+                                    type: integer
+                                    minimum: 0
+                                    maximum: 255
+                                  minItems: 3
+                                  maxItems: 3
+                                  description: RGB array [R, G, B]
+                                  examples:
+                                    - - 255
+                                      - 136
+                                      - 0
+                                - type: string
+                                  pattern: ^#[0-9a-fA-F]{6}$
+                                  description: Hex string
+                                  examples:
+                                    - '#FF8800'
+                                - type: integer
+                                  minimum: 0
+                                  maximum: 16777215
+                                  description: Unsigned 32-bit integer (0xRRGGBB)
+                                  examples:
+                                    - 16746496
+                          description: A text fragment with its own color.
+                        minItems: 1
+                        maxItems: 8
+                        description: >-
+                          Array of colored segments (concatenated in display
+                          order).
+                        examples:
+                          - - t: '22.5'
+                              c: '#FF8800'
+                            - t: C
+                              c: '#666666'
+                  color:
+                    description: >
+                      Color value. Accepts RGB array, hex string, or unsigned
+                      32-bit integer.
+                    oneOf:
+                      - type: array
+                        items:
+                          type: integer
+                          minimum: 0
+                          maximum: 255
+                        minItems: 3
+                        maxItems: 3
+                        description: RGB array [R, G, B]
+                        examples:
+                          - - 255
+                            - 136
+                            - 0
+                      - type: string
+                        pattern: ^#[0-9a-fA-F]{6}$
+                        description: Hex string
+                        examples:
+                          - '#FF8800'
+                      - type: integer
+                        minimum: 0
+                        maximum: 16777215
+                        description: Unsigned 32-bit integer (0xRRGGBB)
+                        examples:
+                          - 16746496
+                description: >
+                  A single zone in a multi-zone layout. Full-width zones
+                  (>=48px) display icon left + text right. Half-width zones
+                  display icon top + text below.
+              minItems: 2
+              maxItems: 4
+              description: >
+                Multi-zone layout. Providing this array switches to dashboard
+                mode. Layout inferred from count: 2 = dual rows, 3 = top + 2
+                columns, 4 = quad grid. Mutually exclusive with top-level
+                text/icon/label/color.
+        examples:
+          - name: singleZone
+            summary: Simple text app
+            payload:
+              text: Hello!
+              icon: smiley
+              color: '#FF0000'
+          - name: multiZone
+            summary: Two-zone dashboard
+            payload:
+              zones:
+                - text: 22.5C
+                  icon: thermo
+                  label: Salon
+                  color: '#FF8800'
+                - text: 58%
+                  icon: humidity
+                  color: '#00D4FF'
+          - name: delete
+            summary: Delete an app
+            payload:
+              delete: true
+              name: hello
+  customNamed:
+    address: '{prefix}/custom/{name}'
+    description: >
+      Create or update a custom app with name in the topic path. Send
+      `{"delete": true}` to delete.
+    parameters:
+      prefix:
+        description: MQTT topic prefix.
+        default: pixelcast
+      name:
+        description: App name.
+    messages:
+      customAppMessage:
+        payload:
+          type: object
+          description: >
+            Create or update a custom app in the rotation. Supports single-zone
+            (text/icon/color) or multi-zone (zones array) layouts.
+          properties:
+            name:
+              type: string
+              description: >
+                App name (identifier). Can also be passed as `?name=` query
+                parameter.
+            text:
+              description: >
+                Text field accepting three formats: plain string, colored string
+                object, or array of colored segments (max 8).
+              oneOf:
+                - type: string
+                  description: Plain text (uses default color).
+                  examples:
+                    - 22.5C
+                - type: object
+                  required:
+                    - text
+                    - color
+                  properties:
+                    text:
+                      type: string
+                    color:
+                      description: >
+                        Color value. Accepts RGB array, hex string, or unsigned
+                        32-bit integer.
+                      oneOf:
+                        - type: array
+                          items:
+                            type: integer
+                            minimum: 0
+                            maximum: 255
+                          minItems: 3
+                          maxItems: 3
+                          description: RGB array [R, G, B]
+                          examples:
+                            - - 255
+                              - 136
+                              - 0
+                        - type: string
+                          pattern: ^#[0-9a-fA-F]{6}$
+                          description: Hex string
+                          examples:
+                            - '#FF8800'
+                        - type: integer
+                          minimum: 0
+                          maximum: 16777215
+                          description: Unsigned 32-bit integer (0xRRGGBB)
+                          examples:
+                            - 16746496
+                  description: Single string with explicit color override.
+                  examples:
+                    - text: CRITICAL
+                      color: '#FF0000'
+                - type: array
+                  items:
+                    type: object
+                    required:
+                      - t
+                      - c
+                    properties:
+                      t:
+                        type: string
+                        description: Text content for this segment.
+                      c:
+                        description: >
+                          Color value. Accepts RGB array, hex string, or
+                          unsigned 32-bit integer.
+                        oneOf:
+                          - type: array
+                            items:
+                              type: integer
+                              minimum: 0
+                              maximum: 255
+                            minItems: 3
+                            maxItems: 3
+                            description: RGB array [R, G, B]
+                            examples:
+                              - - 255
+                                - 136
+                                - 0
+                          - type: string
+                            pattern: ^#[0-9a-fA-F]{6}$
+                            description: Hex string
+                            examples:
+                              - '#FF8800'
+                          - type: integer
+                            minimum: 0
+                            maximum: 16777215
+                            description: Unsigned 32-bit integer (0xRRGGBB)
+                            examples:
+                              - 16746496
+                    description: A text fragment with its own color.
+                  minItems: 1
+                  maxItems: 8
+                  description: Array of colored segments (concatenated in display order).
+                  examples:
+                    - - t: '22.5'
+                        c: '#FF8800'
+                      - t: C
+                        c: '#666666'
+            icon:
+              type: string
+              description: Icon name (without extension).
+              examples:
+                - smiley
+            label:
+              description: >
+                Text field accepting three formats: plain string, colored string
+                object, or array of colored segments (max 8).
+              oneOf:
+                - type: string
+                  description: Plain text (uses default color).
+                  examples:
+                    - 22.5C
+                - type: object
+                  required:
+                    - text
+                    - color
+                  properties:
+                    text:
+                      type: string
+                    color:
+                      description: >
+                        Color value. Accepts RGB array, hex string, or unsigned
+                        32-bit integer.
+                      oneOf:
+                        - type: array
+                          items:
+                            type: integer
+                            minimum: 0
+                            maximum: 255
+                          minItems: 3
+                          maxItems: 3
+                          description: RGB array [R, G, B]
+                          examples:
+                            - - 255
+                              - 136
+                              - 0
+                        - type: string
+                          pattern: ^#[0-9a-fA-F]{6}$
+                          description: Hex string
+                          examples:
+                            - '#FF8800'
+                        - type: integer
+                          minimum: 0
+                          maximum: 16777215
+                          description: Unsigned 32-bit integer (0xRRGGBB)
+                          examples:
+                            - 16746496
+                  description: Single string with explicit color override.
+                  examples:
+                    - text: CRITICAL
+                      color: '#FF0000'
+                - type: array
+                  items:
+                    type: object
+                    required:
+                      - t
+                      - c
+                    properties:
+                      t:
+                        type: string
+                        description: Text content for this segment.
+                      c:
+                        description: >
+                          Color value. Accepts RGB array, hex string, or
+                          unsigned 32-bit integer.
+                        oneOf:
+                          - type: array
+                            items:
+                              type: integer
+                              minimum: 0
+                              maximum: 255
+                            minItems: 3
+                            maxItems: 3
+                            description: RGB array [R, G, B]
+                            examples:
+                              - - 255
+                                - 136
+                                - 0
+                          - type: string
+                            pattern: ^#[0-9a-fA-F]{6}$
+                            description: Hex string
+                            examples:
+                              - '#FF8800'
+                          - type: integer
+                            minimum: 0
+                            maximum: 16777215
+                            description: Unsigned 32-bit integer (0xRRGGBB)
+                            examples:
+                              - 16746496
+                    description: A text fragment with its own color.
+                  minItems: 1
+                  maxItems: 8
+                  description: Array of colored segments (concatenated in display order).
+                  examples:
+                    - - t: '22.5'
+                        c: '#FF8800'
+                      - t: C
+                        c: '#666666'
+            color:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            duration:
+              type: integer
+              description: Display duration in milliseconds.
+              default: 10000
+              examples:
+                - 10000
+            lifetime:
+              type: integer
+              description: |
+                Auto-expiration in seconds if not updated. 0 = permanent.
+              default: 0
+            priority:
+              type: integer
+              minimum: -10
+              maximum: 10
+              description: Display priority (-10 to 10, higher = more important).
+              default: 0
+            zones:
+              type: array
+              items:
+                type: object
+                properties:
+                  text:
+                    description: >
+                      Text field accepting three formats: plain string, colored
+                      string object, or array of colored segments (max 8).
+                    oneOf:
+                      - type: string
+                        description: Plain text (uses default color).
+                        examples:
+                          - 22.5C
+                      - type: object
+                        required:
+                          - text
+                          - color
+                        properties:
+                          text:
+                            type: string
+                          color:
+                            description: >
+                              Color value. Accepts RGB array, hex string, or
+                              unsigned 32-bit integer.
+                            oneOf:
+                              - type: array
+                                items:
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 255
+                                minItems: 3
+                                maxItems: 3
+                                description: RGB array [R, G, B]
+                                examples:
+                                  - - 255
+                                    - 136
+                                    - 0
+                              - type: string
+                                pattern: ^#[0-9a-fA-F]{6}$
+                                description: Hex string
+                                examples:
+                                  - '#FF8800'
+                              - type: integer
+                                minimum: 0
+                                maximum: 16777215
+                                description: Unsigned 32-bit integer (0xRRGGBB)
+                                examples:
+                                  - 16746496
+                        description: Single string with explicit color override.
+                        examples:
+                          - text: CRITICAL
+                            color: '#FF0000'
+                      - type: array
+                        items:
+                          type: object
+                          required:
+                            - t
+                            - c
+                          properties:
+                            t:
+                              type: string
+                              description: Text content for this segment.
+                            c:
+                              description: >
+                                Color value. Accepts RGB array, hex string, or
+                                unsigned 32-bit integer.
+                              oneOf:
+                                - type: array
+                                  items:
+                                    type: integer
+                                    minimum: 0
+                                    maximum: 255
+                                  minItems: 3
+                                  maxItems: 3
+                                  description: RGB array [R, G, B]
+                                  examples:
+                                    - - 255
+                                      - 136
+                                      - 0
+                                - type: string
+                                  pattern: ^#[0-9a-fA-F]{6}$
+                                  description: Hex string
+                                  examples:
+                                    - '#FF8800'
+                                - type: integer
+                                  minimum: 0
+                                  maximum: 16777215
+                                  description: Unsigned 32-bit integer (0xRRGGBB)
+                                  examples:
+                                    - 16746496
+                          description: A text fragment with its own color.
+                        minItems: 1
+                        maxItems: 8
+                        description: >-
+                          Array of colored segments (concatenated in display
+                          order).
+                        examples:
+                          - - t: '22.5'
+                              c: '#FF8800'
+                            - t: C
+                              c: '#666666'
+                  icon:
+                    type: string
+                    description: Icon name (without extension) from the device filesystem.
+                    examples:
+                      - thermo
+                  label:
+                    description: >
+                      Text field accepting three formats: plain string, colored
+                      string object, or array of colored segments (max 8).
+                    oneOf:
+                      - type: string
+                        description: Plain text (uses default color).
+                        examples:
+                          - 22.5C
+                      - type: object
+                        required:
+                          - text
+                          - color
+                        properties:
+                          text:
+                            type: string
+                          color:
+                            description: >
+                              Color value. Accepts RGB array, hex string, or
+                              unsigned 32-bit integer.
+                            oneOf:
+                              - type: array
+                                items:
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 255
+                                minItems: 3
+                                maxItems: 3
+                                description: RGB array [R, G, B]
+                                examples:
+                                  - - 255
+                                    - 136
+                                    - 0
+                              - type: string
+                                pattern: ^#[0-9a-fA-F]{6}$
+                                description: Hex string
+                                examples:
+                                  - '#FF8800'
+                              - type: integer
+                                minimum: 0
+                                maximum: 16777215
+                                description: Unsigned 32-bit integer (0xRRGGBB)
+                                examples:
+                                  - 16746496
+                        description: Single string with explicit color override.
+                        examples:
+                          - text: CRITICAL
+                            color: '#FF0000'
+                      - type: array
+                        items:
+                          type: object
+                          required:
+                            - t
+                            - c
+                          properties:
+                            t:
+                              type: string
+                              description: Text content for this segment.
+                            c:
+                              description: >
+                                Color value. Accepts RGB array, hex string, or
+                                unsigned 32-bit integer.
+                              oneOf:
+                                - type: array
+                                  items:
+                                    type: integer
+                                    minimum: 0
+                                    maximum: 255
+                                  minItems: 3
+                                  maxItems: 3
+                                  description: RGB array [R, G, B]
+                                  examples:
+                                    - - 255
+                                      - 136
+                                      - 0
+                                - type: string
+                                  pattern: ^#[0-9a-fA-F]{6}$
+                                  description: Hex string
+                                  examples:
+                                    - '#FF8800'
+                                - type: integer
+                                  minimum: 0
+                                  maximum: 16777215
+                                  description: Unsigned 32-bit integer (0xRRGGBB)
+                                  examples:
+                                    - 16746496
+                          description: A text fragment with its own color.
+                        minItems: 1
+                        maxItems: 8
+                        description: >-
+                          Array of colored segments (concatenated in display
+                          order).
+                        examples:
+                          - - t: '22.5'
+                              c: '#FF8800'
+                            - t: C
+                              c: '#666666'
+                  color:
+                    description: >
+                      Color value. Accepts RGB array, hex string, or unsigned
+                      32-bit integer.
+                    oneOf:
+                      - type: array
+                        items:
+                          type: integer
+                          minimum: 0
+                          maximum: 255
+                        minItems: 3
+                        maxItems: 3
+                        description: RGB array [R, G, B]
+                        examples:
+                          - - 255
+                            - 136
+                            - 0
+                      - type: string
+                        pattern: ^#[0-9a-fA-F]{6}$
+                        description: Hex string
+                        examples:
+                          - '#FF8800'
+                      - type: integer
+                        minimum: 0
+                        maximum: 16777215
+                        description: Unsigned 32-bit integer (0xRRGGBB)
+                        examples:
+                          - 16746496
+                description: >
+                  A single zone in a multi-zone layout. Full-width zones
+                  (>=48px) display icon left + text right. Half-width zones
+                  display icon top + text below.
+              minItems: 2
+              maxItems: 4
+              description: >
+                Multi-zone layout. Providing this array switches to dashboard
+                mode. Layout inferred from count: 2 = dual rows, 3 = top + 2
+                columns, 4 = quad grid. Mutually exclusive with top-level
+                text/icon/label/color.
+        examples:
+          - name: singleZone
+            summary: Simple text app
+            payload:
+              text: Hello!
+              icon: smiley
+              color: '#FF0000'
+          - name: multiZone
+            summary: Two-zone dashboard
+            payload:
+              zones:
+                - text: 22.5C
+                  icon: thermo
+                  label: Salon
+                  color: '#FF8800'
+                - text: 58%
+                  icon: humidity
+                  color: '#00D4FF'
+          - name: delete
+            summary: Delete an app
+            payload:
+              delete: true
+              name: hello
+  notify:
+    address: '{prefix}/notify'
+    description: Send a notification to the display.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      notificationMessage:
+        payload:
+          type: object
+          required:
+            - text
+          properties:
+            text:
+              type: string
+              description: Notification text (required, max 128 chars).
+              maxLength: 128
+            id:
+              type: string
+              description: >
+                Optional unique ID. If omitted, auto-generated as
+                `notif_<millis>`.
+            icon:
+              type: string
+              description: Icon name (without extension).
+            color:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            background:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            duration:
+              type: integer
+              description: Display duration in milliseconds.
+              default: 5000
+            hold:
+              type: boolean
+              description: >
+                Hold notification until explicitly dismissed. Overrides
+                duration.
+              default: false
+            urgent:
+              type: boolean
+              description: Jump to front of notification queue.
+              default: false
+            stack:
+              type: boolean
+              description: >
+                Queue sequentially with other notifications (true) vs replace
+                current notification (false).
+              default: true
+        examples:
+          - name: alert
+            summary: Urgent notification
+            payload:
+              text: Alert!
+              icon: warning
+              color: '#FF0000'
+              urgent: true
+  dismiss:
+    address: '{prefix}/dismiss'
+    description: Dismiss the current notification. Payload can be empty.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      dismissMessage:
+        payload:
+          type: 'null'
+        description: Empty payload (or any payload - ignored).
+  indicator1:
+    address: '{prefix}/indicator1'
+    description: Set corner indicator 1. Send `{"mode":"off"}` to turn off.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      indicatorMessage:
+        payload:
+          type: object
+          properties:
+            mode:
+              type: string
+              enum:
+                - solid
+                - blink
+                - fade
+                - 'off'
+              description: >
+                Indicator mode. If omitted but `color` is provided, defaults to
+                `solid`. Use `off` to turn off the indicator.
+            color:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            blinkInterval:
+              type: integer
+              description: Blink interval in milliseconds (only for `blink` mode).
+              default: 500
+            fadePeriod:
+              type: integer
+              description: Fade cycle period in milliseconds (only for `fade` mode).
+              default: 2000
+        examples:
+          - name: blinkGreen
+            summary: Blinking green
+            payload:
+              mode: blink
+              color: '#00FF00'
+              blinkInterval: 500
+          - name: 'off'
+            summary: Turn off
+            payload:
+              mode: 'off'
+  indicator2:
+    address: '{prefix}/indicator2'
+    description: Set corner indicator 2.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      indicatorMessage:
+        payload:
+          type: object
+          properties:
+            mode:
+              type: string
+              enum:
+                - solid
+                - blink
+                - fade
+                - 'off'
+              description: >
+                Indicator mode. If omitted but `color` is provided, defaults to
+                `solid`. Use `off` to turn off the indicator.
+            color:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            blinkInterval:
+              type: integer
+              description: Blink interval in milliseconds (only for `blink` mode).
+              default: 500
+            fadePeriod:
+              type: integer
+              description: Fade cycle period in milliseconds (only for `fade` mode).
+              default: 2000
+        examples:
+          - name: blinkGreen
+            summary: Blinking green
+            payload:
+              mode: blink
+              color: '#00FF00'
+              blinkInterval: 500
+          - name: 'off'
+            summary: Turn off
+            payload:
+              mode: 'off'
+  indicator3:
+    address: '{prefix}/indicator3'
+    description: Set corner indicator 3.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      indicatorMessage:
+        payload:
+          type: object
+          properties:
+            mode:
+              type: string
+              enum:
+                - solid
+                - blink
+                - fade
+                - 'off'
+              description: >
+                Indicator mode. If omitted but `color` is provided, defaults to
+                `solid`. Use `off` to turn off the indicator.
+            color:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            blinkInterval:
+              type: integer
+              description: Blink interval in milliseconds (only for `blink` mode).
+              default: 500
+            fadePeriod:
+              type: integer
+              description: Fade cycle period in milliseconds (only for `fade` mode).
+              default: 2000
+        examples:
+          - name: blinkGreen
+            summary: Blinking green
+            payload:
+              mode: blink
+              color: '#00FF00'
+              blinkInterval: 500
+          - name: 'off'
+            summary: Turn off
+            payload:
+              mode: 'off'
+  brightness:
+    address: '{prefix}/brightness'
+    description: Set display brightness.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      brightnessMessage:
+        payload:
+          type: object
+          required:
+            - brightness
+          properties:
+            brightness:
+              type: integer
+              minimum: 0
+              maximum: 255
+        examples:
+          - name: setBrightness
+            payload:
+              brightness: 50
+  settings:
+    address: '{prefix}/settings'
+    description: Update device settings (partial update).
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      settingsMessage:
+        payload:
+          type: object
+          description: >
+            Partial update: only provided fields are changed. Omitted fields
+            keep their current values.
+          properties:
+            brightness:
+              type: integer
+              minimum: 0
+              maximum: 255
+              description: Display brightness (0-255).
+            autoRotate:
+              type: boolean
+              description: Enable/disable automatic app rotation.
+            defaultDuration:
+              type: integer
+              description: Default app display duration in milliseconds.
+        examples:
+          - name: updateSettings
+            payload:
+              brightness: 100
+              autoRotate: true
+              defaultDuration: 15000
+  weather:
+    address: '{prefix}/weather'
+    description: |
+      Update weather data for the WeatherClock system app.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      weatherMessage:
+        payload:
+          type: object
+          required:
+            - current
+          properties:
+            current:
+              type: object
+              required:
+                - icon
+                - temp
+              properties:
+                icon:
+                  type: string
+                  description: >
+                    Weather icon name. Use one of the built-in icons below, or
+                    any icon uploaded to the device filesystem.
+
+
+                    **Built-in weather icons** (8x8, stored in PROGMEM):
+
+                    | Name | Description | |------|-------------| |
+                    `w_clear_day` | Sunny | | `w_clear_night` | Clear night | |
+                    `w_partly_day` | Partly cloudy (day) | | `w_partly_night` |
+                    Partly cloudy (night) | | `w_cloudy` | Cloudy | | `w_rain` |
+                    Rain | | `w_heavy_rain` | Heavy rain | | `w_thunder` |
+                    Thunderstorm | | `w_snow` | Snow | | `w_fog` | Fog |
+                  examples:
+                    - w_clear_day
+                temp:
+                  type: integer
+                  description: Current temperature.
+                temp_min:
+                  type: integer
+                  description: Today's minimum temperature.
+                temp_max:
+                  type: integer
+                  description: Today's maximum temperature.
+                humidity:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                  description: Humidity percentage.
+            forecast:
+              type: array
+              items:
+                type: object
+                required:
+                  - day
+                  - icon
+                  - temp_min
+                  - temp_max
+                properties:
+                  day:
+                    type: string
+                    maxLength: 3
+                    description: Day abbreviation (3 chars, e.g. "LUN", "MON").
+                    examples:
+                      - LUN
+                  icon:
+                    type: string
+                    description: >
+                      Weather icon name. Built-in PROGMEM icons: w_clear_day,
+                      w_clear_night, w_partly_day, w_partly_night, w_cloudy,
+                      w_rain, w_heavy_rain, w_thunder, w_snow, w_fog. Filesystem
+                      icons also accepted.
+                    examples:
+                      - w_rain
+                  temp_min:
+                    type: integer
+                    description: Minimum temperature.
+                  temp_max:
+                    type: integer
+                    description: Maximum temperature.
+              maxItems: 7
+              description: >
+                Forecast days (up to 7). Displayed in pages of 3 columns with
+                automatic scrolling. Page timing is proportional to app
+                duration.
+        examples:
+          - name: currentAndForecast
+            payload:
+              current:
+                icon: w_clear_day
+                temp: 22
+                temp_min: 16
+                temp_max: 29
+                humidity: 50
+              forecast:
+                - day: MON
+                  icon: w_partly_day
+                  temp_min: 14
+                  temp_max: 23
+                - day: TUE
+                  icon: w_rain
+                  temp_min: 10
+                  temp_max: 17
+  tracker:
+    address: '{prefix}/tracker'
+    description: >
+      Create or update a tracker. Name must be in the JSON body. Send
+      `{"delete": true, "name": "btc"}` to delete.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      trackerMessage:
+        payload:
+          type: object
+          properties:
+            name:
+              type: string
+              description: >
+                Tracker identifier. Can also be passed as `?name=` query
+                parameter.
+            symbol:
+              type: string
+              maxLength: 7
+              description: Display symbol (e.g. "BTC", "ETH").
+              examples:
+                - BTC
+            icon:
+              type: string
+              description: Icon name from filesystem.
+              examples:
+                - bitcoin
+            currency:
+              type: string
+              maxLength: 7
+              description: Currency label (e.g. "USD", "EUR").
+              examples:
+                - USD
+            value:
+              type: number
+              format: float
+              description: Current price/value.
+              examples:
+                - 98452.3
+            change:
+              type: number
+              format: float
+              description: Change percentage (positive or negative).
+              examples:
+                - 2.14
+            sparkline:
+              type: array
+              items:
+                type: number
+                format: float
+              maxItems: 24
+              description: >
+                Up to 24 data points for the sparkline chart. Values are
+                auto-scaled to fit the chart area (min/max normalization to
+                uint16 0-65535).
+              examples:
+                - - 92100
+                  - 89300
+                  - 93200
+                  - 91800
+                  - 95400
+                  - 94100
+                  - 97600
+                  - 96200
+                  - 98452
+            symbolColor:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            sparklineColor:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            bottomText:
+              type: string
+              maxLength: 31
+              description: Optional footer text displayed at the bottom.
+              examples:
+                - 'Vol 24h: 42B'
+            duration:
+              type: integer
+              description: Display duration in milliseconds.
+              default: 10000
+        examples:
+          - name: btcTracker
+            summary: BTC price update
+            payload:
+              symbol: BTC
+              icon: bitcoin
+              currency: USD
+              value: 98452.3
+              change: 2.14
+              sparkline:
+                - 92100
+                - 89300
+                - 93200
+                - 91800
+                - 95400
+              symbolColor: '#FF8800'
+              sparklineColor: '#00D4FF'
+              bottomText: 'Vol 24h: 42B'
+          - name: deleteTracker
+            summary: Delete a tracker
+            payload:
+              delete: true
+  trackerNamed:
+    address: '{prefix}/tracker/{name}'
+    description: >
+      Create or update a tracker with name in the topic path. Send `{"delete":
+      true}` to delete.
+    parameters:
+      prefix:
+        default: pixelcast
+      name:
+        description: Tracker name (e.g. "btc").
+    messages:
+      trackerMessage:
+        payload:
+          type: object
+          properties:
+            name:
+              type: string
+              description: >
+                Tracker identifier. Can also be passed as `?name=` query
+                parameter.
+            symbol:
+              type: string
+              maxLength: 7
+              description: Display symbol (e.g. "BTC", "ETH").
+              examples:
+                - BTC
+            icon:
+              type: string
+              description: Icon name from filesystem.
+              examples:
+                - bitcoin
+            currency:
+              type: string
+              maxLength: 7
+              description: Currency label (e.g. "USD", "EUR").
+              examples:
+                - USD
+            value:
+              type: number
+              format: float
+              description: Current price/value.
+              examples:
+                - 98452.3
+            change:
+              type: number
+              format: float
+              description: Change percentage (positive or negative).
+              examples:
+                - 2.14
+            sparkline:
+              type: array
+              items:
+                type: number
+                format: float
+              maxItems: 24
+              description: >
+                Up to 24 data points for the sparkline chart. Values are
+                auto-scaled to fit the chart area (min/max normalization to
+                uint16 0-65535).
+              examples:
+                - - 92100
+                  - 89300
+                  - 93200
+                  - 91800
+                  - 95400
+                  - 94100
+                  - 97600
+                  - 96200
+                  - 98452
+            symbolColor:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            sparklineColor:
+              description: >
+                Color value. Accepts RGB array, hex string, or unsigned 32-bit
+                integer.
+              oneOf:
+                - type: array
+                  items:
+                    type: integer
+                    minimum: 0
+                    maximum: 255
+                  minItems: 3
+                  maxItems: 3
+                  description: RGB array [R, G, B]
+                  examples:
+                    - - 255
+                      - 136
+                      - 0
+                - type: string
+                  pattern: ^#[0-9a-fA-F]{6}$
+                  description: Hex string
+                  examples:
+                    - '#FF8800'
+                - type: integer
+                  minimum: 0
+                  maximum: 16777215
+                  description: Unsigned 32-bit integer (0xRRGGBB)
+                  examples:
+                    - 16746496
+            bottomText:
+              type: string
+              maxLength: 31
+              description: Optional footer text displayed at the bottom.
+              examples:
+                - 'Vol 24h: 42B'
+            duration:
+              type: integer
+              description: Display duration in milliseconds.
+              default: 10000
+        examples:
+          - name: btcTracker
+            summary: BTC price update
+            payload:
+              symbol: BTC
+              icon: bitcoin
+              currency: USD
+              value: 98452.3
+              change: 2.14
+              sparkline:
+                - 92100
+                - 89300
+                - 93200
+                - 91800
+                - 95400
+              symbolColor: '#FF8800'
+              sparklineColor: '#00D4FF'
+              bottomText: 'Vol 24h: 42B'
+          - name: deleteTracker
+            summary: Delete a tracker
+            payload:
+              delete: true
+  reboot:
+    address: '{prefix}/reboot'
+    description: Reboot the device. Payload can be empty.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      rebootMessage:
+        payload:
+          type: 'null'
+        description: Empty payload (or any payload - ignored).
+  status:
+    address: '{prefix}/status'
+    description: >
+      Connection status (LWT). Published as retained. "online" on connect,
+      "offline" as Last Will on disconnect.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      statusMessage:
+        payload:
+          type: string
+          enum:
+            - online
+            - offline
+        examples:
+          - name: online
+            payload: online
+          - name: offline
+            payload: offline
+  stats:
+    address: '{prefix}/stats'
+    description: |
+      System statistics published every 60 seconds. Not retained.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      statsMessage:
+        payload:
+          type: object
+          description: Compact stats payload published over MQTT every 60 seconds.
+          properties:
+            uptime:
+              type: integer
+            freeHeap:
+              type: integer
+            brightness:
+              type: integer
+            rssi:
+              type: integer
+            appCount:
+              type: integer
+            version:
+              type: string
+            currentApp:
+              type: string
+        examples:
+          - name: stats
+            payload:
+              uptime: 3600
+              freeHeap: 120000
+              brightness: 128
+              rssi: -45
+              appCount: 3
+              version: 0.1.0-dev
+              currentApp: weather_clock
+operations:
+  receiveCustom:
+    action: receive
+    channel:
+      $ref: '#/channels/custom'
+  receiveCustomNamed:
+    action: receive
+    channel:
+      $ref: '#/channels/customNamed'
+  receiveNotify:
+    action: receive
+    channel:
+      $ref: '#/channels/notify'
+  receiveDismiss:
+    action: receive
+    channel:
+      $ref: '#/channels/dismiss'
+  receiveIndicator1:
+    action: receive
+    channel:
+      $ref: '#/channels/indicator1'
+  receiveIndicator2:
+    action: receive
+    channel:
+      $ref: '#/channels/indicator2'
+  receiveIndicator3:
+    action: receive
+    channel:
+      $ref: '#/channels/indicator3'
+  receiveBrightness:
+    action: receive
+    channel:
+      $ref: '#/channels/brightness'
+  receiveSettings:
+    action: receive
+    channel:
+      $ref: '#/channels/settings'
+  receiveWeather:
+    action: receive
+    channel:
+      $ref: '#/channels/weather'
+  receiveTracker:
+    action: receive
+    channel:
+      $ref: '#/channels/tracker'
+  receiveTrackerNamed:
+    action: receive
+    channel:
+      $ref: '#/channels/trackerNamed'
+  receiveReboot:
+    action: receive
+    channel:
+      $ref: '#/channels/reboot'
+  publishStatus:
+    action: send
+    channel:
+      $ref: '#/channels/status'
+    bindings:
+      mqtt:
+        retain: true
+  publishStats:
+    action: send
+    channel:
+      $ref: '#/channels/stats'
+components:
+  messages:
+    CustomApp:
+      payload:
+        type: object
+        description: >
+          Create or update a custom app in the rotation. Supports single-zone
+          (text/icon/color) or multi-zone (zones array) layouts.
+        properties:
+          name:
+            type: string
+            description: >
+              App name (identifier). Can also be passed as `?name=` query
+              parameter.
+          text:
+            description: >
+              Text field accepting three formats: plain string, colored string
+              object, or array of colored segments (max 8).
+            oneOf:
+              - type: string
+                description: Plain text (uses default color).
+                examples:
+                  - 22.5C
+              - type: object
+                required:
+                  - text
+                  - color
+                properties:
+                  text:
+                    type: string
+                  color:
+                    description: >
+                      Color value. Accepts RGB array, hex string, or unsigned
+                      32-bit integer.
+                    oneOf:
+                      - type: array
+                        items:
+                          type: integer
+                          minimum: 0
+                          maximum: 255
+                        minItems: 3
+                        maxItems: 3
+                        description: RGB array [R, G, B]
+                        examples:
+                          - - 255
+                            - 136
+                            - 0
+                      - type: string
+                        pattern: ^#[0-9a-fA-F]{6}$
+                        description: Hex string
+                        examples:
+                          - '#FF8800'
+                      - type: integer
+                        minimum: 0
+                        maximum: 16777215
+                        description: Unsigned 32-bit integer (0xRRGGBB)
+                        examples:
+                          - 16746496
+                description: Single string with explicit color override.
+                examples:
+                  - text: CRITICAL
+                    color: '#FF0000'
+              - type: array
+                items:
+                  type: object
+                  required:
+                    - t
+                    - c
+                  properties:
+                    t:
+                      type: string
+                      description: Text content for this segment.
+                    c:
+                      description: >
+                        Color value. Accepts RGB array, hex string, or unsigned
+                        32-bit integer.
+                      oneOf:
+                        - type: array
+                          items:
+                            type: integer
+                            minimum: 0
+                            maximum: 255
+                          minItems: 3
+                          maxItems: 3
+                          description: RGB array [R, G, B]
+                          examples:
+                            - - 255
+                              - 136
+                              - 0
+                        - type: string
+                          pattern: ^#[0-9a-fA-F]{6}$
+                          description: Hex string
+                          examples:
+                            - '#FF8800'
+                        - type: integer
+                          minimum: 0
+                          maximum: 16777215
+                          description: Unsigned 32-bit integer (0xRRGGBB)
+                          examples:
+                            - 16746496
+                  description: A text fragment with its own color.
+                minItems: 1
+                maxItems: 8
+                description: Array of colored segments (concatenated in display order).
+                examples:
+                  - - t: '22.5'
+                      c: '#FF8800'
+                    - t: C
+                      c: '#666666'
+          icon:
+            type: string
+            description: Icon name (without extension).
+            examples:
+              - smiley
+          label:
+            description: >
+              Text field accepting three formats: plain string, colored string
+              object, or array of colored segments (max 8).
+            oneOf:
+              - type: string
+                description: Plain text (uses default color).
+                examples:
+                  - 22.5C
+              - type: object
+                required:
+                  - text
+                  - color
+                properties:
+                  text:
+                    type: string
+                  color:
+                    description: >
+                      Color value. Accepts RGB array, hex string, or unsigned
+                      32-bit integer.
+                    oneOf:
+                      - type: array
+                        items:
+                          type: integer
+                          minimum: 0
+                          maximum: 255
+                        minItems: 3
+                        maxItems: 3
+                        description: RGB array [R, G, B]
+                        examples:
+                          - - 255
+                            - 136
+                            - 0
+                      - type: string
+                        pattern: ^#[0-9a-fA-F]{6}$
+                        description: Hex string
+                        examples:
+                          - '#FF8800'
+                      - type: integer
+                        minimum: 0
+                        maximum: 16777215
+                        description: Unsigned 32-bit integer (0xRRGGBB)
+                        examples:
+                          - 16746496
+                description: Single string with explicit color override.
+                examples:
+                  - text: CRITICAL
+                    color: '#FF0000'
+              - type: array
+                items:
+                  type: object
+                  required:
+                    - t
+                    - c
+                  properties:
+                    t:
+                      type: string
+                      description: Text content for this segment.
+                    c:
+                      description: >
+                        Color value. Accepts RGB array, hex string, or unsigned
+                        32-bit integer.
+                      oneOf:
+                        - type: array
+                          items:
+                            type: integer
+                            minimum: 0
+                            maximum: 255
+                          minItems: 3
+                          maxItems: 3
+                          description: RGB array [R, G, B]
+                          examples:
+                            - - 255
+                              - 136
+                              - 0
+                        - type: string
+                          pattern: ^#[0-9a-fA-F]{6}$
+                          description: Hex string
+                          examples:
+                            - '#FF8800'
+                        - type: integer
+                          minimum: 0
+                          maximum: 16777215
+                          description: Unsigned 32-bit integer (0xRRGGBB)
+                          examples:
+                            - 16746496
+                  description: A text fragment with its own color.
+                minItems: 1
+                maxItems: 8
+                description: Array of colored segments (concatenated in display order).
+                examples:
+                  - - t: '22.5'
+                      c: '#FF8800'
+                    - t: C
+                      c: '#666666'
+          color:
+            description: >
+              Color value. Accepts RGB array, hex string, or unsigned 32-bit
+              integer.
+            oneOf:
+              - type: array
+                items:
+                  type: integer
+                  minimum: 0
+                  maximum: 255
+                minItems: 3
+                maxItems: 3
+                description: RGB array [R, G, B]
+                examples:
+                  - - 255
+                    - 136
+                    - 0
+              - type: string
+                pattern: ^#[0-9a-fA-F]{6}$
+                description: Hex string
+                examples:
+                  - '#FF8800'
+              - type: integer
+                minimum: 0
+                maximum: 16777215
+                description: Unsigned 32-bit integer (0xRRGGBB)
+                examples:
+                  - 16746496
+          duration:
+            type: integer
+            description: Display duration in milliseconds.
+            default: 10000
+            examples:
+              - 10000
+          lifetime:
+            type: integer
+            description: |
+              Auto-expiration in seconds if not updated. 0 = permanent.
+            default: 0
+          priority:
+            type: integer
+            minimum: -10
+            maximum: 10
+            description: Display priority (-10 to 10, higher = more important).
+            default: 0
+          zones:
+            type: array
+            items:
+              type: object
+              properties:
+                text:
+                  description: >
+                    Text field accepting three formats: plain string, colored
+                    string object, or array of colored segments (max 8).
+                  oneOf:
+                    - type: string
+                      description: Plain text (uses default color).
+                      examples:
+                        - 22.5C
+                    - type: object
+                      required:
+                        - text
+                        - color
+                      properties:
+                        text:
+                          type: string
+                        color:
+                          description: >
+                            Color value. Accepts RGB array, hex string, or
+                            unsigned 32-bit integer.
+                          oneOf:
+                            - type: array
+                              items:
+                                type: integer
+                                minimum: 0
+                                maximum: 255
+                              minItems: 3
+                              maxItems: 3
+                              description: RGB array [R, G, B]
+                              examples:
+                                - - 255
+                                  - 136
+                                  - 0
+                            - type: string
+                              pattern: ^#[0-9a-fA-F]{6}$
+                              description: Hex string
+                              examples:
+                                - '#FF8800'
+                            - type: integer
+                              minimum: 0
+                              maximum: 16777215
+                              description: Unsigned 32-bit integer (0xRRGGBB)
+                              examples:
+                                - 16746496
+                      description: Single string with explicit color override.
+                      examples:
+                        - text: CRITICAL
+                          color: '#FF0000'
+                    - type: array
+                      items:
+                        type: object
+                        required:
+                          - t
+                          - c
+                        properties:
+                          t:
+                            type: string
+                            description: Text content for this segment.
+                          c:
+                            description: >
+                              Color value. Accepts RGB array, hex string, or
+                              unsigned 32-bit integer.
+                            oneOf:
+                              - type: array
+                                items:
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 255
+                                minItems: 3
+                                maxItems: 3
+                                description: RGB array [R, G, B]
+                                examples:
+                                  - - 255
+                                    - 136
+                                    - 0
+                              - type: string
+                                pattern: ^#[0-9a-fA-F]{6}$
+                                description: Hex string
+                                examples:
+                                  - '#FF8800'
+                              - type: integer
+                                minimum: 0
+                                maximum: 16777215
+                                description: Unsigned 32-bit integer (0xRRGGBB)
+                                examples:
+                                  - 16746496
+                        description: A text fragment with its own color.
+                      minItems: 1
+                      maxItems: 8
+                      description: >-
+                        Array of colored segments (concatenated in display
+                        order).
+                      examples:
+                        - - t: '22.5'
+                            c: '#FF8800'
+                          - t: C
+                            c: '#666666'
+                icon:
+                  type: string
+                  description: Icon name (without extension) from the device filesystem.
+                  examples:
+                    - thermo
+                label:
+                  description: >
+                    Text field accepting three formats: plain string, colored
+                    string object, or array of colored segments (max 8).
+                  oneOf:
+                    - type: string
+                      description: Plain text (uses default color).
+                      examples:
+                        - 22.5C
+                    - type: object
+                      required:
+                        - text
+                        - color
+                      properties:
+                        text:
+                          type: string
+                        color:
+                          description: >
+                            Color value. Accepts RGB array, hex string, or
+                            unsigned 32-bit integer.
+                          oneOf:
+                            - type: array
+                              items:
+                                type: integer
+                                minimum: 0
+                                maximum: 255
+                              minItems: 3
+                              maxItems: 3
+                              description: RGB array [R, G, B]
+                              examples:
+                                - - 255
+                                  - 136
+                                  - 0
+                            - type: string
+                              pattern: ^#[0-9a-fA-F]{6}$
+                              description: Hex string
+                              examples:
+                                - '#FF8800'
+                            - type: integer
+                              minimum: 0
+                              maximum: 16777215
+                              description: Unsigned 32-bit integer (0xRRGGBB)
+                              examples:
+                                - 16746496
+                      description: Single string with explicit color override.
+                      examples:
+                        - text: CRITICAL
+                          color: '#FF0000'
+                    - type: array
+                      items:
+                        type: object
+                        required:
+                          - t
+                          - c
+                        properties:
+                          t:
+                            type: string
+                            description: Text content for this segment.
+                          c:
+                            description: >
+                              Color value. Accepts RGB array, hex string, or
+                              unsigned 32-bit integer.
+                            oneOf:
+                              - type: array
+                                items:
+                                  type: integer
+                                  minimum: 0
+                                  maximum: 255
+                                minItems: 3
+                                maxItems: 3
+                                description: RGB array [R, G, B]
+                                examples:
+                                  - - 255
+                                    - 136
+                                    - 0
+                              - type: string
+                                pattern: ^#[0-9a-fA-F]{6}$
+                                description: Hex string
+                                examples:
+                                  - '#FF8800'
+                              - type: integer
+                                minimum: 0
+                                maximum: 16777215
+                                description: Unsigned 32-bit integer (0xRRGGBB)
+                                examples:
+                                  - 16746496
+                        description: A text fragment with its own color.
+                      minItems: 1
+                      maxItems: 8
+                      description: >-
+                        Array of colored segments (concatenated in display
+                        order).
+                      examples:
+                        - - t: '22.5'
+                            c: '#FF8800'
+                          - t: C
+                            c: '#666666'
+                color:
+                  description: >
+                    Color value. Accepts RGB array, hex string, or unsigned
+                    32-bit integer.
+                  oneOf:
+                    - type: array
+                      items:
+                        type: integer
+                        minimum: 0
+                        maximum: 255
+                      minItems: 3
+                      maxItems: 3
+                      description: RGB array [R, G, B]
+                      examples:
+                        - - 255
+                          - 136
+                          - 0
+                    - type: string
+                      pattern: ^#[0-9a-fA-F]{6}$
+                      description: Hex string
+                      examples:
+                        - '#FF8800'
+                    - type: integer
+                      minimum: 0
+                      maximum: 16777215
+                      description: Unsigned 32-bit integer (0xRRGGBB)
+                      examples:
+                        - 16746496
+              description: >
+                A single zone in a multi-zone layout. Full-width zones (>=48px)
+                display icon left + text right. Half-width zones display icon
+                top + text below.
+            minItems: 2
+            maxItems: 4
+            description: >
+              Multi-zone layout. Providing this array switches to dashboard
+              mode. Layout inferred from count: 2 = dual rows, 3 = top + 2
+              columns, 4 = quad grid. Mutually exclusive with top-level
+              text/icon/label/color.
+      examples:
+        - name: singleZone
+          summary: Simple text app
+          payload:
+            text: Hello!
+            icon: smiley
+            color: '#FF0000'
+        - name: multiZone
+          summary: Two-zone dashboard
+          payload:
+            zones:
+              - text: 22.5C
+                icon: thermo
+                label: Salon
+                color: '#FF8800'
+              - text: 58%
+                icon: humidity
+                color: '#00D4FF'
+        - name: delete
+          summary: Delete an app
+          payload:
+            delete: true
+            name: hello
+    Notification:
+      payload:
+        type: object
+        required:
+          - text
+        properties:
+          text:
+            type: string
+            description: Notification text (required, max 128 chars).
+            maxLength: 128
+          id:
+            type: string
+            description: >
+              Optional unique ID. If omitted, auto-generated as
+              `notif_<millis>`.
+          icon:
+            type: string
+            description: Icon name (without extension).
+          color:
+            description: >
+              Color value. Accepts RGB array, hex string, or unsigned 32-bit
+              integer.
+            oneOf:
+              - type: array
+                items:
+                  type: integer
+                  minimum: 0
+                  maximum: 255
+                minItems: 3
+                maxItems: 3
+                description: RGB array [R, G, B]
+                examples:
+                  - - 255
+                    - 136
+                    - 0
+              - type: string
+                pattern: ^#[0-9a-fA-F]{6}$
+                description: Hex string
+                examples:
+                  - '#FF8800'
+              - type: integer
+                minimum: 0
+                maximum: 16777215
+                description: Unsigned 32-bit integer (0xRRGGBB)
+                examples:
+                  - 16746496
+          background:
+            description: >
+              Color value. Accepts RGB array, hex string, or unsigned 32-bit
+              integer.
+            oneOf:
+              - type: array
+                items:
+                  type: integer
+                  minimum: 0
+                  maximum: 255
+                minItems: 3
+                maxItems: 3
+                description: RGB array [R, G, B]
+                examples:
+                  - - 255
+                    - 136
+                    - 0
+              - type: string
+                pattern: ^#[0-9a-fA-F]{6}$
+                description: Hex string
+                examples:
+                  - '#FF8800'
+              - type: integer
+                minimum: 0
+                maximum: 16777215
+                description: Unsigned 32-bit integer (0xRRGGBB)
+                examples:
+                  - 16746496
+          duration:
+            type: integer
+            description: Display duration in milliseconds.
+            default: 5000
+          hold:
+            type: boolean
+            description: |
+              Hold notification until explicitly dismissed. Overrides duration.
+            default: false
+          urgent:
+            type: boolean
+            description: Jump to front of notification queue.
+            default: false
+          stack:
+            type: boolean
+            description: >
+              Queue sequentially with other notifications (true) vs replace
+              current notification (false).
+            default: true
+      examples:
+        - name: alert
+          summary: Urgent notification
+          payload:
+            text: Alert!
+            icon: warning
+            color: '#FF0000'
+            urgent: true
+    Indicator:
+      payload:
+        type: object
+        properties:
+          mode:
+            type: string
+            enum:
+              - solid
+              - blink
+              - fade
+              - 'off'
+            description: >
+              Indicator mode. If omitted but `color` is provided, defaults to
+              `solid`. Use `off` to turn off the indicator.
+          color:
+            description: >
+              Color value. Accepts RGB array, hex string, or unsigned 32-bit
+              integer.
+            oneOf:
+              - type: array
+                items:
+                  type: integer
+                  minimum: 0
+                  maximum: 255
+                minItems: 3
+                maxItems: 3
+                description: RGB array [R, G, B]
+                examples:
+                  - - 255
+                    - 136
+                    - 0
+              - type: string
+                pattern: ^#[0-9a-fA-F]{6}$
+                description: Hex string
+                examples:
+                  - '#FF8800'
+              - type: integer
+                minimum: 0
+                maximum: 16777215
+                description: Unsigned 32-bit integer (0xRRGGBB)
+                examples:
+                  - 16746496
+          blinkInterval:
+            type: integer
+            description: Blink interval in milliseconds (only for `blink` mode).
+            default: 500
+          fadePeriod:
+            type: integer
+            description: Fade cycle period in milliseconds (only for `fade` mode).
+            default: 2000
+      examples:
+        - name: blinkGreen
+          summary: Blinking green
+          payload:
+            mode: blink
+            color: '#00FF00'
+            blinkInterval: 500
+        - name: 'off'
+          summary: Turn off
+          payload:
+            mode: 'off'
+    Brightness:
+      payload:
+        type: object
+        required:
+          - brightness
+        properties:
+          brightness:
+            type: integer
+            minimum: 0
+            maximum: 255
+      examples:
+        - name: setBrightness
+          payload:
+            brightness: 50
+    Settings:
+      payload:
+        type: object
+        description: >
+          Partial update: only provided fields are changed. Omitted fields keep
+          their current values.
+        properties:
+          brightness:
+            type: integer
+            minimum: 0
+            maximum: 255
+            description: Display brightness (0-255).
+          autoRotate:
+            type: boolean
+            description: Enable/disable automatic app rotation.
+          defaultDuration:
+            type: integer
+            description: Default app display duration in milliseconds.
+      examples:
+        - name: updateSettings
+          payload:
+            brightness: 100
+            autoRotate: true
+            defaultDuration: 15000
+    Weather:
+      payload:
+        type: object
+        required:
+          - current
+        properties:
+          current:
+            type: object
+            required:
+              - icon
+              - temp
+            properties:
+              icon:
+                type: string
+                description: >
+                  Weather icon name. Use one of the built-in icons below, or any
+                  icon uploaded to the device filesystem.
+
+
+                  **Built-in weather icons** (8x8, stored in PROGMEM):
+
+                  | Name | Description | |------|-------------| | `w_clear_day`
+                  | Sunny | | `w_clear_night` | Clear night | | `w_partly_day` |
+                  Partly cloudy (day) | | `w_partly_night` | Partly cloudy
+                  (night) | | `w_cloudy` | Cloudy | | `w_rain` | Rain | |
+                  `w_heavy_rain` | Heavy rain | | `w_thunder` | Thunderstorm | |
+                  `w_snow` | Snow | | `w_fog` | Fog |
+                examples:
+                  - w_clear_day
+              temp:
+                type: integer
+                description: Current temperature.
+              temp_min:
+                type: integer
+                description: Today's minimum temperature.
+              temp_max:
+                type: integer
+                description: Today's maximum temperature.
+              humidity:
+                type: integer
+                minimum: 0
+                maximum: 100
+                description: Humidity percentage.
+          forecast:
+            type: array
+            items:
+              type: object
+              required:
+                - day
+                - icon
+                - temp_min
+                - temp_max
+              properties:
+                day:
+                  type: string
+                  maxLength: 3
+                  description: Day abbreviation (3 chars, e.g. "LUN", "MON").
+                  examples:
+                    - LUN
+                icon:
+                  type: string
+                  description: >
+                    Weather icon name. Built-in PROGMEM icons: w_clear_day,
+                    w_clear_night, w_partly_day, w_partly_night, w_cloudy,
+                    w_rain, w_heavy_rain, w_thunder, w_snow, w_fog. Filesystem
+                    icons also accepted.
+                  examples:
+                    - w_rain
+                temp_min:
+                  type: integer
+                  description: Minimum temperature.
+                temp_max:
+                  type: integer
+                  description: Maximum temperature.
+            maxItems: 7
+            description: >
+              Forecast days (up to 7). Displayed in pages of 3 columns with
+              automatic scrolling. Page timing is proportional to app duration.
+      examples:
+        - name: currentAndForecast
+          payload:
+            current:
+              icon: w_clear_day
+              temp: 22
+              temp_min: 16
+              temp_max: 29
+              humidity: 50
+            forecast:
+              - day: MON
+                icon: w_partly_day
+                temp_min: 14
+                temp_max: 23
+              - day: TUE
+                icon: w_rain
+                temp_min: 10
+                temp_max: 17
+    Tracker:
+      payload:
+        type: object
+        properties:
+          name:
+            type: string
+            description: >
+              Tracker identifier. Can also be passed as `?name=` query
+              parameter.
+          symbol:
+            type: string
+            maxLength: 7
+            description: Display symbol (e.g. "BTC", "ETH").
+            examples:
+              - BTC
+          icon:
+            type: string
+            description: Icon name from filesystem.
+            examples:
+              - bitcoin
+          currency:
+            type: string
+            maxLength: 7
+            description: Currency label (e.g. "USD", "EUR").
+            examples:
+              - USD
+          value:
+            type: number
+            format: float
+            description: Current price/value.
+            examples:
+              - 98452.3
+          change:
+            type: number
+            format: float
+            description: Change percentage (positive or negative).
+            examples:
+              - 2.14
+          sparkline:
+            type: array
+            items:
+              type: number
+              format: float
+            maxItems: 24
+            description: >
+              Up to 24 data points for the sparkline chart. Values are
+              auto-scaled to fit the chart area (min/max normalization to uint16
+              0-65535).
+            examples:
+              - - 92100
+                - 89300
+                - 93200
+                - 91800
+                - 95400
+                - 94100
+                - 97600
+                - 96200
+                - 98452
+          symbolColor:
+            description: >
+              Color value. Accepts RGB array, hex string, or unsigned 32-bit
+              integer.
+            oneOf:
+              - type: array
+                items:
+                  type: integer
+                  minimum: 0
+                  maximum: 255
+                minItems: 3
+                maxItems: 3
+                description: RGB array [R, G, B]
+                examples:
+                  - - 255
+                    - 136
+                    - 0
+              - type: string
+                pattern: ^#[0-9a-fA-F]{6}$
+                description: Hex string
+                examples:
+                  - '#FF8800'
+              - type: integer
+                minimum: 0
+                maximum: 16777215
+                description: Unsigned 32-bit integer (0xRRGGBB)
+                examples:
+                  - 16746496
+          sparklineColor:
+            description: >
+              Color value. Accepts RGB array, hex string, or unsigned 32-bit
+              integer.
+            oneOf:
+              - type: array
+                items:
+                  type: integer
+                  minimum: 0
+                  maximum: 255
+                minItems: 3
+                maxItems: 3
+                description: RGB array [R, G, B]
+                examples:
+                  - - 255
+                    - 136
+                    - 0
+              - type: string
+                pattern: ^#[0-9a-fA-F]{6}$
+                description: Hex string
+                examples:
+                  - '#FF8800'
+              - type: integer
+                minimum: 0
+                maximum: 16777215
+                description: Unsigned 32-bit integer (0xRRGGBB)
+                examples:
+                  - 16746496
+          bottomText:
+            type: string
+            maxLength: 31
+            description: Optional footer text displayed at the bottom.
+            examples:
+              - 'Vol 24h: 42B'
+          duration:
+            type: integer
+            description: Display duration in milliseconds.
+            default: 10000
+      examples:
+        - name: btcTracker
+          summary: BTC price update
+          payload:
+            symbol: BTC
+            icon: bitcoin
+            currency: USD
+            value: 98452.3
+            change: 2.14
+            sparkline:
+              - 92100
+              - 89300
+              - 93200
+              - 91800
+              - 95400
+            symbolColor: '#FF8800'
+            sparklineColor: '#00D4FF'
+            bottomText: 'Vol 24h: 42B'
+        - name: deleteTracker
+          summary: Delete a tracker
+          payload:
+            delete: true
+    Status:
+      payload:
+        type: string
+        enum:
+          - online
+          - offline
+      examples:
+        - name: online
+          payload: online
+        - name: offline
+          payload: offline
+    Stats:
+      payload:
+        type: object
+        description: Compact stats payload published over MQTT every 60 seconds.
+        properties:
+          uptime:
+            type: integer
+          freeHeap:
+            type: integer
+          brightness:
+            type: integer
+          rssi:
+            type: integer
+          appCount:
+            type: integer
+          version:
+            type: string
+          currentApp:
+            type: string
+      examples:
+        - name: stats
+          payload:
+            uptime: 3600
+            freeHeap: 120000
+            brightness: 128
+            rssi: -45
+            appCount: 3
+            version: 0.1.0-dev
+            currentApp: weather_clock
+    Empty:
+      payload:
+        type: 'null'
+      description: Empty payload (or any payload - ignored).

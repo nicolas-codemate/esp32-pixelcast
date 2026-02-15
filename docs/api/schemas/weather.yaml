@@ -31,7 +31,25 @@ WeatherCurrent:
   properties:
     icon:
       type: string
-      description: Current weather icon name.
+      description: >
+        Weather icon name. Use one of the built-in icons below, or any icon
+        uploaded to the device filesystem.
+
+
+        **Built-in weather icons** (8x8, stored in PROGMEM):
+
+        | Name | Description |
+        |------|-------------|
+        | `w_clear_day` | Sunny |
+        | `w_clear_night` | Clear night |
+        | `w_partly_day` | Partly cloudy (day) |
+        | `w_partly_night` | Partly cloudy (night) |
+        | `w_cloudy` | Cloudy |
+        | `w_rain` | Rain |
+        | `w_heavy_rain` | Heavy rain |
+        | `w_thunder` | Thunderstorm |
+        | `w_snow` | Snow |
+        | `w_fog` | Fog |
       examples:
         - "w_clear_day"
     temp:

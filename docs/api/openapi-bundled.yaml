@@ -1,0 +1,1490 @@
+openapi: 3.1.0
+info:
+  title: ESP32-PixelCast REST API
+  version: 0.1.0
+  description: |
+    REST API for controlling a HUB75 LED matrix panel (64x64) running on ESP32 Trinity. Manages custom apps, notifications, weather, trackers, indicators, icons, and system settings.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: 'http://pixelcast.local/api'
+    description: mDNS (default)
+  - url: 'http://{deviceIP}/api'
+    description: Direct IP
+    variables:
+      deviceIP:
+        default: 192.168.1.100
+tags:
+  - name: System
+    description: 'Device info, settings, brightness, reboot.'
+  - name: Apps
+    description: Custom app management and rotation.
+  - name: Weather
+    description: WeatherClock system app.
+  - name: Tracker
+    description: 'Financial/metric trackers (crypto, stocks).'
+  - name: Notifications
+    description: Notification queue management.
+  - name: Indicators
+    description: Corner indicator LEDs (1-3).
+  - name: Icons
+    description: Icon filesystem management and LaMetric downloads.
+paths:
+  /stats:
+    get:
+      operationId: getStats
+      summary: Get system statistics
+      tags:
+        - System
+      responses:
+        '200':
+          description: System statistics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    description: Firmware version.
+                    examples:
+                      - 0.1.0-dev
+                  uptime:
+                    type: integer
+                    description: Uptime in seconds.
+                  freeHeap:
+                    type: integer
+                    description: Free heap memory in bytes.
+                  maxAllocHeap:
+                    type: integer
+                    description: Largest allocatable block in bytes.
+                  brightness:
+                    type: integer
+                    description: Current brightness (0-255).
+                  wifi:
+                    type: object
+                    properties:
+                      ssid:
+                        type: string
+                      rssi:
+                        type: integer
+                        description: Signal strength in dBm.
+                      ip:
+                        type: string
+                        description: Device IP address.
+                  display:
+                    type: object
+                    properties:
+                      width:
+                        type: integer
+                      height:
+                        type: integer
+                  mqtt:
+                    type: object
+                    properties:
+                      connected:
+                        type: boolean
+                  apps:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+                        description: Number of active apps.
+                      current:
+                        type: string
+                        description: ID of the currently displayed app.
+                      rotationEnabled:
+                        type: boolean
+                  filesystem:
+                    type: object
+                    properties:
+                      ready:
+                        type: boolean
+                      total:
+                        type: integer
+                        description: Total filesystem size in bytes.
+                      used:
+                        type: integer
+                        description: Used filesystem space in bytes.
+  /settings:
+    get:
+      operationId: getSettings
+      summary: Get current settings
+      tags:
+        - System
+      responses:
+        '200':
+          description: Current device settings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  brightness:
+                    type: integer
+                    description: Current brightness (0-255).
+                  autoRotate:
+                    type: boolean
+                  defaultDuration:
+                    type: integer
+                    description: Default duration in milliseconds.
+                  display:
+                    type: object
+                    properties:
+                      width:
+                        type: integer
+                        description: Panel width in pixels.
+                      height:
+                        type: integer
+                        description: Panel height in pixels.
+                  ntp:
+                    type: object
+                    properties:
+                      server:
+                        type: string
+                        description: NTP server hostname.
+                      offset:
+                        type: integer
+                        description: UTC offset in seconds.
+                  mqtt:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                      prefix:
+                        type: string
+                        description: MQTT topic prefix.
+    post:
+      operationId: updateSettings
+      summary: Update settings
+      description: |
+        Partial update: only provided fields are changed.
+      tags:
+        - System
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: |
+                Partial update: only provided fields are changed. Omitted fields keep their current values.
+              properties:
+                brightness:
+                  type: integer
+                  minimum: 0
+                  maximum: 255
+                  description: Display brightness (0-255).
+                autoRotate:
+                  type: boolean
+                  description: Enable/disable automatic app rotation.
+                defaultDuration:
+                  type: integer
+                  description: Default app display duration in milliseconds.
+      responses:
+        '200':
+          description: Settings updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Invalid JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+  /brightness:
+    post:
+      operationId: setBrightness
+      summary: Set display brightness
+      tags:
+        - System
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - brightness
+              properties:
+                brightness:
+                  type: integer
+                  minimum: 0
+                  maximum: 255
+                  description: Brightness value (0-255).
+      responses:
+        '200':
+          description: Brightness updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Missing brightness value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+  /reboot:
+    post:
+      operationId: reboot
+      summary: Reboot device
+      description: |
+        Triggers a deferred reboot. The response is sent before the device restarts.
+      tags:
+        - System
+      responses:
+        '200':
+          description: Reboot initiated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  message:
+                    type: string
+                    examples:
+                      - Rebooting...
+  /apps:
+    get:
+      operationId: listApps
+      summary: List all apps in rotation
+      tags:
+        - Apps
+      responses:
+        '200':
+          description: List of active apps.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apps:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: App identifier.
+                        text:
+                          $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                        icon:
+                          type: string
+                        label:
+                          $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                        color:
+                          type: string
+                          pattern: '^#[0-9a-fA-F]{6}$'
+                          description: Default text color as hex string.
+                        duration:
+                          type: integer
+                        lifetime:
+                          type: integer
+                        priority:
+                          type: integer
+                        isSystem:
+                          type: boolean
+                          description: System apps cannot be deleted via API.
+                        isCurrent:
+                          type: boolean
+                          description: Whether this app is currently being displayed.
+                        zoneCount:
+                          type: integer
+                          description: 'Number of zones (0-1 = single, 2-4 = multi-zone).'
+                        zones:
+                          type: array
+                          items:
+                            $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/zones/items'
+                          description: Present only when zoneCount >= 2.
+                  count:
+                    type: integer
+                    description: Total number of active apps.
+                  currentIndex:
+                    type: integer
+                    description: Index of the currently displayed app (-1 if none).
+                  rotationEnabled:
+                    type: boolean
+                    description: Whether automatic app rotation is enabled.
+  /custom:
+    post:
+      operationId: createOrUpdateApp
+      summary: Create or update a custom app
+      description: |
+        Supports single-zone (text/icon/color) or multi-zone (zones array) layouts. App name can be in query param or JSON body.
+      tags:
+        - Apps
+      parameters:
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: App name. Also accepted in JSON body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: |
+                Create or update a custom app in the rotation. Supports single-zone (text/icon/color) or multi-zone (zones array) layouts.
+              properties:
+                name:
+                  type: string
+                  description: |
+                    App name (identifier). Can also be passed as `?name=` query parameter.
+                text:
+                  description: |
+                    Text field accepting three formats: plain string, colored string object, or array of colored segments (max 8).
+                  oneOf:
+                    - type: string
+                      description: Plain text (uses default color).
+                      examples:
+                        - 22.5C
+                    - type: object
+                      required:
+                        - text
+                        - color
+                      properties:
+                        text:
+                          type: string
+                        color:
+                          $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                      description: Single string with explicit color override.
+                      examples:
+                        - text: CRITICAL
+                          color: '#FF0000'
+                    - type: array
+                      items:
+                        type: object
+                        required:
+                          - t
+                          - c
+                        properties:
+                          t:
+                            type: string
+                            description: Text content for this segment.
+                          c:
+                            $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                        description: A text fragment with its own color.
+                      minItems: 1
+                      maxItems: 8
+                      description: Array of colored segments (concatenated in display order).
+                      examples:
+                        - - t: '22.5'
+                            c: '#FF8800'
+                          - t: C
+                            c: '#666666'
+                icon:
+                  type: string
+                  description: Icon name (without extension).
+                  examples:
+                    - smiley
+                label:
+                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                color:
+                  description: |
+                    Color value. Accepts RGB array, hex string, or unsigned 32-bit integer.
+                  oneOf:
+                    - type: array
+                      items:
+                        type: integer
+                        minimum: 0
+                        maximum: 255
+                      minItems: 3
+                      maxItems: 3
+                      description: 'RGB array [R, G, B]'
+                      examples:
+                        - - 255
+                          - 136
+                          - 0
+                    - type: string
+                      pattern: '^#[0-9a-fA-F]{6}$'
+                      description: Hex string
+                      examples:
+                        - '#FF8800'
+                    - type: integer
+                      minimum: 0
+                      maximum: 16777215
+                      description: Unsigned 32-bit integer (0xRRGGBB)
+                      examples:
+                        - 16746496
+                duration:
+                  type: integer
+                  description: Display duration in milliseconds.
+                  default: 10000
+                  examples:
+                    - 10000
+                lifetime:
+                  type: integer
+                  description: |
+                    Auto-expiration in seconds if not updated. 0 = permanent.
+                  default: 0
+                priority:
+                  type: integer
+                  minimum: -10
+                  maximum: 10
+                  description: 'Display priority (-10 to 10, higher = more important).'
+                  default: 0
+                zones:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      text:
+                        $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                      icon:
+                        type: string
+                        description: Icon name (without extension) from the device filesystem.
+                        examples:
+                          - thermo
+                      label:
+                        $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                      color:
+                        $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                    description: |
+                      A single zone in a multi-zone layout. Full-width zones (>=48px) display icon left + text right. Half-width zones display icon top + text below.
+                  minItems: 2
+                  maxItems: 4
+                  description: |
+                    Multi-zone layout. Providing this array switches to dashboard mode. Layout inferred from count: 2 = dual rows, 3 = top + 2 columns, 4 = quad grid. Mutually exclusive with top-level text/icon/label/color.
+            examples:
+              singleZone:
+                summary: Single-zone app
+                value:
+                  text: Hello World
+                  icon: smiley
+                  color: '#FF8800'
+                  duration: 10000
+              multiZone:
+                summary: Multi-zone dashboard
+                value:
+                  zones:
+                    - text: 22.5C
+                      icon: thermo
+                      label: Salon
+                      color: '#FF8800'
+                    - text: 58%
+                      icon: humidity
+                      label: Humidity
+                      color: '#00D4FF'
+                  duration: 10000
+              coloredSegments:
+                summary: Colored text segments
+                value:
+                  text:
+                    - t: '22.5'
+                      c: '#FF8800'
+                    - t: C
+                      c: '#666666'
+                  icon: thermo
+      responses:
+        '200':
+          description: App created or updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Missing name or invalid zones array.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+        '500':
+          description: Failed to add app (no slot available).
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+    delete:
+      operationId: deleteApp
+      summary: Delete a custom app
+      tags:
+        - Apps
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: App name to delete.
+      responses:
+        '200':
+          description: App deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Missing app name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+        '404':
+          description: App not found or is a system app.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+  /weather:
+    get:
+      operationId: getWeather
+      summary: Get current weather data
+      tags:
+        - Weather
+      responses:
+        '200':
+          description: Weather data (or valid=false if not yet received).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    description: Whether weather data has been received.
+                  age:
+                    type: integer
+                    description: Seconds since last update.
+                  stale:
+                    type: boolean
+                    description: |
+                      True if data is older than 1 hour. Display falls back to simple clock.
+                  current:
+                    $ref: '#/paths/~1weather/post/requestBody/content/application~1json/schema/properties/current'
+                  forecast:
+                    type: array
+                    items:
+                      $ref: '#/paths/~1weather/post/requestBody/content/application~1json/schema/properties/forecast/items'
+    post:
+      operationId: updateWeather
+      summary: Update weather data
+      description: |
+        Push current conditions and optional 7-day forecast. The WeatherClock system app displays this data and falls back to a simple clock when data is stale (>1 hour).
+      tags:
+        - Weather
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - current
+              properties:
+                current:
+                  type: object
+                  required:
+                    - icon
+                    - temp
+                  properties:
+                    icon:
+                      type: string
+                      description: |
+                        Weather icon name. Use one of the built-in icons below, or any icon uploaded to the device filesystem.
+
+                        **Built-in weather icons** (8x8, stored in PROGMEM):
+                        | Name | Description | |------|-------------| | `w_clear_day` | Sunny | | `w_clear_night` | Clear night | | `w_partly_day` | Partly cloudy (day) | | `w_partly_night` | Partly cloudy (night) | | `w_cloudy` | Cloudy | | `w_rain` | Rain | | `w_heavy_rain` | Heavy rain | | `w_thunder` | Thunderstorm | | `w_snow` | Snow | | `w_fog` | Fog |
+                      examples:
+                        - w_clear_day
+                    temp:
+                      type: integer
+                      description: Current temperature.
+                    temp_min:
+                      type: integer
+                      description: Today's minimum temperature.
+                    temp_max:
+                      type: integer
+                      description: Today's maximum temperature.
+                    humidity:
+                      type: integer
+                      minimum: 0
+                      maximum: 100
+                      description: Humidity percentage.
+                forecast:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - day
+                      - icon
+                      - temp_min
+                      - temp_max
+                    properties:
+                      day:
+                        type: string
+                        maxLength: 3
+                        description: 'Day abbreviation (3 chars, e.g. "LUN", "MON").'
+                        examples:
+                          - LUN
+                      icon:
+                        type: string
+                        description: |
+                          Weather icon name. Built-in PROGMEM icons: w_clear_day, w_clear_night, w_partly_day, w_partly_night, w_cloudy, w_rain, w_heavy_rain, w_thunder, w_snow, w_fog. Filesystem icons also accepted.
+                        examples:
+                          - w_rain
+                      temp_min:
+                        type: integer
+                        description: Minimum temperature.
+                      temp_max:
+                        type: integer
+                        description: Maximum temperature.
+                  maxItems: 7
+                  description: |
+                    Forecast days (up to 7). Displayed in pages of 3 columns with automatic scrolling. Page timing is proportional to app duration.
+            examples:
+              threeDayForecast:
+                summary: Current + 3-day forecast
+                value:
+                  current:
+                    icon: w_clear_day
+                    temp: 22
+                    temp_min: 16
+                    temp_max: 29
+                    humidity: 50
+                  forecast:
+                    - day: MON
+                      icon: w_partly_day
+                      temp_min: 14
+                      temp_max: 23
+                    - day: TUE
+                      icon: w_rain
+                      temp_min: 10
+                      temp_max: 17
+                    - day: WED
+                      icon: w_snow
+                      temp_min: -2
+                      temp_max: 3
+      responses:
+        '200':
+          description: Weather data updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Missing `current` object.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+  /trackers:
+    get:
+      operationId: listTrackers
+      summary: List all active trackers
+      tags:
+        - Tracker
+      responses:
+        '200':
+          description: List of tracker summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trackers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        symbol:
+                          type: string
+                        value:
+                          type: number
+                          format: float
+                        change:
+                          type: number
+                          format: float
+                        age:
+                          type: integer
+                        stale:
+                          type: boolean
+                  count:
+                    type: integer
+                    description: Total number of active trackers.
+  /tracker:
+    get:
+      operationId: getTracker
+      summary: Get single tracker data
+      tags:
+        - Tracker
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Tracker identifier (e.g. "btc").
+      responses:
+        '200':
+          description: Tracker data.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  symbol:
+                    type: string
+                  icon:
+                    type: string
+                  currency:
+                    type: string
+                  value:
+                    type: number
+                    format: float
+                  change:
+                    type: number
+                    format: float
+                  symbolColor:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+                    description: Hex color string.
+                    examples:
+                      - '#FF8800'
+                  sparklineColor:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+                    description: Hex color string.
+                    examples:
+                      - '#00D4FF'
+                  bottomText:
+                    type: string
+                  age:
+                    type: integer
+                    description: Seconds since last update.
+                  stale:
+                    type: boolean
+                    description: |
+                      True if data is older than 1 hour. Display dims colors and shows a "STALE" badge.
+                  sparkline:
+                    type: array
+                    items:
+                      type: integer
+                    description: Sparkline data as scaled uint16 values (0-65535).
+        '400':
+          description: Missing tracker name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+        '404':
+          description: Tracker not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+    post:
+      operationId: createOrUpdateTracker
+      summary: Create or update a tracker
+      description: |
+        Push tracker data (price, change%, sparkline). The tracker is automatically registered as an app in the rotation with ID `tracker_{name}`. Name can be in query param or JSON body.
+      tags:
+        - Tracker
+      parameters:
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: Tracker name. Also accepted in JSON body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: |
+                    Tracker identifier. Can also be passed as `?name=` query parameter.
+                symbol:
+                  type: string
+                  maxLength: 7
+                  description: 'Display symbol (e.g. "BTC", "ETH").'
+                  examples:
+                    - BTC
+                icon:
+                  type: string
+                  description: Icon name from filesystem.
+                  examples:
+                    - bitcoin
+                currency:
+                  type: string
+                  maxLength: 7
+                  description: 'Currency label (e.g. "USD", "EUR").'
+                  examples:
+                    - USD
+                value:
+                  type: number
+                  format: float
+                  description: Current price/value.
+                  examples:
+                    - 98452.3
+                change:
+                  type: number
+                  format: float
+                  description: Change percentage (positive or negative).
+                  examples:
+                    - 2.14
+                sparkline:
+                  type: array
+                  items:
+                    type: number
+                    format: float
+                  maxItems: 24
+                  description: |
+                    Up to 24 data points for the sparkline chart. Values are auto-scaled to fit the chart area (min/max normalization to uint16 0-65535).
+                  examples:
+                    - - 92100
+                      - 89300
+                      - 93200
+                      - 91800
+                      - 95400
+                      - 94100
+                      - 97600
+                      - 96200
+                      - 98452
+                symbolColor:
+                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                sparklineColor:
+                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                bottomText:
+                  type: string
+                  maxLength: 31
+                  description: Optional footer text displayed at the bottom.
+                  examples:
+                    - 'Vol 24h: 42B'
+                duration:
+                  type: integer
+                  description: Display duration in milliseconds.
+                  default: 10000
+            examples:
+              btcTracker:
+                summary: BTC tracker with sparkline
+                value:
+                  symbol: BTC
+                  icon: bitcoin
+                  currency: USD
+                  value: 98452.3
+                  change: 2.14
+                  sparkline:
+                    - 92100
+                    - 89300
+                    - 93200
+                    - 91800
+                    - 95400
+                    - 94100
+                    - 97600
+                    - 96200
+                    - 98452
+                  symbolColor: '#FF8800'
+                  sparklineColor: '#00D4FF'
+                  bottomText: 'Vol 24h: 42B'
+      responses:
+        '200':
+          description: Tracker created or updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Missing tracker name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+        '500':
+          description: No tracker slot available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+    delete:
+      operationId: deleteTracker
+      summary: Delete a tracker
+      description: Removes the tracker data and its app from rotation.
+      tags:
+        - Tracker
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Tracker name to delete.
+      responses:
+        '200':
+          description: Tracker deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Missing tracker name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+        '404':
+          description: Tracker not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+  /notify:
+    post:
+      operationId: sendNotification
+      summary: Send a notification
+      description: |
+        Push a notification to the display. Notifications interrupt app rotation and are displayed with a card frame overlay.
+      tags:
+        - Notifications
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - text
+              properties:
+                text:
+                  type: string
+                  description: 'Notification text (required, max 128 chars).'
+                  maxLength: 128
+                id:
+                  type: string
+                  description: |
+                    Optional unique ID. If omitted, auto-generated as `notif_<millis>`.
+                icon:
+                  type: string
+                  description: Icon name (without extension).
+                color:
+                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                background:
+                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                duration:
+                  type: integer
+                  description: Display duration in milliseconds.
+                  default: 5000
+                hold:
+                  type: boolean
+                  description: |
+                    Hold notification until explicitly dismissed. Overrides duration.
+                  default: false
+                urgent:
+                  type: boolean
+                  description: Jump to front of notification queue.
+                  default: false
+                stack:
+                  type: boolean
+                  description: |
+                    Queue sequentially with other notifications (true) vs replace current notification (false).
+                  default: true
+            examples:
+              simple:
+                summary: Simple notification
+                value:
+                  text: New message!
+                  icon: mail
+                  color: '#0096FF'
+                  duration: 5000
+              urgent:
+                summary: Urgent notification
+                value:
+                  text: Alert!
+                  icon: warning
+                  color: '#FF0000'
+                  urgent: true
+                  hold: true
+      responses:
+        '200':
+          description: Notification queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  id:
+                    type: string
+                    description: The assigned notification ID.
+        '400':
+          description: Missing text or invalid JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+        '503':
+          description: Notification queue full.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+  /notify/list:
+    get:
+      operationId: listNotifications
+      summary: List active notifications
+      tags:
+        - Notifications
+      responses:
+        '200':
+          description: Active notification queue.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                    description: Number of active notifications.
+                  currentIndex:
+                    type: integer
+                    description: Index of the currently displayed notification.
+                  notifications:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        text:
+                          type: string
+                        icon:
+                          type: string
+                        duration:
+                          type: integer
+                        hold:
+                          type: boolean
+                        urgent:
+                          type: boolean
+                        stack:
+                          type: boolean
+                        displayed:
+                          type: boolean
+                          description: Whether this notification has been shown at least once.
+                        current:
+                          type: boolean
+                          description: Whether this is the currently displayed notification.
+  /notify/dismiss:
+    post:
+      operationId: dismissNotification
+      summary: Dismiss current notification
+      tags:
+        - Notifications
+      responses:
+        '200':
+          description: Notification dismissed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/200/content/application~1json/schema'
+        '404':
+          description: No active notification.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+  /indicator1:
+    post:
+      operationId: setIndicator1
+      summary: Set indicator 1
+      tags:
+        - Indicators
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum:
+                    - solid
+                    - blink
+                    - fade
+                    - 'off'
+                  description: |
+                    Indicator mode. If omitted but `color` is provided, defaults to `solid`. Use `off` to turn off the indicator.
+                color:
+                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                blinkInterval:
+                  type: integer
+                  description: Blink interval in milliseconds (only for `blink` mode).
+                  default: 500
+                fadePeriod:
+                  type: integer
+                  description: Fade cycle period in milliseconds (only for `fade` mode).
+                  default: 2000
+            examples:
+              solidRed:
+                summary: Solid red
+                value:
+                  mode: solid
+                  color: '#FF0000'
+              blinkGreen:
+                summary: Blinking green
+                value:
+                  mode: blink
+                  color: '#00FF00'
+                  blinkInterval: 500
+      responses:
+        '200':
+          description: Indicator set.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  indicator:
+                    type: integer
+                    description: Indicator index (1-3).
+                  mode:
+                    type: string
+                    enum:
+                      - solid
+                      - blink
+                      - fade
+                      - 'off'
+                  color:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+                    description: Hex color string.
+                    examples:
+                      - '#FF0000'
+        '400':
+          description: Invalid mode.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+    delete:
+      operationId: clearIndicator1
+      summary: Turn off indicator 1
+      tags:
+        - Indicators
+      responses:
+        '200':
+          description: Indicator turned off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  mode:
+                    type: string
+                    const: 'off'
+  /indicator2:
+    post:
+      operationId: setIndicator2
+      summary: Set indicator 2
+      tags:
+        - Indicators
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/paths/~1indicator1/post/requestBody/content/application~1json/schema'
+      responses:
+        '200':
+          description: Indicator set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1indicator1/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Invalid mode.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+    delete:
+      operationId: clearIndicator2
+      summary: Turn off indicator 2
+      tags:
+        - Indicators
+      responses:
+        '200':
+          description: Indicator turned off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  mode:
+                    type: string
+                    const: 'off'
+  /indicator3:
+    post:
+      operationId: setIndicator3
+      summary: Set indicator 3
+      tags:
+        - Indicators
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/paths/~1indicator1/post/requestBody/content/application~1json/schema'
+      responses:
+        '200':
+          description: Indicator set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1indicator1/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Invalid mode.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+    delete:
+      operationId: clearIndicator3
+      summary: Turn off indicator 3
+      tags:
+        - Indicators
+      responses:
+        '200':
+          description: Indicator turned off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  mode:
+                    type: string
+                    const: 'off'
+  /icons:
+    get:
+      operationId: listIcons
+      summary: List all icons on filesystem
+      tags:
+        - Icons
+      responses:
+        '200':
+          description: Icon list with storage info.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  icons:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          description: Icon name (without extension).
+                        filename:
+                          type: string
+                          description: Full filename with extension.
+                        size:
+                          type: integer
+                          description: File size in bytes.
+                  count:
+                    type: integer
+                    description: Number of icons.
+                  storage:
+                    type: object
+                    properties:
+                      used:
+                        type: integer
+                        description: Used filesystem space in bytes.
+                      total:
+                        type: integer
+                        description: Total filesystem size in bytes.
+    post:
+      operationId: uploadIcon
+      summary: Upload an icon (PNG or GIF)
+      description: |
+        Upload a PNG or GIF icon to the device filesystem. Recommended sizes: 8x8 or 16x16 pixels.
+      tags:
+        - Icons
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Icon name (used as filename without extension).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PNG or GIF file.
+      responses:
+        '200':
+          description: Icon uploaded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                examples:
+                  - success: true
+        '400':
+          description: Upload failed (invalid format or size).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: string
+                    description: Human-readable error message.
+                examples:
+                  - error: Invalid JSON
+    delete:
+      operationId: deleteIcon
+      summary: Delete an icon
+      tags:
+        - Icons
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Icon name to delete.
+      responses:
+        '200':
+          description: Icon deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Missing name parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+        '404':
+          description: Icon not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+  '/icons/{name}':
+    get:
+      operationId: getIcon
+      summary: Serve an icon file
+      description: Returns the raw PNG or GIF image file.
+      tags:
+        - Icons
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9_-]+$'
+          description: Icon name (without extension).
+      responses:
+        '200':
+          description: Icon image file.
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/gif:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Icon not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+  /icons/lametric:
+    post:
+      operationId: downloadLaMetricIcon
+      summary: Download icon from LaMetric
+      description: |
+        Downloads an icon from the LaMetric icon database and saves it to the device filesystem.
+      tags:
+        - Icons
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+              properties:
+                id:
+                  type: integer
+                  description: LaMetric icon ID to download.
+                  examples:
+                    - 2867
+                name:
+                  type: string
+                  description: |
+                    Local name to save the icon as. Defaults to the icon ID if omitted.
+                  examples:
+                    - bitcoin
+      responses:
+        '200':
+          description: Icon downloaded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/200/content/application~1json/schema'
+        '400':
+          description: Missing or invalid icon ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'
+        '500':
+          description: Download failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/paths/~1icons/post/responses/400/content/application~1json/schema'

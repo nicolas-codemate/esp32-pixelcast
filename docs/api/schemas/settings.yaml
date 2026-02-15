@@ -1,0 +1,57 @@
+# Settings schemas
+
+SettingsUpdateRequest:
+  type: object
+  description: >
+    Partial update: only provided fields are changed. Omitted fields keep
+    their current values.
+  properties:
+    brightness:
+      type: integer
+      minimum: 0
+      maximum: 255
+      description: Display brightness (0-255).
+    autoRotate:
+      type: boolean
+      description: Enable/disable automatic app rotation.
+    defaultDuration:
+      type: integer
+      description: Default app display duration in milliseconds.
+
+SettingsResponse:
+  type: object
+  properties:
+    brightness:
+      type: integer
+      description: Current brightness (0-255).
+    autoRotate:
+      type: boolean
+    defaultDuration:
+      type: integer
+      description: Default duration in milliseconds.
+    display:
+      type: object
+      properties:
+        width:
+          type: integer
+          description: Panel width in pixels.
+        height:
+          type: integer
+          description: Panel height in pixels.
+    ntp:
+      type: object
+      properties:
+        server:
+          type: string
+          description: NTP server hostname.
+        offset:
+          type: integer
+          description: UTC offset in seconds.
+    mqtt:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        prefix:
+          type: string
+          description: MQTT topic prefix.

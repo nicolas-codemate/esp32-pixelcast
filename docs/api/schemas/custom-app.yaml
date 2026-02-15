@@ -1,0 +1,129 @@
+# Custom App schemas
+
+CustomAppRequest:
+  type: object
+  description: >
+    Create or update a custom app in the rotation. Supports single-zone
+    (text/icon/color) or multi-zone (zones array) layouts.
+  properties:
+    name:
+      type: string
+      description: >
+        App name (identifier). Can also be passed as `?name=` query parameter.
+    text:
+      $ref: "common.yaml#/PolymorphicTextField"
+    icon:
+      type: string
+      description: Icon name (without extension).
+      examples:
+        - "smiley"
+    label:
+      $ref: "common.yaml#/PolymorphicTextField"
+    color:
+      $ref: "common.yaml#/Color"
+    duration:
+      type: integer
+      description: Display duration in milliseconds.
+      default: 10000
+      examples:
+        - 10000
+    lifetime:
+      type: integer
+      description: >
+        Auto-expiration in seconds if not updated. 0 = permanent.
+      default: 0
+    priority:
+      type: integer
+      minimum: -10
+      maximum: 10
+      description: Display priority (-10 to 10, higher = more important).
+      default: 0
+    zones:
+      type: array
+      items:
+        $ref: "zone.yaml#/Zone"
+      minItems: 2
+      maxItems: 4
+      description: >
+        Multi-zone layout. Providing this array switches to dashboard mode.
+        Layout inferred from count: 2 = dual rows, 3 = top + 2 columns,
+        4 = quad grid. Mutually exclusive with top-level text/icon/label/color.
+
+CustomAppMultiZoneRequest:
+  type: object
+  required: [zones]
+  description: Multi-zone variant of custom app creation.
+  properties:
+    name:
+      type: string
+    zones:
+      type: array
+      items:
+        $ref: "zone.yaml#/Zone"
+      minItems: 2
+      maxItems: 4
+    duration:
+      type: integer
+      default: 10000
+    lifetime:
+      type: integer
+      default: 0
+    priority:
+      type: integer
+      minimum: -10
+      maximum: 10
+      default: 0
+
+AppResponse:
+  type: object
+  properties:
+    id:
+      type: string
+      description: App identifier.
+    text:
+      $ref: "common.yaml#/PolymorphicTextField"
+    icon:
+      type: string
+    label:
+      $ref: "common.yaml#/PolymorphicTextField"
+    color:
+      type: string
+      pattern: "^#[0-9a-fA-F]{6}$"
+      description: Default text color as hex string.
+    duration:
+      type: integer
+    lifetime:
+      type: integer
+    priority:
+      type: integer
+    isSystem:
+      type: boolean
+      description: System apps cannot be deleted via API.
+    isCurrent:
+      type: boolean
+      description: Whether this app is currently being displayed.
+    zoneCount:
+      type: integer
+      description: Number of zones (0-1 = single, 2-4 = multi-zone).
+    zones:
+      type: array
+      items:
+        $ref: "zone.yaml#/Zone"
+      description: Present only when zoneCount >= 2.
+
+AppListResponse:
+  type: object
+  properties:
+    apps:
+      type: array
+      items:
+        $ref: "#/AppResponse"
+    count:
+      type: integer
+      description: Total number of active apps.
+    currentIndex:
+      type: integer
+      description: Index of the currently displayed app (-1 if none).
+    rotationEnabled:
+      type: boolean
+      description: Whether automatic app rotation is enabled.

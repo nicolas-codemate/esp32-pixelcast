@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-PixelCast API Documentation</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --border: #2a2d3a;
+            --text: #e1e4ed;
+            --text-dim: #8b8fa3;
+            --accent-rest: #4a9eff;
+            --accent-mqtt: #10b981;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem 1rem;
+        }
+
+        h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .subtitle {
+            color: var(--text-dim);
+            margin-bottom: 2.5rem;
+            font-size: 1.1rem;
+        }
+
+        .cards {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            max-width: 700px;
+            width: 100%;
+            margin-bottom: 2.5rem;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 2rem;
+            text-decoration: none;
+            color: var(--text);
+            transition: border-color 0.2s, transform 0.2s;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+        }
+
+        .card--rest:hover { border-color: var(--accent-rest); }
+        .card--mqtt:hover { border-color: var(--accent-mqtt); }
+
+        .card__badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 1rem;
+        }
+
+        .card--rest .card__badge {
+            background: rgba(74, 158, 255, 0.15);
+            color: var(--accent-rest);
+        }
+
+        .card--mqtt .card__badge {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--accent-mqtt);
+        }
+
+        .card__title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .card__desc {
+            color: var(--text-dim);
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        .downloads {
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }
+
+        .downloads a {
+            color: var(--text-dim);
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+
+        .downloads a:hover { color: var(--text); }
+
+        @media (max-width: 600px) {
+            .cards { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <h1>ESP32-PixelCast</h1>
+    <p class="subtitle">API Documentation</p>
+
+    <div class="cards">
+        <a href="swagger-ui.html" class="card card--rest">
+            <span class="card__badge">OpenAPI 3.1</span>
+            <div class="card__title">REST API</div>
+            <p class="card__desc">
+                HTTP endpoints for apps, notifications, weather, trackers,
+                indicators, icons, and system settings.
+            </p>
+        </a>
+        <a href="asyncapi.html" class="card card--mqtt">
+            <span class="card__badge">AsyncAPI 3.0</span>
+            <div class="card__title">MQTT API</div>
+            <p class="card__desc">
+                MQTT topics mirroring the REST API. Commands, status, and
+                real-time stats over your broker.
+            </p>
+        </a>
+    </div>
+
+    <p class="downloads">
+        Raw specs:
+        <a href="openapi.yaml">openapi.yaml</a> |
+        <a href="asyncapi.yaml">asyncapi.yaml</a>
+    </p>
+</body>
+</html>

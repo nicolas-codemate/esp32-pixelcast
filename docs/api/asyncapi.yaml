@@ -1,0 +1,439 @@
+asyncapi: 3.0.0
+info:
+  title: ESP32-PixelCast MQTT API
+  version: 0.1.0
+  description: >
+    MQTT interface for controlling a HUB75 LED matrix panel (64x64) running
+    on ESP32 Trinity. JSON payloads mirror the REST API. MQTT must be enabled
+    via `POST /api/settings` or the settings file.
+
+
+    **Key differences from REST:**
+
+    - Fire-and-forget: no response (errors logged to Serial only).
+
+    - Delete via `{"delete": true}` flag instead of HTTP DELETE.
+
+    - Name can be in topic path or JSON body for custom/tracker.
+
+    - No icon management over MQTT.
+  license:
+    name: MIT
+
+defaultContentType: application/json
+
+servers:
+  mosquitto:
+    host: "{brokerHost}:{brokerPort}"
+    protocol: mqtt
+    description: MQTT broker (e.g. Mosquitto).
+    variables:
+      brokerHost:
+        default: localhost
+      brokerPort:
+        default: "1883"
+    bindings:
+      mqtt:
+        clientId: pixelcast_{MAC}
+        keepAlive: 60
+        cleanSession: true
+        lastWill:
+          topic: "{prefix}/status"
+          qos: 0
+          retain: true
+          message: "offline"
+
+channels:
+  # ===========================================================================
+  # Commands (receive from clients)
+  # ===========================================================================
+  custom:
+    address: "{prefix}/custom"
+    description: >
+      Create or update a custom app. App name must be in the JSON body.
+      Send `{"delete": true, "name": "appName"}` to delete.
+    parameters:
+      prefix:
+        description: MQTT topic prefix (default "pixelcast").
+        default: pixelcast
+    messages:
+      customAppMessage:
+        $ref: "#/components/messages/CustomApp"
+
+  customNamed:
+    address: "{prefix}/custom/{name}"
+    description: >
+      Create or update a custom app with name in the topic path.
+      Send `{"delete": true}` to delete.
+    parameters:
+      prefix:
+        description: MQTT topic prefix.
+        default: pixelcast
+      name:
+        description: App name.
+    messages:
+      customAppMessage:
+        $ref: "#/components/messages/CustomApp"
+
+  notify:
+    address: "{prefix}/notify"
+    description: Send a notification to the display.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      notificationMessage:
+        $ref: "#/components/messages/Notification"
+
+  dismiss:
+    address: "{prefix}/dismiss"
+    description: Dismiss the current notification. Payload can be empty.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      dismissMessage:
+        $ref: "#/components/messages/Empty"
+
+  indicator1:
+    address: "{prefix}/indicator1"
+    description: Set corner indicator 1. Send `{"mode":"off"}` to turn off.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      indicatorMessage:
+        $ref: "#/components/messages/Indicator"
+
+  indicator2:
+    address: "{prefix}/indicator2"
+    description: Set corner indicator 2.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      indicatorMessage:
+        $ref: "#/components/messages/Indicator"
+
+  indicator3:
+    address: "{prefix}/indicator3"
+    description: Set corner indicator 3.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      indicatorMessage:
+        $ref: "#/components/messages/Indicator"
+
+  brightness:
+    address: "{prefix}/brightness"
+    description: Set display brightness.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      brightnessMessage:
+        $ref: "#/components/messages/Brightness"
+
+  settings:
+    address: "{prefix}/settings"
+    description: Update device settings (partial update).
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      settingsMessage:
+        $ref: "#/components/messages/Settings"
+
+  weather:
+    address: "{prefix}/weather"
+    description: >
+      Update weather data for the WeatherClock system app.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      weatherMessage:
+        $ref: "#/components/messages/Weather"
+
+  tracker:
+    address: "{prefix}/tracker"
+    description: >
+      Create or update a tracker. Name must be in the JSON body.
+      Send `{"delete": true, "name": "btc"}` to delete.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      trackerMessage:
+        $ref: "#/components/messages/Tracker"
+
+  trackerNamed:
+    address: "{prefix}/tracker/{name}"
+    description: >
+      Create or update a tracker with name in the topic path.
+      Send `{"delete": true}` to delete.
+    parameters:
+      prefix:
+        default: pixelcast
+      name:
+        description: Tracker name (e.g. "btc").
+    messages:
+      trackerMessage:
+        $ref: "#/components/messages/Tracker"
+
+  reboot:
+    address: "{prefix}/reboot"
+    description: Reboot the device. Payload can be empty.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      rebootMessage:
+        $ref: "#/components/messages/Empty"
+
+  # ===========================================================================
+  # Status (published by device)
+  # ===========================================================================
+  status:
+    address: "{prefix}/status"
+    description: >
+      Connection status (LWT). Published as retained. "online" on connect,
+      "offline" as Last Will on disconnect.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      statusMessage:
+        $ref: "#/components/messages/Status"
+
+  stats:
+    address: "{prefix}/stats"
+    description: >
+      System statistics published every 60 seconds. Not retained.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      statsMessage:
+        $ref: "#/components/messages/Stats"
+
+operations:
+  # Commands (device receives)
+  receiveCustom:
+    action: receive
+    channel:
+      $ref: "#/channels/custom"
+  receiveCustomNamed:
+    action: receive
+    channel:
+      $ref: "#/channels/customNamed"
+  receiveNotify:
+    action: receive
+    channel:
+      $ref: "#/channels/notify"
+  receiveDismiss:
+    action: receive
+    channel:
+      $ref: "#/channels/dismiss"
+  receiveIndicator1:
+    action: receive
+    channel:
+      $ref: "#/channels/indicator1"
+  receiveIndicator2:
+    action: receive
+    channel:
+      $ref: "#/channels/indicator2"
+  receiveIndicator3:
+    action: receive
+    channel:
+      $ref: "#/channels/indicator3"
+  receiveBrightness:
+    action: receive
+    channel:
+      $ref: "#/channels/brightness"
+  receiveSettings:
+    action: receive
+    channel:
+      $ref: "#/channels/settings"
+  receiveWeather:
+    action: receive
+    channel:
+      $ref: "#/channels/weather"
+  receiveTracker:
+    action: receive
+    channel:
+      $ref: "#/channels/tracker"
+  receiveTrackerNamed:
+    action: receive
+    channel:
+      $ref: "#/channels/trackerNamed"
+  receiveReboot:
+    action: receive
+    channel:
+      $ref: "#/channels/reboot"
+
+  # Status (device publishes)
+  publishStatus:
+    action: send
+    channel:
+      $ref: "#/channels/status"
+    bindings:
+      mqtt:
+        retain: true
+  publishStats:
+    action: send
+    channel:
+      $ref: "#/channels/stats"
+
+components:
+  messages:
+    CustomApp:
+      payload:
+        $ref: "schemas/custom-app.yaml#/CustomAppRequest"
+      examples:
+        - name: singleZone
+          summary: Simple text app
+          payload:
+            text: "Hello!"
+            icon: "smiley"
+            color: "#FF0000"
+        - name: multiZone
+          summary: Two-zone dashboard
+          payload:
+            zones:
+              - text: "22.5C"
+                icon: "thermo"
+                label: "Salon"
+                color: "#FF8800"
+              - text: "58%"
+                icon: "humidity"
+                color: "#00D4FF"
+        - name: delete
+          summary: Delete an app
+          payload:
+            delete: true
+            name: "hello"
+
+    Notification:
+      payload:
+        $ref: "schemas/notification.yaml#/NotificationRequest"
+      examples:
+        - name: alert
+          summary: Urgent notification
+          payload:
+            text: "Alert!"
+            icon: "warning"
+            color: "#FF0000"
+            urgent: true
+
+    Indicator:
+      payload:
+        $ref: "schemas/indicator.yaml#/IndicatorRequest"
+      examples:
+        - name: blinkGreen
+          summary: Blinking green
+          payload:
+            mode: "blink"
+            color: "#00FF00"
+            blinkInterval: 500
+        - name: off
+          summary: Turn off
+          payload:
+            mode: "off"
+
+    Brightness:
+      payload:
+        type: object
+        required: [brightness]
+        properties:
+          brightness:
+            type: integer
+            minimum: 0
+            maximum: 255
+      examples:
+        - name: setBrightness
+          payload:
+            brightness: 50
+
+    Settings:
+      payload:
+        $ref: "schemas/settings.yaml#/SettingsUpdateRequest"
+      examples:
+        - name: updateSettings
+          payload:
+            brightness: 100
+            autoRotate: true
+            defaultDuration: 15000
+
+    Weather:
+      payload:
+        $ref: "schemas/weather.yaml#/WeatherUpdateRequest"
+      examples:
+        - name: currentAndForecast
+          payload:
+            current:
+              icon: "w_clear_day"
+              temp: 22
+              temp_min: 16
+              temp_max: 29
+              humidity: 50
+            forecast:
+              - day: "MON"
+                icon: "w_partly_day"
+                temp_min: 14
+                temp_max: 23
+              - day: "TUE"
+                icon: "w_rain"
+                temp_min: 10
+                temp_max: 17
+
+    Tracker:
+      payload:
+        $ref: "schemas/tracker.yaml#/TrackerUpdateRequest"
+      examples:
+        - name: btcTracker
+          summary: BTC price update
+          payload:
+            symbol: "BTC"
+            icon: "bitcoin"
+            currency: "USD"
+            value: 98452.30
+            change: 2.14
+            sparkline: [92100, 89300, 93200, 91800, 95400]
+            symbolColor: "#FF8800"
+            sparklineColor: "#00D4FF"
+            bottomText: "Vol 24h: 42B"
+        - name: deleteTracker
+          summary: Delete a tracker
+          payload:
+            delete: true
+
+    Status:
+      payload:
+        type: string
+        enum: ["online", "offline"]
+      examples:
+        - name: online
+          payload: "online"
+        - name: offline
+          payload: "offline"
+
+    Stats:
+      payload:
+        $ref: "schemas/stats.yaml#/MqttStatsPayload"
+      examples:
+        - name: stats
+          payload:
+            uptime: 3600
+            freeHeap: 120000
+            brightness: 128
+            rssi: -45
+            appCount: 3
+            version: "0.1.0-dev"
+            currentApp: "weather_clock"
+
+    Empty:
+      payload:
+        type: "null"
+      description: Empty payload (or any payload - ignored).

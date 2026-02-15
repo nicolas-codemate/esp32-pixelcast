@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-PixelCast MQTT API</title>
+    <link rel="stylesheet" href="https://unpkg.com/@asyncapi/react-component@2/styles/default.min.css">
+    <style>
+        body { margin: 0; padding: 1rem; background: #fff; font-family: sans-serif; }
+    </style>
+</head>
+<body>
+    <div id="asyncapi"></div>
+    <script src="https://unpkg.com/@asyncapi/react-component@2/browser/standalone/index.js"></script>
+    <script>
+        AsyncApiStandalone.render({
+            schema: {
+                url: "./asyncapi.yaml"
+            },
+            config: {
+                show: {
+                    sidebar: true,
+                    operations: true,
+                    messages: true,
+                    servers: true
+                }
+            }
+        }, document.getElementById("asyncapi"));
+    </script>
+</body>
+</html>

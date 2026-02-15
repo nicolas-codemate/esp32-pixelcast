@@ -225,6 +225,8 @@ mqtt:
 
 ## API Reference
 
+Full interactive documentation: **[REST API](https://nicolas-codemate.github.io/esp32-pixelcast/swagger-ui.html)** (OpenAPI 3.1) | **[MQTT API](https://nicolas-codemate.github.io/esp32-pixelcast/asyncapi.html)** (AsyncAPI 3.0)
+
 ### Endpoints
 
 | Method | Endpoint | Description |

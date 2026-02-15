@@ -2449,12 +2449,14 @@ void handleIndicatorApi(AsyncWebServerRequest *request, JsonVariant &json, uint8
     Serial.printf("[API] Indicator %d set: mode=%s color=0x%06X\n",
                   index + 1, modeStr[0] ? modeStr : "solid", color);
 
+    char colorHex[8];
+    formatColorHex(color, colorHex, sizeof(colorHex));
     char response[128];
     snprintf(response, sizeof(response),
-             "{\"success\":true,\"indicator\":%d,\"mode\":\"%s\",\"color\":[%d,%d,%d]}",
+             "{\"success\":true,\"indicator\":%d,\"mode\":\"%s\",\"color\":\"%s\"}",
              index + 1,
              mode == INDICATOR_SOLID ? "solid" : (mode == INDICATOR_BLINK ? "blink" : "fade"),
-             (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF);
+             colorHex);
     request->send(200, "application/json", response);
 }
 
@@ -3562,8 +3564,12 @@ void setupWebServer() {
         doc["currency"] = tracker->currencySymbol;
         doc["value"] = tracker->currentValue;
         doc["change"] = tracker->changePercent;
-        doc["symbolColor"] = tracker->symbolColor;
-        doc["sparklineColor"] = tracker->sparklineColor;
+        char symbolColorHex[8];
+        formatColorHex(tracker->symbolColor, symbolColorHex, sizeof(symbolColorHex));
+        doc["symbolColor"] = symbolColorHex;
+        char sparklineColorHex[8];
+        formatColorHex(tracker->sparklineColor, sparklineColorHex, sizeof(sparklineColorHex));
+        doc["sparklineColor"] = sparklineColorHex;
         doc["bottomText"] = tracker->bottomText;
 
         unsigned long ageMs = millis() - tracker->lastUpdate;

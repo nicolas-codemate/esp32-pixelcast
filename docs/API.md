@@ -720,57 +720,282 @@ curl -X POST "http://pixelcast.local/api/tracker?name=eth" \
 
 ## MQTT API
 
+All MQTT topics mirror the REST API endpoints. JSON payloads are identical to their REST counterparts described above.
+
+### Setup
+
+You need an MQTT broker (e.g. [Mosquitto](https://mosquitto.org/)) and a client to test. Recommended tools:
+
+- **[MQTTX](https://mqttx.app/)** - Desktop GUI client (open-source, JSON editor, topic management)
+- **mosquitto_clients** - CLI tools (`mosquitto_pub` / `mosquitto_sub`) for scripting
+
+```bash
+# Install broker + CLI tools (Ubuntu/Debian)
+sudo apt install mosquitto mosquitto-clients
+```
+
 ### Configuration
 
-| Parameter | Default value         |
-|-----------|-----------------------|
-| Prefix    | `pixelcast`           |
-| QoS       | 0                     |
-| Retain    | false (except status) |
+MQTT is configured via `POST /api/settings` or the settings file. It must be explicitly enabled.
+
+| Parameter | Default     | Description                      |
+|-----------|-------------|----------------------------------|
+| enabled   | `false`     | Enable/disable MQTT              |
+| server    | `""`        | Broker hostname or IP            |
+| port      | `1883`      | Broker port                      |
+| user      | `""`        | Username (optional)              |
+| password  | `""`        | Password (optional)              |
+| prefix    | `pixelcast` | Topic prefix for all messages    |
+
+**Example settings payload:**
+
+```json
+{
+  "mqtt": {
+    "enabled": true,
+    "server": "192.168.1.10",
+    "port": 1883,
+    "prefix": "pixelcast"
+  }
+}
+```
+
+### Connection behavior
+
+- Unique client ID derived from ESP32 MAC address
+- LWT (Last Will and Testament): publishes `"offline"` (retained) on `{prefix}/status` on disconnect
+- On connect: publishes `"online"` (retained) on `{prefix}/status`
+- Subscribes to `{prefix}/#` wildcard
+- Auto-reconnect every 5 seconds on disconnection
+- Stats published every 60 seconds on `{prefix}/stats`
 
 ### Topics
 
+All topics below are relative to the configured prefix (default: `pixelcast`).
+
 #### Commands (To Device)
 
-| Topic                     | Payload | Description          |
-|---------------------------|---------|----------------------|
-| `pixelcast/custom/{name}` | JSON    | Create/Update an app |
-| `pixelcast/notify`        | JSON    | Notification         |
-| `pixelcast/dismiss`       | -       | Acknowledge          |
-| `pixelcast/indicator1`    | JSON    | Indicator 1          |
-| `pixelcast/indicator2`    | JSON    | Indicator 2          |
-| `pixelcast/indicator3`    | JSON    | Indicator 3          |
-| `pixelcast/settings`      | JSON    | Settings             |
-| `pixelcast/brightness`    | int     | Brightness (0-255)   |
-| `pixelcast/reboot`        | -       | Reboot               |
+| Topic                      | Payload | Description                          |
+|----------------------------|---------|--------------------------------------|
+| `{prefix}/custom`          | JSON    | Create/update app (name in JSON)     |
+| `{prefix}/custom/{name}`   | JSON    | Create/update app (name in topic)    |
+| `{prefix}/notify`          | JSON    | Send notification                    |
+| `{prefix}/dismiss`         | (empty) | Dismiss current notification         |
+| `{prefix}/indicator{1-3}`  | JSON    | Set indicator (solid, blink, fade)   |
+| `{prefix}/weather`         | JSON    | Update weather data                  |
+| `{prefix}/tracker`         | JSON    | Create/update tracker (name in JSON) |
+| `{prefix}/tracker/{name}`  | JSON    | Create/update tracker (name in topic)|
+| `{prefix}/settings`        | JSON    | Update settings                      |
+| `{prefix}/brightness`      | JSON    | Set brightness                       |
+| `{prefix}/reboot`          | (empty) | Reboot device                        |
 
 #### Status (From Device)
 
-| Topic              | Payload        | Description           |
-|--------------------|----------------|-----------------------|
-| `pixelcast/status` | online/offline | LWT                   |
-| `pixelcast/stats`  | JSON           | Statistics (periodic) |
+| Topic              | Payload          | Retained | Description                   |
+|--------------------|------------------|----------|-------------------------------|
+| `{prefix}/status`  | `online`/`offline` | yes    | Connection status (LWT)       |
+| `{prefix}/stats`   | JSON             | no       | System stats (every 60s)      |
+
+**Stats payload:**
+
+```json
+{
+  "uptime": 3600,
+  "freeHeap": 120000,
+  "brightness": 128,
+  "rssi": -45,
+  "appCount": 3,
+  "version": "0.1.0-dev",
+  "currentApp": "weather_clock"
+}
+```
+
+### Payload reference
+
+JSON payloads are identical to the REST API. Key differences from REST:
+
+- **No HTTP response**: errors are logged to Serial only
+- **Name in topic or JSON**: for `/custom` and `/tracker`, the name can be in the topic path (`pixelcast/custom/myapp`) or in the JSON body (`{"name": "myapp", ...}`)
+- **Delete via JSON flag**: send `{"delete": true}` (with optional `"name"` if using the base topic) instead of HTTP DELETE
 
 ### Examples
 
-#### Home Assistant - Automation
+#### mosquitto CLI
+
+```bash
+# Monitor all messages from the device
+mosquitto_sub -h localhost -t "pixelcast/#" -v
+
+# Set brightness
+mosquitto_pub -h localhost -t "pixelcast/brightness" \
+  -m '{"brightness": 50}'
+
+# Create a custom app
+mosquitto_pub -h localhost -t "pixelcast/custom/hello" \
+  -m '{"text": "Hello!", "icon": "smiley", "color": "#FF0000"}'
+
+# Create a custom app with text override color (object format)
+mosquitto_pub -h localhost -t "pixelcast/custom/alert" \
+  -m '{"text": {"text": "CRITICAL", "color": "#FF0000"}, "icon": "warning"}'
+
+# Create a custom app with colored segments (array format)
+mosquitto_pub -h localhost -t "pixelcast/custom/temp" \
+  -m '{"text": [{"t": "22.5", "c": "#FF8800"}, {"t": "°C", "c": "#666666"}], "icon": "thermo"}'
+
+# Colored segments in both text and label
+mosquitto_pub -h localhost -t "pixelcast/custom/server" \
+  -m '{
+    "text": [{"t": "CPU ", "c": "#AAAAAA"}, {"t": "87%", "c": "#FF2200"}],
+    "label": [{"t": "web-", "c": "#666666"}, {"t": "prod", "c": "#00FF88"}],
+    "icon": "server"
+  }'
+
+# Multi-zone with colored segments per zone
+mosquitto_pub -h localhost -t "pixelcast/custom/dashboard" \
+  -m '{"zones": [
+    {
+      "text": [{"t": "22.5", "c": "#FF8800"}, {"t": "°C", "c": "#666666"}],
+      "icon": "thermo",
+      "label": "Salon"
+    },
+    {
+      "text": [{"t": "58", "c": "#00D4FF"}, {"t": "%", "c": "#666666"}],
+      "icon": "humidity",
+      "label": [{"t": "Hum ", "c": "#888888"}, {"t": "OK", "c": "#00FF44"}]
+    }
+  ]}'
+
+# Delete a custom app
+mosquitto_pub -h localhost -t "pixelcast/custom/hello" \
+  -m '{"delete": true}'
+
+# Send a notification (simple text)
+mosquitto_pub -h localhost -t "pixelcast/notify" \
+  -m '{"text": "Alert!", "icon": "warning", "color": "#FF0000", "urgent": true}'
+
+# Send a notification with colored segments
+mosquitto_pub -h localhost -t "pixelcast/notify" \
+  -m '{"text": [{"t": "Door ", "c": "#FFFFFF"}, {"t": "OPEN", "c": "#FF0000"}], "icon": "door", "urgent": true}'
+
+# Dismiss notification
+mosquitto_pub -h localhost -t "pixelcast/dismiss" -n
+
+# Set indicator 1 to blinking green
+mosquitto_pub -h localhost -t "pixelcast/indicator1" \
+  -m '{"mode": "blink", "color": "#00FF00", "blinkInterval": 500}'
+
+# Turn off indicator 2
+mosquitto_pub -h localhost -t "pixelcast/indicator2" \
+  -m '{"mode": "off"}'
+
+# Update weather
+mosquitto_pub -h localhost -t "pixelcast/weather" \
+  -m '{
+    "current": {"icon": "w_clear_day", "temp": 22, "temp_min": 16, "temp_max": 29, "humidity": 50},
+    "forecast": [
+      {"day": "LUN", "icon": "w_partly_day", "temp_min": 14, "temp_max": 23},
+      {"day": "MAR", "icon": "w_rain", "temp_min": 10, "temp_max": 17}
+    ]
+  }'
+
+# Update BTC tracker
+mosquitto_pub -h localhost -t "pixelcast/tracker/btc" \
+  -m '{
+    "symbol": "BTC", "icon": "bitcoin", "currency": "USD",
+    "value": 98452.30, "change": 2.14,
+    "sparkline": [92100, 89300, 93200, 91800, 95400, 94100, 97600, 96200, 98452],
+    "symbolColor": "#FF8800", "sparklineColor": "#00D4FF",
+    "bottomText": "Vol 24h: 42B"
+  }'
+
+# Delete a tracker
+mosquitto_pub -h localhost -t "pixelcast/tracker/btc" \
+  -m '{"delete": true}'
+
+# Update settings
+mosquitto_pub -h localhost -t "pixelcast/settings" \
+  -m '{"brightness": 100, "autoRotate": true, "defaultDuration": 15000}'
+
+# Reboot device
+mosquitto_pub -h localhost -t "pixelcast/reboot" -n
+```
+
+#### Home Assistant - MQTT automations
 
 ```yaml
+# Notification on high temperature (with colored segments)
 automation:
-  - alias: "Temperature notification"
+  - alias: "PixelCast temperature alert"
     trigger:
       platform: numeric_state
       entity_id: sensor.temperature
-      above: 77
+      above: 30
     action:
       service: mqtt.publish
       data:
         topic: "pixelcast/notify"
         payload: >
           {
-            "text": "Temperature: {{ states('sensor.temperature') }}°F",
-            "icon": "temperature",
-            "color": [255, 100, 0]
+            "text": [
+              {"t": "{{ states('sensor.temperature') }}", "c": "#FF4400"},
+              {"t": "°C", "c": "#888888"}
+            ],
+            "icon": "thermo",
+            "urgent": true
+          }
+
+# Custom app with colored value + dimmed unit
+  - alias: "PixelCast indoor temperature"
+    trigger:
+      platform: state
+      entity_id: sensor.indoor_temperature
+    action:
+      service: mqtt.publish
+      data:
+        topic: "pixelcast/custom/indoor"
+        payload: >
+          {
+            "text": [
+              {"t": "{{ states('sensor.indoor_temperature') }}", "c": "#FF8800"},
+              {"t": "°C", "c": "#666666"}
+            ],
+            "label": {"text": "Salon", "color": "#888888"},
+            "icon": "thermo"
+          }
+
+# Weather update every 15 minutes
+  - alias: "PixelCast weather update"
+    trigger:
+      platform: time_pattern
+      minutes: "/15"
+    action:
+      service: mqtt.publish
+      data:
+        topic: "pixelcast/weather"
+        payload: >
+          {
+            "current": {
+              "icon": "w_clear_day",
+              "temp": {{ states('sensor.outdoor_temperature') | int }},
+              "humidity": {{ states('sensor.outdoor_humidity') | int }}
+            }
+          }
+
+# BTC price from sensor
+  - alias: "PixelCast BTC tracker"
+    trigger:
+      platform: state
+      entity_id: sensor.bitcoin_price
+    action:
+      service: mqtt.publish
+      data:
+        topic: "pixelcast/tracker/btc"
+        payload: >
+          {
+            "symbol": "BTC",
+            "value": {{ states('sensor.bitcoin_price') | float }},
+            "change": {{ states('sensor.bitcoin_change_24h') | float }},
+            "symbolColor": "#FF8800"
           }
 ```
 
@@ -782,11 +1007,7 @@ automation:
   "payload": {
     "text": "5 PR",
     "icon": "github",
-    "color": [
-      100,
-      200,
-      255
-    ]
+    "color": "#64C8FF"
   }
 }
 ```

@@ -278,6 +278,7 @@ ScrollState notifScrollState;
 unsigned long lastNotifScrollUpdate = 0;
 
 // Timing
+unsigned long lastMqttReconnectAttempt = 0;
 unsigned long lastStatsPublish = 0;
 unsigned long lastDisplayUpdate = 0;
 unsigned long lastTimeUpdate = 0;
@@ -571,8 +572,19 @@ bool indicatorNeedsRedraw();
 void handleIndicatorApi(AsyncWebServerRequest *request, JsonVariant &json, uint8_t index);
 
 void mqttCallback(char* topic, byte* payload, unsigned int length);
-void mqttReconnect();
+bool mqttConnect();
 void mqttPublishStats();
+void mqttHandleCustom(const char* name, JsonObject& doc);
+void mqttHandleCustomDelete(const char* name);
+void mqttHandleNotify(JsonObject& doc);
+void mqttHandleDismiss();
+void mqttHandleIndicator(uint8_t index, JsonObject& doc);
+void mqttHandleWeather(JsonObject& doc);
+void mqttHandleTracker(const char* name, JsonObject& doc);
+void mqttHandleTrackerDelete(const char* name);
+void mqttHandleSettings(JsonObject& doc);
+void mqttHandleBrightness(JsonObject& doc);
+void mqttHandleReboot();
 
 void handleApiStats(AsyncWebServerRequest *request);
 void handleApiSettings(AsyncWebServerRequest *request);
@@ -4153,27 +4165,191 @@ void handleApiApps(AsyncWebServerRequest *request) {
 // ============================================================================
 
 void setupMQTT() {
-    Serial.println("[MQTT] Not configured (TODO: implement config)");
+    if (!settings.mqttEnabled || strlen(settings.mqttServer) == 0) {
+        Serial.println("[MQTT] Disabled or no server configured");
+        return;
+    }
+
+    mqttClient.setServer(settings.mqttServer, settings.mqttPort);
+    mqttClient.setCallback(mqttCallback);
+    mqttClient.setBufferSize(MQTT_BUFFER_SIZE);
+    mqttClient.setKeepAlive(MQTT_KEEPALIVE);
+
+    Serial.printf("[MQTT] Configured: %s:%d (prefix: %s)\n",
+                  settings.mqttServer, settings.mqttPort, settings.mqttPrefix);
+
+    mqttConnect();
+}
+
+bool mqttConnect() {
+    if (!settings.mqttEnabled || strlen(settings.mqttServer) == 0) {
+        return false;
+    }
+
+    // Build LWT topic
+    char lwtTopic[96];
+    snprintf(lwtTopic, sizeof(lwtTopic), "%s%s", settings.mqttPrefix, MQTT_TOPIC_STATUS);
+
+    // Build unique client ID from MAC address
+    char clientId[32];
+    uint64_t mac = ESP.getEfuseMac();
+    snprintf(clientId, sizeof(clientId), "pixelcast_%04X%08X",
+             (uint16_t)(mac >> 32), (uint32_t)mac);
+
+    Serial.printf("[MQTT] Connecting as %s...\n", clientId);
+
+    bool connected = false;
+    if (strlen(settings.mqttUser) > 0) {
+        connected = mqttClient.connect(clientId, settings.mqttUser, settings.mqttPassword,
+                                       lwtTopic, 0, true, "offline");
+    } else {
+        connected = mqttClient.connect(clientId, lwtTopic, 0, true, "offline");
+    }
+
+    if (connected) {
+        mqttConnected = true;
+        lastMqttReconnectAttempt = millis();
+
+        // Publish online status (retained)
+        mqttClient.publish(lwtTopic, "online", true);
+
+        // Subscribe to all topics under prefix
+        char subscribeTopic[96];
+        snprintf(subscribeTopic, sizeof(subscribeTopic), "%s/#", settings.mqttPrefix);
+        mqttClient.subscribe(subscribeTopic);
+
+        Serial.printf("[MQTT] Connected, subscribed to %s\n", subscribeTopic);
+        return true;
+    } else {
+        mqttConnected = false;
+        Serial.printf("[MQTT] Connection failed, rc=%d\n", mqttClient.state());
+        lastMqttReconnectAttempt = millis();
+        return false;
+    }
 }
 
 void loopMQTT() {
-    if (!wifiConnected) return;
+    if (!settings.mqttEnabled || !wifiConnected) return;
 
-    if (millis() - lastStatsPublish > MQTT_STATS_INTERVAL) {
-        mqttPublishStats();
-        lastStatsPublish = millis();
+    if (mqttClient.connected()) {
+        mqttClient.loop();
+
+        // Periodic stats publish
+        if (millis() - lastStatsPublish > MQTT_STATS_INTERVAL) {
+            mqttPublishStats();
+            lastStatsPublish = millis();
+        }
+    } else {
+        mqttConnected = false;
+
+        // Reconnect with delay
+        if (millis() - lastMqttReconnectAttempt > MQTT_RECONNECT_DELAY) {
+            Serial.println("[MQTT] Attempting reconnection...");
+            mqttConnect();
+        }
     }
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    Serial.printf("[MQTT] Message on topic: %s\n", topic);
+    Serial.printf("[MQTT] Message on topic: %s (%d bytes)\n", topic, length);
 
+    // Strip prefix to get relative topic
+    size_t prefixLen = strlen(settings.mqttPrefix);
+    if (strncmp(topic, settings.mqttPrefix, prefixLen) != 0) {
+        Serial.println("[MQTT] Ignoring message outside prefix");
+        return;
+    }
+    const char* relativeTopic = topic + prefixLen;
+
+    // Ignore outgoing-only topics
+    if (strcmp(relativeTopic, MQTT_TOPIC_STATS) == 0 ||
+        strcmp(relativeTopic, MQTT_TOPIC_STATUS) == 0) {
+        return;
+    }
+
+    // Topics that need no JSON payload
+    if (strcmp(relativeTopic, MQTT_TOPIC_DISMISS) == 0) {
+        mqttHandleDismiss();
+        return;
+    }
+    if (strcmp(relativeTopic, MQTT_TOPIC_REBOOT) == 0) {
+        mqttHandleReboot();
+        return;
+    }
+
+    // Parse JSON payload for all other topics
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, length);
-
     if (error) {
         Serial.printf("[MQTT] JSON parse error: %s\n", error.c_str());
         return;
+    }
+    JsonObject obj = doc.as<JsonObject>();
+
+    // Route to handler based on relative topic
+    if (strcmp(relativeTopic, MQTT_TOPIC_NOTIFY) == 0) {
+        mqttHandleNotify(obj);
+    } else if (strcmp(relativeTopic, MQTT_TOPIC_BRIGHTNESS) == 0) {
+        mqttHandleBrightness(obj);
+    } else if (strcmp(relativeTopic, MQTT_TOPIC_SETTINGS) == 0) {
+        mqttHandleSettings(obj);
+    } else if (strcmp(relativeTopic, MQTT_TOPIC_WEATHER) == 0) {
+        mqttHandleWeather(obj);
+    } else if (strcmp(relativeTopic, MQTT_TOPIC_CUSTOM) == 0) {
+        // /custom with name in JSON body
+        const char* name = obj["name"] | "";
+        if (strlen(name) > 0) {
+            if (obj["delete"] | false) {
+                mqttHandleCustomDelete(name);
+            } else {
+                mqttHandleCustom(name, obj);
+            }
+        } else {
+            Serial.println("[MQTT] /custom missing name");
+        }
+    } else if (strncmp(relativeTopic, MQTT_TOPIC_CUSTOM "/", strlen(MQTT_TOPIC_CUSTOM) + 1) == 0) {
+        // /custom/{name}
+        const char* name = relativeTopic + strlen(MQTT_TOPIC_CUSTOM) + 1;
+        if (strlen(name) > 0) {
+            if (obj["delete"] | false) {
+                mqttHandleCustomDelete(name);
+            } else {
+                mqttHandleCustom(name, obj);
+            }
+        }
+    } else if (strcmp(relativeTopic, MQTT_TOPIC_TRACKER) == 0) {
+        // /tracker with name in JSON body
+        const char* name = obj["name"] | "";
+        if (strlen(name) > 0) {
+            if (obj["delete"] | false) {
+                mqttHandleTrackerDelete(name);
+            } else {
+                mqttHandleTracker(name, obj);
+            }
+        } else {
+            Serial.println("[MQTT] /tracker missing name");
+        }
+    } else if (strncmp(relativeTopic, MQTT_TOPIC_TRACKER "/", strlen(MQTT_TOPIC_TRACKER) + 1) == 0) {
+        // /tracker/{name}
+        const char* name = relativeTopic + strlen(MQTT_TOPIC_TRACKER) + 1;
+        if (strlen(name) > 0) {
+            if (obj["delete"] | false) {
+                mqttHandleTrackerDelete(name);
+            } else {
+                mqttHandleTracker(name, obj);
+            }
+        }
+    } else if (strncmp(relativeTopic, MQTT_TOPIC_INDICATOR, strlen(MQTT_TOPIC_INDICATOR)) == 0) {
+        // /indicator1, /indicator2, /indicator3
+        const char* indexStr = relativeTopic + strlen(MQTT_TOPIC_INDICATOR);
+        int idx = atoi(indexStr);
+        if (idx >= 1 && idx <= NUM_INDICATORS) {
+            mqttHandleIndicator(idx - 1, obj);
+        } else {
+            Serial.printf("[MQTT] Invalid indicator index: %s\n", indexStr);
+        }
+    } else {
+        Serial.printf("[MQTT] Unknown topic: %s\n", relativeTopic);
     }
 }
 
@@ -4185,9 +4361,311 @@ void mqttPublishStats() {
     doc["freeHeap"] = ESP.getFreeHeap();
     doc["brightness"] = currentBrightness;
     doc["rssi"] = WiFi.RSSI();
+    doc["appCount"] = appCount;
+    doc["version"] = VERSION_STRING;
+
+    if (currentAppIndex >= 0 && currentAppIndex < appCount) {
+        doc["currentApp"] = apps[currentAppIndex].id;
+    }
+
+    char fullTopic[96];
+    snprintf(fullTopic, sizeof(fullTopic), "%s%s", settings.mqttPrefix, MQTT_TOPIC_STATS);
 
     String payload;
     serializeJson(doc, payload);
+    mqttClient.publish(fullTopic, payload.c_str());
+}
+
+// --- MQTT Topic Handlers ---
+
+void mqttHandleBrightness(JsonObject& doc) {
+    if (doc["brightness"].isNull()) {
+        Serial.println("[MQTT] /brightness missing brightness value");
+        return;
+    }
+
+    uint8_t brightness = doc["brightness"].as<uint8_t>();
+    displaySetBrightness(brightness);
+    settings.brightness = brightness;
+    saveSettings();
+    Serial.printf("[MQTT] Brightness set to %d\n", brightness);
+}
+
+void mqttHandleCustom(const char* name, JsonObject& doc) {
+    // Check for multi-zone format
+    JsonArray zonesArray = doc["zones"].as<JsonArray>();
+    bool isMultiZone = !zonesArray.isNull() && zonesArray.size() > 0;
+
+    if (isMultiZone) {
+        uint8_t zoneCount = zonesArray.size();
+        if (zoneCount == 1 || zoneCount > MAX_ZONES) {
+            Serial.println("[MQTT] /custom zones array must have 2, 3, or 4 elements");
+            return;
+        }
+    }
+
+    // For multi-zone, zone 0 provides the main fields; for single-zone, use top-level fields
+    const char* icon = isMultiZone ? "" : (doc["icon"] | "");
+    uint32_t textColor = isMultiZone ? 0xFFFFFF : parseColorValue(doc["color"], 0xFFFFFF);
+
+    // Parse text field (may be string, {text,color} object, or [{t,c},...] array)
+    char parsedText[64] = "";
+    TextSegment textSegs[MAX_TEXT_SEGMENTS];
+    uint8_t textSegCount = 0;
+    if (!isMultiZone) {
+        parseTextFieldWithSegments(doc["text"], parsedText, sizeof(parsedText),
+                                   textSegs, &textSegCount, textColor);
+    }
+
+    uint16_t duration = doc["duration"] | settings.defaultDuration;
+    uint32_t lifetime = doc["lifetime"] | 0;
+    int8_t priority = doc["priority"] | 0;
+
+    int8_t result = appAdd(name, parsedText, icon, textColor,
+                           duration, lifetime, priority, false);
+
+    if (result >= 0) {
+        if (!isMultiZone) {
+            // Copy text segments
+            memcpy(apps[result].textSegments, textSegs, sizeof(textSegs));
+            apps[result].textSegmentCount = textSegCount;
+            // Parse label field
+            parseTextFieldWithSegments(doc["label"], apps[result].label,
+                                       sizeof(apps[result].label),
+                                       apps[result].labelSegments,
+                                       &apps[result].labelSegmentCount, textColor);
+        }
+        // Apply multi-zone data if present
+        if (isMultiZone) {
+            appSetZones(result, zonesArray);
+        }
+        Serial.printf("[MQTT] Custom app '%s' created/updated\n", name);
+    } else {
+        Serial.printf("[MQTT] Failed to add custom app '%s'\n", name);
+    }
+}
+
+void mqttHandleCustomDelete(const char* name) {
+    if (appRemove(name)) {
+        Serial.printf("[MQTT] Custom app '%s' deleted\n", name);
+    } else {
+        Serial.printf("[MQTT] Custom app '%s' not found or is system app\n", name);
+    }
+}
+
+void mqttHandleNotify(JsonObject& doc) {
+    const char* text = doc["text"] | "";
+    if (strlen(text) == 0) {
+        Serial.println("[MQTT] /notify missing text");
+        return;
+    }
+
+    const char* id = doc["id"] | "";
+    const char* icon = doc["icon"] | "";
+    uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
+    uint32_t bgColor = parseColorValue(doc["background"], 0x000000);
+    uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_NOTIF_DURATION;
+    bool hold = doc["hold"] | false;
+    bool urgent = doc["urgent"] | false;
+    bool stack = doc["stack"] | true;
+
+    int8_t slot = notifAdd(id, text, icon, textColor, bgColor,
+                           duration, hold, urgent, stack);
+
+    if (slot >= 0) {
+        Serial.printf("[MQTT] Notification added: '%s'\n", text);
+    } else {
+        Serial.println("[MQTT] Notification queue full");
+    }
+}
+
+void mqttHandleDismiss() {
+    if (notifDismiss()) {
+        resetNotifScrollState();
+        Serial.println("[MQTT] Notification dismissed");
+    } else {
+        Serial.println("[MQTT] No active notification to dismiss");
+    }
+}
+
+void mqttHandleIndicator(uint8_t index, JsonObject& doc) {
+    if (index >= NUM_INDICATORS) return;
+
+    // Parse mode string
+    const char* modeStr = doc["mode"] | "";
+    IndicatorMode mode = INDICATOR_OFF;
+
+    if (strlen(modeStr) > 0) {
+        if (strcmp(modeStr, "solid") == 0) mode = INDICATOR_SOLID;
+        else if (strcmp(modeStr, "blink") == 0) mode = INDICATOR_BLINK;
+        else if (strcmp(modeStr, "fade") == 0) mode = INDICATOR_FADE;
+        else if (strcmp(modeStr, "off") == 0) mode = INDICATOR_OFF;
+        else {
+            Serial.printf("[MQTT] Invalid indicator mode: %s\n", modeStr);
+            return;
+        }
+    } else if (!doc["color"].isNull()) {
+        // Default to solid if color provided but no mode
+        mode = INDICATOR_SOLID;
+    }
+
+    if (mode == INDICATOR_OFF) {
+        indicatorOff(index);
+        saveSettings();
+        Serial.printf("[MQTT] Indicator %d turned off\n", index + 1);
+        return;
+    }
+
+    uint32_t color = parseColorValue(doc["color"], indicators[index].color);
+    uint16_t blinkInterval = doc["blinkInterval"] | (uint16_t)INDICATOR_BLINK_INTERVAL;
+    uint16_t fadePeriod = doc["fadePeriod"] | (uint16_t)INDICATOR_FADE_PERIOD;
+
+    indicatorSet(index, mode, color, blinkInterval, fadePeriod);
+    saveSettings();
+
+    Serial.printf("[MQTT] Indicator %d set: mode=%s color=0x%06X\n",
+                  index + 1, modeStr[0] ? modeStr : "solid", color);
+}
+
+void mqttHandleWeather(JsonObject& doc) {
+    // Parse current weather
+    if (!doc["current"].is<JsonObject>()) {
+        Serial.println("[MQTT] /weather missing 'current' object");
+        return;
+    }
+
+    JsonObject current = doc["current"];
+    strlcpy(weatherData.currentIcon, current["icon"] | "", sizeof(weatherData.currentIcon));
+    weatherData.currentTemp = current["temp"] | 0;
+    weatherData.currentTempMin = current["temp_min"] | 0;
+    weatherData.currentTempMax = current["temp_max"] | 0;
+    weatherData.currentHumidity = current["humidity"] | 0;
+
+    // Parse forecast (optional, up to MAX_FORECAST_DAYS days)
+    if (doc["forecast"].is<JsonArray>()) {
+        JsonArray forecastArr = doc["forecast"];
+        int forecastSize = min((int)forecastArr.size(), (int)MAX_FORECAST_DAYS);
+        for (int i = 0; i < forecastSize; i++) {
+            JsonObject fc = forecastArr[i];
+            strlcpy(weatherData.forecast[i].icon, fc["icon"] | "", sizeof(weatherData.forecast[i].icon));
+            weatherData.forecast[i].tempMin = fc["temp_min"] | 0;
+            weatherData.forecast[i].tempMax = fc["temp_max"] | 0;
+            strlcpy(weatherData.forecast[i].dayName, fc["day"] | "", sizeof(weatherData.forecast[i].dayName));
+        }
+        weatherData.forecastCount = forecastSize;
+    } else {
+        weatherData.forecastCount = 0;
+    }
+
+    // Reset forecast pagination on new data
+    forecastPage = 0;
+    lastForecastPageSwitch = millis();
+
+    weatherData.lastUpdate = millis();
+    weatherData.valid = true;
+
+    Serial.printf("[MQTT] Weather updated: %d C, %d%% humidity\n",
+                  weatherData.currentTemp, weatherData.currentHumidity);
+}
+
+void mqttHandleTracker(const char* name, JsonObject& doc) {
+    // Allocate or find existing tracker
+    TrackerData* tracker = trackerAllocate(name);
+    if (!tracker) {
+        Serial.printf("[MQTT] No tracker slot available for '%s'\n", name);
+        return;
+    }
+
+    // Parse fields
+    if (!doc["symbol"].isNull()) {
+        strlcpy(tracker->symbol, doc["symbol"] | "", sizeof(tracker->symbol));
+    }
+    if (!doc["icon"].isNull()) {
+        strlcpy(tracker->icon, doc["icon"] | "", sizeof(tracker->icon));
+    }
+    if (!doc["currency"].isNull()) {
+        strlcpy(tracker->currencySymbol, doc["currency"] | "", sizeof(tracker->currencySymbol));
+    }
+    if (!doc["value"].isNull()) {
+        tracker->currentValue = doc["value"].as<float>();
+    }
+    if (!doc["change"].isNull()) {
+        tracker->changePercent = doc["change"].as<float>();
+    }
+    if (!doc["bottomText"].isNull()) {
+        strlcpy(tracker->bottomText, doc["bottomText"] | "", sizeof(tracker->bottomText));
+    }
+
+    tracker->symbolColor = parseColorValue(doc["symbolColor"], tracker->symbolColor);
+    tracker->sparklineColor = parseColorValue(doc["sparklineColor"], tracker->sparklineColor);
+
+    // Parse sparkline data (float array -> scaled uint16)
+    if (doc["sparkline"].is<JsonArray>()) {
+        JsonArray sparkArr = doc["sparkline"];
+        uint8_t count = min((int)sparkArr.size(), (int)MAX_SPARKLINE_POINTS);
+
+        if (count >= 2) {
+            float minVal = sparkArr[0].as<float>();
+            float maxVal = minVal;
+            for (uint8_t i = 1; i < count; i++) {
+                float v = sparkArr[i].as<float>();
+                if (v < minVal) minVal = v;
+                if (v > maxVal) maxVal = v;
+            }
+
+            float range = maxVal - minVal;
+            if (range < 0.0001f) range = 1.0f;
+
+            for (uint8_t i = 0; i < count; i++) {
+                float normalized = (sparkArr[i].as<float>() - minVal) / range;
+                tracker->sparkline[i] = (uint16_t)(normalized * 65535.0f);
+            }
+            tracker->sparklineCount = count;
+        }
+    }
+
+    tracker->lastUpdate = millis();
+
+    // Register/update app in rotation
+    char appId[32];
+    snprintf(appId, sizeof(appId), "%s%s", TRACKER_ID_PREFIX, name);
+    uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
+    appAdd(appId, tracker->symbol, tracker->icon, 0xFFFFFF,
+           duration, 0, 0, false);
+
+    Serial.printf("[MQTT] Tracker updated: %s (%s = %.2f)\n",
+                  name, tracker->symbol, tracker->currentValue);
+}
+
+void mqttHandleTrackerDelete(const char* name) {
+    if (trackerRemove(name)) {
+        Serial.printf("[MQTT] Tracker '%s' deleted\n", name);
+    } else {
+        Serial.printf("[MQTT] Tracker '%s' not found\n", name);
+    }
+}
+
+void mqttHandleSettings(JsonObject& doc) {
+    if (!doc["brightness"].isNull()) {
+        settings.brightness = doc["brightness"].as<uint8_t>();
+        displaySetBrightness(settings.brightness);
+    }
+    if (!doc["autoRotate"].isNull()) {
+        settings.autoRotate = doc["autoRotate"].as<bool>();
+        appRotationEnabled = settings.autoRotate;
+    }
+    if (!doc["defaultDuration"].isNull()) {
+        settings.defaultDuration = doc["defaultDuration"].as<uint16_t>();
+    }
+
+    saveSettings();
+    Serial.println("[MQTT] Settings updated");
+}
+
+void mqttHandleReboot() {
+    Serial.println("[MQTT] Reboot requested");
+    pendingReboot = true;
+    rebootRequestTime = millis();
 }
 
 // ============================================================================

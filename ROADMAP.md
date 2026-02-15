@@ -77,22 +77,6 @@ This document details the development phases of the ESP32-PixelCast project, fro
 - [x] Add/remove/update apps
 - [x] Lifetime management (automatic expiration)
 
-```cpp
-struct AppItem {
-    char id[24];
-    char text[64];
-    char icon[32];
-    uint32_t textColor;
-    uint32_t backgroundColor;
-    uint16_t duration;      // Display duration (ms)
-    uint32_t lifetime;      // Expiration (ms), 0 = permanent
-    uint32_t createdAt;     // Creation timestamp
-    int8_t priority;        // -10 to 10
-    bool active;
-    bool isSystem;          // System apps cannot be deleted
-};
-```
-
 ### 2.2 Automatic Rotation
 - [x] Rotation timer
 - [ ] Transitions between apps (cut only for now)
@@ -110,10 +94,14 @@ struct AppItem {
 - [x] **Date**: Current date (multiple formats)
 - [x] **IP**: IP display at startup
 
+### 2.5 Persistence
+- [x] `saveApps()` / `loadApps()` for custom apps in LittleFS
+- [ ] Enable loadApps() at startup (currently disabled)
+
 **Deliverables:**
 - [x] Working app rotation
 - [x] NTP clock
-- [ ] Apps persistent after reboot (custom apps)
+- [x] Persistence mechanism implemented (activation pending)
 
 ---
 
@@ -150,44 +138,62 @@ struct AppItem {
 
 ---
 
-## Phase 3: Notifications
+## Phase 2c: Advanced Display Features ✅
 
-### 3.1 Notification Manager
-- [ ] FIFO notification queue (max 10)
-- [ ] Priorities (normal, urgent)
-- [ ] Stack mode vs replace
-- [ ] Hold mode (until acknowledgment)
+### 2c.1 Multi-Zone Layouts
+- [x] `AppZone` structure (text, icon, textColor per zone)
+- [x] Up to 4 zones per app (`MAX_ZONES`)
+- [x] Layout auto-inferred from zone count (2=dual rows, 3=top+2cols, 4=quad)
+- [x] `POST /api/custom` accepts `zones` array (backward compatible)
+- [x] Zone rendering: full-width = icon left + text right; half-width = icon top + text below
+- [x] Separator lines between zones (dark gray)
+- [x] Persistence support for multi-zone apps in saveApps/loadApps
+- [x] `GET /api/apps` returns zoneCount + zones data
 
-```cpp
-struct Notification {
-    String text;
-    String icon;
-    uint32_t color;
-    uint16_t duration;
-    bool urgent;        // Interrupts immediately
-    bool hold;          // Stays displayed until dismiss
-    bool stack;         // Stacks with others
-};
-```
-
-### 3.2 Notification Display
-- [ ] Interrupt app flow
-- [ ] Entry animation (slide down)
-- [ ] Return to apps after expiration
-- [ ] Dismiss via API
-
-### 3.3 Visual Indicators
-- [ ] 3 zones of 4x4 pixels (corners)
-- [ ] Fixed color, blinking, fading
-- [ ] Independent from main content
+### 2c.2 Colored Text Segments
+- [x] `TextSegment` struct (offset + color), up to 8 segments per text field
+- [x] Polymorphic API: plain string, `{text, color}` object, or `[{t,c},...]` array
+- [x] `parseTextFieldWithSegments()` / `serializeTextField()` for parse/serialize
+- [x] `printTextWithSegments()` for default font with color switching
+- [x] `printLabelWithSegments()` for TomThumb font with dimming support
+- [x] Applied to both AppItem and AppZone text/label fields
 
 **Deliverables:**
-- Working push notifications
-- 3 configurable indicators
+- [x] Multi-zone dashboard layouts
+- [x] Per-segment colored text in apps and zones
 
 ---
 
-## Phase 4: REST API 🔄 (Partial)
+## Phase 3: Notifications ✅
+
+### 3.1 Notification Manager
+- [x] FIFO notification queue (max 10)
+- [x] Priorities (normal, urgent)
+- [x] Stack mode vs replace
+- [x] Hold mode (until acknowledgment)
+
+### 3.2 Notification Display
+- [x] Interrupt app flow
+- [x] Horizontal separator layout
+- [ ] Entry animation (slide down)
+- [x] Return to apps after expiration
+- [x] Dismiss via API (`POST /api/notify/dismiss`)
+- [x] List active notifications (`GET /api/notify/list`)
+
+### 3.3 Visual Indicators
+- [x] 3 indicator zones (corners)
+- [x] Solid color, blinking, fading modes
+- [x] Configurable blink interval and fade period
+- [x] Independent from main content
+- [x] REST API: `POST /api/indicator{1-3}`, `DELETE /api/indicator{1-3}`
+
+**Deliverables:**
+- [x] Working push notifications with queue
+- [x] 3 configurable indicators with multiple modes
+
+---
+
+## Phase 4: REST API ✅
 
 ### 4.1 Async Web Server
 - [x] ESPAsyncWebServer setup
@@ -198,11 +204,13 @@ struct Notification {
 
 | Method | Endpoint | Description | Status |
 |--------|----------|-------------|--------|
-| POST | `/api/custom` | Create/Update an app | ✅ |
+| POST | `/api/custom` | Create/Update an app (single or multi-zone) | ✅ |
 | DELETE | `/api/custom` | Delete an app | ✅ |
-| POST | `/api/notify` | Send notification | ❌ |
-| POST | `/api/dismiss` | Acknowledge notification | ❌ |
-| POST | `/api/indicator{1-3}` | Control indicator | ❌ |
+| POST | `/api/notify` | Send notification | ✅ |
+| POST | `/api/notify/dismiss` | Dismiss current notification | ✅ |
+| GET | `/api/notify/list` | List active notifications | ✅ |
+| POST | `/api/indicator{1-3}` | Control indicator | ✅ |
+| DELETE | `/api/indicator{1-3}` | Turn off indicator | ✅ |
 | GET | `/api/apps` | List active apps | ✅ |
 | GET | `/api/stats` | System statistics | ✅ |
 | POST | `/api/settings` | Modify settings | ✅ |
@@ -215,6 +223,8 @@ struct Notification {
 | GET | `/api/tracker` | Read single tracker data | ✅ |
 | GET | `/api/trackers` | List all active trackers | ✅ |
 | DELETE | `/api/tracker` | Remove tracker from rotation | ✅ |
+| POST | `/api/icons` | Upload icon file | ✅ |
+| POST | `/api/lametric` | Download LaMetric icon by ID | ✅ |
 
 > **Note**: Avoid using wildcard patterns (`/api/*`) with HTTP_OPTIONS in ESPAsyncWebServer as it interferes with POST handlers.
 
@@ -224,8 +234,8 @@ struct Notification {
 - [x] Standardized error responses
 
 **Deliverables:**
-- Complete and documented REST API
-- Tests with curl/Postman
+- [x] Complete and documented REST API
+- [x] Bruno collections for testing
 
 ---
 
@@ -293,9 +303,9 @@ pixelcast/
 - [ ] Pulse
 
 **Deliverables:**
-- Working icons and GIFs
-- Upload via web
-- Basic effects
+- [x] Working icons with cache and upload
+- [ ] Animated GIF support
+- [ ] Basic effects
 
 ---
 
@@ -338,6 +348,7 @@ pixelcast/
 
 ### 8.1 OTA Updates
 - [x] ArduinoOTA for local updates (pio run -e ota -t upload)
+- [x] OTA display screen with progress indicator
 - [ ] HTTP OTA for web updates (ElegantOTA)
 - [ ] Rollback on failure
 
@@ -434,7 +445,7 @@ Total SRAM:     ~320 KB
 - Application:  ~100 KB free
 
 Application breakdown:
-- App queue:    ~8 KB (16 apps × 512 bytes)
+- App queue:    ~8 KB (16 apps x 512 bytes)
 - Notif queue:  ~2 KB
 - JSON buffer:  ~4 KB
 - Icon cache:   ~16 KB
@@ -442,6 +453,10 @@ Application breakdown:
 - Web server:   ~8 KB
 - Misc:         ~30 KB
 ```
+
+### Current Build Stats (February 2026)
+- RAM usage: ~37.7% (123 KB / 327 KB)
+- Flash usage: ~78.5% (1.54 MB / 1.96 MB)
 
 ### Development Priorities
 
@@ -487,7 +502,7 @@ Tested with:
 
 ### Power Supply Requirements
 
-⚠️ **IMPORTANT**: The HUB75 panel requires adequate power supply!
+**IMPORTANT**: The HUB75 panel requires adequate power supply!
 
 | Power Source | Current | Result |
 |--------------|---------|--------|
@@ -506,4 +521,4 @@ A Bruno collection is available in `api/` folder for testing all REST endpoints.
 
 ---
 
-*Last updated: February 14, 2026*
+*Last updated: February 15, 2026*

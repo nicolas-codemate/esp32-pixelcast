@@ -1,0 +1,50 @@
+# Icon management schemas
+
+IconInfo:
+  type: object
+  properties:
+    name:
+      type: string
+      description: Icon name (without extension).
+    filename:
+      type: string
+      description: Full filename with extension.
+    size:
+      type: integer
+      description: File size in bytes.
+
+IconListResponse:
+  type: object
+  properties:
+    icons:
+      type: array
+      items:
+        $ref: "#/IconInfo"
+    count:
+      type: integer
+      description: Number of icons.
+    storage:
+      type: object
+      properties:
+        used:
+          type: integer
+          description: Used filesystem space in bytes.
+        total:
+          type: integer
+          description: Total filesystem size in bytes.
+
+LaMetricRequest:
+  type: object
+  required: [id]
+  properties:
+    id:
+      type: integer
+      description: LaMetric icon ID to download.
+      examples:
+        - 2867
+    name:
+      type: string
+      description: >
+        Local name to save the icon as. Defaults to the icon ID if omitted.
+      examples:
+        - "bitcoin"

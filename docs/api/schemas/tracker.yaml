@@ -1,0 +1,131 @@
+# Tracker schemas
+
+TrackerUpdateRequest:
+  type: object
+  properties:
+    name:
+      type: string
+      description: >
+        Tracker identifier. Can also be passed as `?name=` query parameter.
+    symbol:
+      type: string
+      maxLength: 7
+      description: Display symbol (e.g. "BTC", "ETH").
+      examples:
+        - "BTC"
+    icon:
+      type: string
+      description: Icon name from filesystem.
+      examples:
+        - "bitcoin"
+    currency:
+      type: string
+      maxLength: 7
+      description: Currency label (e.g. "USD", "EUR").
+      examples:
+        - "USD"
+    value:
+      type: number
+      format: float
+      description: Current price/value.
+      examples:
+        - 98452.30
+    change:
+      type: number
+      format: float
+      description: Change percentage (positive or negative).
+      examples:
+        - 2.14
+    sparkline:
+      type: array
+      items:
+        type: number
+        format: float
+      maxItems: 24
+      description: >
+        Up to 24 data points for the sparkline chart. Values are auto-scaled
+        to fit the chart area (min/max normalization to uint16 0-65535).
+      examples:
+        - [92100, 89300, 93200, 91800, 95400, 94100, 97600, 96200, 98452]
+    symbolColor:
+      $ref: "common.yaml#/Color"
+    sparklineColor:
+      $ref: "common.yaml#/Color"
+    bottomText:
+      type: string
+      maxLength: 31
+      description: Optional footer text displayed at the bottom.
+      examples:
+        - "Vol 24h: 42B"
+    duration:
+      type: integer
+      description: Display duration in milliseconds.
+      default: 10000
+
+TrackerResponse:
+  type: object
+  properties:
+    name:
+      type: string
+    symbol:
+      type: string
+    icon:
+      type: string
+    currency:
+      type: string
+    value:
+      type: number
+      format: float
+    change:
+      type: number
+      format: float
+    symbolColor:
+      type: integer
+      description: Color as unsigned 32-bit integer (0xRRGGBB).
+    sparklineColor:
+      type: integer
+      description: Color as unsigned 32-bit integer (0xRRGGBB).
+    bottomText:
+      type: string
+    age:
+      type: integer
+      description: Seconds since last update.
+    stale:
+      type: boolean
+      description: >
+        True if data is older than 1 hour. Display dims colors and shows
+        a "STALE" badge.
+    sparkline:
+      type: array
+      items:
+        type: integer
+      description: Sparkline data as scaled uint16 values (0-65535).
+
+TrackerSummary:
+  type: object
+  properties:
+    name:
+      type: string
+    symbol:
+      type: string
+    value:
+      type: number
+      format: float
+    change:
+      type: number
+      format: float
+    age:
+      type: integer
+    stale:
+      type: boolean
+
+TrackerListResponse:
+  type: object
+  properties:
+    trackers:
+      type: array
+      items:
+        $ref: "#/TrackerSummary"
+    count:
+      type: integer
+      description: Total number of active trackers.

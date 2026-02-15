@@ -281,6 +281,7 @@ esp32-pixelcast/
 │   ├── icons/                # PNG/GIF icons
 │   ├── gifs/                 # Animations
 │   └── config/               # Runtime settings (settings.json)
+├── docs/api/                 # API specs (OpenAPI 3.1 + AsyncAPI 3.0)
 ├── api/                      # Bruno collection for API testing
 ├── platformio.ini            # PlatformIO configuration
 ├── ROADMAP.md                # Development roadmap

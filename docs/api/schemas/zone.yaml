@@ -1,0 +1,19 @@
+# Zone object used in multi-zone layouts
+
+Zone:
+  type: object
+  properties:
+    text:
+      $ref: "common.yaml#/PolymorphicTextField"
+    icon:
+      type: string
+      description: Icon name (without extension) from the device filesystem.
+      examples:
+        - "thermo"
+    label:
+      $ref: "common.yaml#/PolymorphicTextField"
+    color:
+      $ref: "common.yaml#/Color"
+  description: >
+    A single zone in a multi-zone layout. Full-width zones (>=48px) display
+    icon left + text right. Half-width zones display icon top + text below.

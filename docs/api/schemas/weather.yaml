@@ -1,0 +1,85 @@
+# Weather schemas
+
+ForecastDay:
+  type: object
+  required: [day, icon, temp_min, temp_max]
+  properties:
+    day:
+      type: string
+      maxLength: 3
+      description: "Day abbreviation (3 chars, e.g. \"LUN\", \"MON\")."
+      examples:
+        - "LUN"
+    icon:
+      type: string
+      description: >
+        Weather icon name. Built-in PROGMEM icons: w_clear_day, w_clear_night,
+        w_partly_day, w_partly_night, w_cloudy, w_rain, w_heavy_rain,
+        w_thunder, w_snow, w_fog. Filesystem icons also accepted.
+      examples:
+        - "w_rain"
+    temp_min:
+      type: integer
+      description: Minimum temperature.
+    temp_max:
+      type: integer
+      description: Maximum temperature.
+
+WeatherCurrent:
+  type: object
+  required: [icon, temp]
+  properties:
+    icon:
+      type: string
+      description: Current weather icon name.
+      examples:
+        - "w_clear_day"
+    temp:
+      type: integer
+      description: Current temperature.
+    temp_min:
+      type: integer
+      description: "Today's minimum temperature."
+    temp_max:
+      type: integer
+      description: "Today's maximum temperature."
+    humidity:
+      type: integer
+      minimum: 0
+      maximum: 100
+      description: Humidity percentage.
+
+WeatherUpdateRequest:
+  type: object
+  required: [current]
+  properties:
+    current:
+      $ref: "#/WeatherCurrent"
+    forecast:
+      type: array
+      items:
+        $ref: "#/ForecastDay"
+      maxItems: 7
+      description: >
+        Forecast days (up to 7). Displayed in pages of 3 columns with
+        automatic scrolling. Page timing is proportional to app duration.
+
+WeatherResponse:
+  type: object
+  properties:
+    valid:
+      type: boolean
+      description: Whether weather data has been received.
+    age:
+      type: integer
+      description: Seconds since last update.
+    stale:
+      type: boolean
+      description: >
+        True if data is older than 1 hour. Display falls back to simple clock.
+    current:
+      $ref: "#/WeatherCurrent"
+    forecast:
+      type: array
+      items:
+        $ref: "#/ForecastDay"

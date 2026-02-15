@@ -1,0 +1,840 @@
+openapi: 3.1.0
+info:
+  title: ESP32-PixelCast REST API
+  version: 0.1.0
+  description: >
+    REST API for controlling a HUB75 LED matrix panel (64x64) running on
+    ESP32 Trinity. Manages custom apps, notifications, weather, trackers,
+    indicators, icons, and system settings.
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: http://pixelcast.local/api
+    description: mDNS (default)
+  - url: http://{deviceIP}/api
+    description: Direct IP
+    variables:
+      deviceIP:
+        default: 192.168.1.100
+
+tags:
+  - name: System
+    description: Device info, settings, brightness, reboot.
+  - name: Apps
+    description: Custom app management and rotation.
+  - name: Weather
+    description: WeatherClock system app.
+  - name: Tracker
+    description: Financial/metric trackers (crypto, stocks).
+  - name: Notifications
+    description: Notification queue management.
+  - name: Indicators
+    description: Corner indicator LEDs (1-3).
+  - name: Icons
+    description: Icon filesystem management and LaMetric downloads.
+
+paths:
+  # ===========================================================================
+  # System
+  # ===========================================================================
+  /stats:
+    get:
+      operationId: getStats
+      summary: Get system statistics
+      tags: [System]
+      responses:
+        "200":
+          description: System statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/stats.yaml#/StatsResponse"
+
+  /settings:
+    get:
+      operationId: getSettings
+      summary: Get current settings
+      tags: [System]
+      responses:
+        "200":
+          description: Current device settings.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/settings.yaml#/SettingsResponse"
+    post:
+      operationId: updateSettings
+      summary: Update settings
+      description: >
+        Partial update: only provided fields are changed.
+      tags: [System]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/settings.yaml#/SettingsUpdateRequest"
+      responses:
+        "200":
+          description: Settings updated.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Invalid JSON.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  /brightness:
+    post:
+      operationId: setBrightness
+      summary: Set display brightness
+      tags: [System]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [brightness]
+              properties:
+                brightness:
+                  type: integer
+                  minimum: 0
+                  maximum: 255
+                  description: Brightness value (0-255).
+      responses:
+        "200":
+          description: Brightness updated.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Missing brightness value.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  /reboot:
+    post:
+      operationId: reboot
+      summary: Reboot device
+      description: >
+        Triggers a deferred reboot. The response is sent before the
+        device restarts.
+      tags: [System]
+      responses:
+        "200":
+          description: Reboot initiated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  message:
+                    type: string
+                    examples:
+                      - "Rebooting..."
+
+  # ===========================================================================
+  # Apps
+  # ===========================================================================
+  /apps:
+    get:
+      operationId: listApps
+      summary: List all apps in rotation
+      tags: [Apps]
+      responses:
+        "200":
+          description: List of active apps.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/custom-app.yaml#/AppListResponse"
+
+  /custom:
+    post:
+      operationId: createOrUpdateApp
+      summary: Create or update a custom app
+      description: >
+        Supports single-zone (text/icon/color) or multi-zone (zones array)
+        layouts. App name can be in query param or JSON body.
+      tags: [Apps]
+      parameters:
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: App name. Also accepted in JSON body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/custom-app.yaml#/CustomAppRequest"
+            examples:
+              singleZone:
+                summary: Single-zone app
+                value:
+                  text: "Hello World"
+                  icon: "smiley"
+                  color: "#FF8800"
+                  duration: 10000
+              multiZone:
+                summary: Multi-zone dashboard
+                value:
+                  zones:
+                    - text: "22.5C"
+                      icon: "thermo"
+                      label: "Salon"
+                      color: "#FF8800"
+                    - text: "58%"
+                      icon: "humidity"
+                      label: "Humidity"
+                      color: "#00D4FF"
+                  duration: 10000
+              coloredSegments:
+                summary: Colored text segments
+                value:
+                  text:
+                    - t: "22.5"
+                      c: "#FF8800"
+                    - t: "C"
+                      c: "#666666"
+                  icon: "thermo"
+      responses:
+        "200":
+          description: App created or updated.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Missing name or invalid zones array.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "500":
+          description: Failed to add app (no slot available).
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+    delete:
+      operationId: deleteApp
+      summary: Delete a custom app
+      tags: [Apps]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: App name to delete.
+      responses:
+        "200":
+          description: App deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Missing app name.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "404":
+          description: App not found or is a system app.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  # ===========================================================================
+  # Weather
+  # ===========================================================================
+  /weather:
+    get:
+      operationId: getWeather
+      summary: Get current weather data
+      tags: [Weather]
+      responses:
+        "200":
+          description: Weather data (or valid=false if not yet received).
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/weather.yaml#/WeatherResponse"
+    post:
+      operationId: updateWeather
+      summary: Update weather data
+      description: >
+        Push current conditions and optional 7-day forecast. The WeatherClock
+        system app displays this data and falls back to a simple clock when
+        data is stale (>1 hour).
+      tags: [Weather]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/weather.yaml#/WeatherUpdateRequest"
+            examples:
+              threeDayForecast:
+                summary: Current + 3-day forecast
+                value:
+                  current:
+                    icon: "w_clear_day"
+                    temp: 22
+                    temp_min: 16
+                    temp_max: 29
+                    humidity: 50
+                  forecast:
+                    - day: "MON"
+                      icon: "w_partly_day"
+                      temp_min: 14
+                      temp_max: 23
+                    - day: "TUE"
+                      icon: "w_rain"
+                      temp_min: 10
+                      temp_max: 17
+                    - day: "WED"
+                      icon: "w_snow"
+                      temp_min: -2
+                      temp_max: 3
+      responses:
+        "200":
+          description: Weather data updated.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Missing `current` object.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  # ===========================================================================
+  # Tracker
+  # ===========================================================================
+  /trackers:
+    get:
+      operationId: listTrackers
+      summary: List all active trackers
+      tags: [Tracker]
+      responses:
+        "200":
+          description: List of tracker summaries.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/tracker.yaml#/TrackerListResponse"
+
+  /tracker:
+    get:
+      operationId: getTracker
+      summary: Get single tracker data
+      tags: [Tracker]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Tracker identifier (e.g. "btc").
+      responses:
+        "200":
+          description: Tracker data.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/tracker.yaml#/TrackerResponse"
+        "400":
+          description: Missing tracker name.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "404":
+          description: Tracker not found.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+    post:
+      operationId: createOrUpdateTracker
+      summary: Create or update a tracker
+      description: >
+        Push tracker data (price, change%, sparkline). The tracker is
+        automatically registered as an app in the rotation with ID
+        `tracker_{name}`. Name can be in query param or JSON body.
+      tags: [Tracker]
+      parameters:
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: Tracker name. Also accepted in JSON body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/tracker.yaml#/TrackerUpdateRequest"
+            examples:
+              btcTracker:
+                summary: BTC tracker with sparkline
+                value:
+                  symbol: "BTC"
+                  icon: "bitcoin"
+                  currency: "USD"
+                  value: 98452.30
+                  change: 2.14
+                  sparkline: [92100, 89300, 93200, 91800, 95400, 94100, 97600, 96200, 98452]
+                  symbolColor: "#FF8800"
+                  sparklineColor: "#00D4FF"
+                  bottomText: "Vol 24h: 42B"
+      responses:
+        "200":
+          description: Tracker created or updated.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Missing tracker name.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "500":
+          description: No tracker slot available.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+    delete:
+      operationId: deleteTracker
+      summary: Delete a tracker
+      description: Removes the tracker data and its app from rotation.
+      tags: [Tracker]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Tracker name to delete.
+      responses:
+        "200":
+          description: Tracker deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Missing tracker name.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "404":
+          description: Tracker not found.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  # ===========================================================================
+  # Notifications
+  # ===========================================================================
+  /notify:
+    post:
+      operationId: sendNotification
+      summary: Send a notification
+      description: >
+        Push a notification to the display. Notifications interrupt app
+        rotation and are displayed with a card frame overlay.
+      tags: [Notifications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/notification.yaml#/NotificationRequest"
+            examples:
+              simple:
+                summary: Simple notification
+                value:
+                  text: "New message!"
+                  icon: "mail"
+                  color: "#0096FF"
+                  duration: 5000
+              urgent:
+                summary: Urgent notification
+                value:
+                  text: "Alert!"
+                  icon: "warning"
+                  color: "#FF0000"
+                  urgent: true
+                  hold: true
+      responses:
+        "200":
+          description: Notification queued.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/notification.yaml#/NotificationResponse"
+        "400":
+          description: Missing text or invalid JSON.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "503":
+          description: Notification queue full.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  /notify/list:
+    get:
+      operationId: listNotifications
+      summary: List active notifications
+      tags: [Notifications]
+      responses:
+        "200":
+          description: Active notification queue.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/notification.yaml#/NotificationListResponse"
+
+  /notify/dismiss:
+    post:
+      operationId: dismissNotification
+      summary: Dismiss current notification
+      tags: [Notifications]
+      responses:
+        "200":
+          description: Notification dismissed.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "404":
+          description: No active notification.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  # ===========================================================================
+  # Indicators
+  # ===========================================================================
+  /indicator1:
+    post:
+      operationId: setIndicator1
+      summary: Set indicator 1
+      tags: [Indicators]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/indicator.yaml#/IndicatorRequest"
+            examples:
+              solidRed:
+                summary: Solid red
+                value:
+                  mode: "solid"
+                  color: "#FF0000"
+              blinkGreen:
+                summary: Blinking green
+                value:
+                  mode: "blink"
+                  color: "#00FF00"
+                  blinkInterval: 500
+      responses:
+        "200":
+          description: Indicator set.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/indicator.yaml#/IndicatorResponse"
+        "400":
+          description: Invalid mode.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+    delete:
+      operationId: clearIndicator1
+      summary: Turn off indicator 1
+      tags: [Indicators]
+      responses:
+        "200":
+          description: Indicator turned off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  mode:
+                    type: string
+                    const: "off"
+
+  /indicator2:
+    post:
+      operationId: setIndicator2
+      summary: Set indicator 2
+      tags: [Indicators]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/indicator.yaml#/IndicatorRequest"
+      responses:
+        "200":
+          description: Indicator set.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/indicator.yaml#/IndicatorResponse"
+        "400":
+          description: Invalid mode.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+    delete:
+      operationId: clearIndicator2
+      summary: Turn off indicator 2
+      tags: [Indicators]
+      responses:
+        "200":
+          description: Indicator turned off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  mode:
+                    type: string
+                    const: "off"
+
+  /indicator3:
+    post:
+      operationId: setIndicator3
+      summary: Set indicator 3
+      tags: [Indicators]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/indicator.yaml#/IndicatorRequest"
+      responses:
+        "200":
+          description: Indicator set.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/indicator.yaml#/IndicatorResponse"
+        "400":
+          description: Invalid mode.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+    delete:
+      operationId: clearIndicator3
+      summary: Turn off indicator 3
+      tags: [Indicators]
+      responses:
+        "200":
+          description: Indicator turned off.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  mode:
+                    type: string
+                    const: "off"
+
+  # ===========================================================================
+  # Icons
+  # ===========================================================================
+  /icons:
+    get:
+      operationId: listIcons
+      summary: List all icons on filesystem
+      tags: [Icons]
+      responses:
+        "200":
+          description: Icon list with storage info.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/icon.yaml#/IconListResponse"
+    post:
+      operationId: uploadIcon
+      summary: Upload an icon (PNG or GIF)
+      description: >
+        Upload a PNG or GIF icon to the device filesystem. Recommended
+        sizes: 8x8 or 16x16 pixels.
+      tags: [Icons]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Icon name (used as filename without extension).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PNG or GIF file.
+      responses:
+        "200":
+          description: Icon uploaded.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Upload failed (invalid format or size).
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+    delete:
+      operationId: deleteIcon
+      summary: Delete an icon
+      tags: [Icons]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Icon name to delete.
+      responses:
+        "200":
+          description: Icon deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Missing name parameter.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "404":
+          description: Icon not found.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  /icons/{name}:
+    get:
+      operationId: getIcon
+      summary: Serve an icon file
+      description: Returns the raw PNG or GIF image file.
+      tags: [Icons]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-zA-Z0-9_-]+$"
+          description: Icon name (without extension).
+      responses:
+        "200":
+          description: Icon image file.
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/gif:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Icon not found.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  /icons/lametric:
+    post:
+      operationId: downloadLaMetricIcon
+      summary: Download icon from LaMetric
+      description: >
+        Downloads an icon from the LaMetric icon database and saves it to
+        the device filesystem.
+      tags: [Icons]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/icon.yaml#/LaMetricRequest"
+      responses:
+        "200":
+          description: Icon downloaded.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Missing or invalid icon ID.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "500":
+          description: Download failed.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"

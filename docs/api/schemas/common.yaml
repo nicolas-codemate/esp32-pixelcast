@@ -1,0 +1,91 @@
+# Shared types used across all API schemas
+# OpenAPI 3.1 / JSON Schema 2020-12
+
+Color:
+  description: >
+    Color value. Accepts RGB array, hex string, or unsigned 32-bit integer.
+  oneOf:
+    - type: array
+      items:
+        type: integer
+        minimum: 0
+        maximum: 255
+      minItems: 3
+      maxItems: 3
+      description: "RGB array [R, G, B]"
+      examples:
+        - [255, 136, 0]
+    - type: string
+      pattern: "^#[0-9a-fA-F]{6}$"
+      description: "Hex string"
+      examples:
+        - "#FF8800"
+    - type: integer
+      minimum: 0
+      maximum: 16777215
+      description: "Unsigned 32-bit integer (0xRRGGBB)"
+      examples:
+        - 16746496
+
+TextSegment:
+  type: object
+  required: [t, c]
+  properties:
+    t:
+      type: string
+      description: Text content for this segment.
+    c:
+      $ref: "#/Color"
+  description: A text fragment with its own color.
+
+PolymorphicTextField:
+  description: >
+    Text field accepting three formats: plain string, colored string object,
+    or array of colored segments (max 8).
+  oneOf:
+    - type: string
+      description: Plain text (uses default color).
+      examples:
+        - "22.5C"
+    - type: object
+      required: [text, color]
+      properties:
+        text:
+          type: string
+        color:
+          $ref: "#/Color"
+      description: "Single string with explicit color override."
+      examples:
+        - text: "CRITICAL"
+          color: "#FF0000"
+    - type: array
+      items:
+        $ref: "#/TextSegment"
+      minItems: 1
+      maxItems: 8
+      description: "Array of colored segments (concatenated in display order)."
+      examples:
+        - - t: "22.5"
+            c: "#FF8800"
+          - t: "C"
+            c: "#666666"
+
+SuccessResponse:
+  type: object
+  required: [success]
+  properties:
+    success:
+      type: boolean
+      const: true
+  examples:
+    - success: true
+
+ErrorResponse:
+  type: object
+  required: [error]
+  properties:
+    error:
+      type: string
+      description: Human-readable error message.
+  examples:
+    - error: "Invalid JSON"

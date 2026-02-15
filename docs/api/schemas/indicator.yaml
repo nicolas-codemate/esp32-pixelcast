@@ -1,0 +1,41 @@
+# Indicator schemas
+
+IndicatorRequest:
+  type: object
+  properties:
+    mode:
+      type: string
+      enum: [solid, blink, fade, off]
+      description: >
+        Indicator mode. If omitted but `color` is provided, defaults to `solid`.
+        Use `off` to turn off the indicator.
+    color:
+      $ref: "common.yaml#/Color"
+    blinkInterval:
+      type: integer
+      description: Blink interval in milliseconds (only for `blink` mode).
+      default: 500
+    fadePeriod:
+      type: integer
+      description: Fade cycle period in milliseconds (only for `fade` mode).
+      default: 2000
+
+IndicatorResponse:
+  type: object
+  properties:
+    success:
+      type: boolean
+      const: true
+    indicator:
+      type: integer
+      description: Indicator index (1-3).
+    mode:
+      type: string
+      enum: [solid, blink, fade, off]
+    color:
+      type: array
+      items:
+        type: integer
+      minItems: 3
+      maxItems: 3
+      description: "RGB array [R, G, B]."

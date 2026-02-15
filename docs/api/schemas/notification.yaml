@@ -1,0 +1,88 @@
+# Notification schemas
+
+NotificationRequest:
+  type: object
+  required: [text]
+  properties:
+    text:
+      type: string
+      description: Notification text (required, max 128 chars).
+      maxLength: 128
+    id:
+      type: string
+      description: >
+        Optional unique ID. If omitted, auto-generated as `notif_<millis>`.
+    icon:
+      type: string
+      description: Icon name (without extension).
+    color:
+      $ref: "common.yaml#/Color"
+    background:
+      $ref: "common.yaml#/Color"
+    duration:
+      type: integer
+      description: Display duration in milliseconds.
+      default: 5000
+    hold:
+      type: boolean
+      description: >
+        Hold notification until explicitly dismissed. Overrides duration.
+      default: false
+    urgent:
+      type: boolean
+      description: Jump to front of notification queue.
+      default: false
+    stack:
+      type: boolean
+      description: >
+        Queue sequentially with other notifications (true) vs replace
+        current notification (false).
+      default: true
+
+NotificationResponse:
+  type: object
+  properties:
+    success:
+      type: boolean
+      const: true
+    id:
+      type: string
+      description: The assigned notification ID.
+
+NotificationItem:
+  type: object
+  properties:
+    id:
+      type: string
+    text:
+      type: string
+    icon:
+      type: string
+    duration:
+      type: integer
+    hold:
+      type: boolean
+    urgent:
+      type: boolean
+    stack:
+      type: boolean
+    displayed:
+      type: boolean
+      description: Whether this notification has been shown at least once.
+    current:
+      type: boolean
+      description: Whether this is the currently displayed notification.
+
+NotificationListResponse:
+  type: object
+  properties:
+    count:
+      type: integer
+      description: Number of active notifications.
+    currentIndex:
+      type: integer
+      description: Index of the currently displayed notification.
+    notifications:
+      type: array
+      items:
+        $ref: "#/NotificationItem"

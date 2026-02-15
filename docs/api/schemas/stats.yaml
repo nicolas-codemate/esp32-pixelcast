@@ -1,0 +1,86 @@
+# System stats schemas
+
+StatsResponse:
+  type: object
+  properties:
+    version:
+      type: string
+      description: Firmware version.
+      examples:
+        - "0.1.0-dev"
+    uptime:
+      type: integer
+      description: Uptime in seconds.
+    freeHeap:
+      type: integer
+      description: Free heap memory in bytes.
+    maxAllocHeap:
+      type: integer
+      description: Largest allocatable block in bytes.
+    brightness:
+      type: integer
+      description: Current brightness (0-255).
+    wifi:
+      type: object
+      properties:
+        ssid:
+          type: string
+        rssi:
+          type: integer
+          description: Signal strength in dBm.
+        ip:
+          type: string
+          description: Device IP address.
+    display:
+      type: object
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+    mqtt:
+      type: object
+      properties:
+        connected:
+          type: boolean
+    apps:
+      type: object
+      properties:
+        count:
+          type: integer
+          description: Number of active apps.
+        current:
+          type: string
+          description: ID of the currently displayed app.
+        rotationEnabled:
+          type: boolean
+    filesystem:
+      type: object
+      properties:
+        ready:
+          type: boolean
+        total:
+          type: integer
+          description: Total filesystem size in bytes.
+        used:
+          type: integer
+          description: Used filesystem space in bytes.
+
+MqttStatsPayload:
+  type: object
+  description: Compact stats payload published over MQTT every 60 seconds.
+  properties:
+    uptime:
+      type: integer
+    freeHeap:
+      type: integer
+    brightness:
+      type: integer
+    rssi:
+      type: integer
+    appCount:
+      type: integer
+    version:
+      type: string
+    currentApp:
+      type: string

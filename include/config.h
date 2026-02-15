@@ -196,6 +196,8 @@
 #define MQTT_TOPIC_SETTINGS     "/settings"
 #define MQTT_TOPIC_BRIGHTNESS   "/brightness"
 #define MQTT_TOPIC_REBOOT       "/reboot"
+#define MQTT_TOPIC_WEATHER      "/weather"
+#define MQTT_TOPIC_TRACKER      "/tracker"
 #define MQTT_TOPIC_STATS        "/stats"
 #define MQTT_TOPIC_STATUS       "/status"
 

@@ -147,6 +147,16 @@
 #define LAMETRIC_API_HOST "developer.lametric.com"
 #define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"
 
+// ============================================================================
+// Sleep Configuration
+// ============================================================================
+#ifndef MAX_SLOTS_PER_DAY
+    #define MAX_SLOTS_PER_DAY 2
+#endif
+#ifndef NTP_VALID_EPOCH_THRESHOLD
+    #define NTP_VALID_EPOCH_THRESHOLD 1704067200    // ~2024-01-01, sanity floor on local epoch
+#endif
+
 // App defaults
 #define DEFAULT_APP_DURATION    10000   // 10 seconds
 #define DEFAULT_APP_LIFETIME    300000  // 5 minutes (0 = permanent)

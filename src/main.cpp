@@ -170,6 +170,33 @@ FailedIconDownload failedIconDownloads[MAX_FAILED_ICON_DOWNLOADS];
 uint16_t* pngDecodeTarget = nullptr;
 uint8_t pngDecodeWidth = 0;
 
+struct SleepSlot {
+    uint8_t startHour;
+    uint8_t startMinute;
+    uint8_t endHour;
+    uint8_t endMinute;
+};
+
+struct SleepDay {
+    bool allDay;
+    uint8_t slotCount;
+    SleepSlot slots[MAX_SLOTS_PER_DAY];
+};
+
+struct SleepSchedule {
+    bool enabled;
+    char displayMode[8];
+    SleepDay days[7];
+    uint32_t sleepUntilEpoch;
+};
+
+enum SleepReason {
+    SLEEP_REASON_NONE,
+    SLEEP_REASON_SCHEDULE,
+    SLEEP_REASON_OVERRIDE,
+    SLEEP_REASON_NTP_NOT_SYNCED
+};
+
 // Settings from JSON
 struct Settings {
     uint8_t brightness;
@@ -190,7 +217,9 @@ struct Settings {
     char mqttUser[32];
     char mqttPassword[32];
     char mqttPrefix[32];
+    SleepSchedule sleep;
 } settings;
+SleepReason lastSleepReason = SLEEP_REASON_NONE;
 
 // Weather Data (populated by POST /api/weather)
 #define MAX_FORECAST_DAYS 7    // Max storage (1 week)
@@ -4735,6 +4764,14 @@ void initDefaultSettings() {
     settings.mqttUser[0] = '\0';
     settings.mqttPassword[0] = '\0';
     strlcpy(settings.mqttPrefix, MQTT_PREFIX, sizeof(settings.mqttPrefix));
+
+    settings.sleep.enabled = false;
+    settings.sleep.sleepUntilEpoch = 0;
+    strlcpy(settings.sleep.displayMode, "black", sizeof(settings.sleep.displayMode));
+    for (int day = 0; day < 7; day++) {
+        settings.sleep.days[day].allDay = false;
+        settings.sleep.days[day].slotCount = 0;
+    }
 }
 
 bool loadSettings() {
@@ -4839,6 +4876,51 @@ bool loadSettings() {
         indicatorSet(i, mode, color, blinkInterval, fadePeriod);
     }
 
+    // Sleep settings
+    settings.sleep.enabled = doc["sleep"]["enabled"] | false;
+    const char* sleepDisplayMode = doc["sleep"]["displayMode"] | "black";
+    strlcpy(settings.sleep.displayMode, sleepDisplayMode, sizeof(settings.sleep.displayMode));
+    settings.sleep.sleepUntilEpoch = doc["sleep"]["sleepUntilEpoch"] | 0;
+
+    for (int day = 0; day < 7; day++) {
+        String dayKey = String(day);
+        JsonObject dayObj = doc["sleep"]["days"][dayKey];
+
+        settings.sleep.days[day].allDay = false;
+        settings.sleep.days[day].slotCount = 0;
+
+        if (dayObj.isNull()) continue;
+
+        settings.sleep.days[day].allDay = dayObj["allDay"] | false;
+
+        JsonArray slotsArr = dayObj["slots"];
+        uint8_t loadedSlotCount = 0;
+        for (JsonObject slotObj : slotsArr) {
+            if (loadedSlotCount >= MAX_SLOTS_PER_DAY) break;
+            uint8_t startHour   = slotObj["startHour"]   | 0;
+            uint8_t startMinute = slotObj["startMinute"] | 0;
+            uint8_t endHour     = slotObj["endHour"]     | 0;
+            uint8_t endMinute   = slotObj["endMinute"]   | 0;
+            if (startHour > 23 || endHour > 23 || startMinute > 59 || endMinute > 59) {
+                Serial.printf("[SLEEP] Skipping invalid slot day=%d (%02u:%02u-%02u:%02u)\n",
+                              day, startHour, startMinute, endHour, endMinute);
+                continue;
+            }
+            SleepSlot& slot = settings.sleep.days[day].slots[loadedSlotCount];
+            slot.startHour   = startHour;
+            slot.startMinute = startMinute;
+            slot.endHour     = endHour;
+            slot.endMinute   = endMinute;
+            loadedSlotCount++;
+        }
+        settings.sleep.days[day].slotCount = loadedSlotCount;
+    }
+
+    Serial.printf("[SLEEP] Loaded schedule: enabled=%d, displayMode=%s, override=%u\n",
+                  settings.sleep.enabled,
+                  settings.sleep.displayMode,
+                  settings.sleep.sleepUntilEpoch);
+
     Serial.println("[SETTINGS] Configuration loaded successfully");
     Serial.printf("[SETTINGS] Brightness: %d, AutoRotate: %s\n",
                   settings.brightness, settings.autoRotate ? "true" : "false");
@@ -4908,6 +4990,26 @@ bool saveSettings() {
         doc["indicators"][key]["color"] = indicatorColorHex;
         doc["indicators"][key]["blinkInterval"] = indicators[i].blinkInterval;
         doc["indicators"][key]["fadePeriod"] = indicators[i].fadePeriod;
+    }
+
+    // Sleep settings
+    doc["sleep"]["enabled"] = settings.sleep.enabled;
+    doc["sleep"]["displayMode"] = settings.sleep.displayMode;
+    doc["sleep"]["sleepUntilEpoch"] = settings.sleep.sleepUntilEpoch;
+
+    for (int day = 0; day < 7; day++) {
+        String dayKey = String(day);
+        doc["sleep"]["days"][dayKey]["allDay"] = settings.sleep.days[day].allDay;
+
+        JsonArray slotsArr = doc["sleep"]["days"][dayKey]["slots"].to<JsonArray>();
+        for (uint8_t slotIndex = 0; slotIndex < settings.sleep.days[day].slotCount; slotIndex++) {
+            const SleepSlot& slot = settings.sleep.days[day].slots[slotIndex];
+            JsonObject slotObj = slotsArr.add<JsonObject>();
+            slotObj["startHour"]   = slot.startHour;
+            slotObj["startMinute"] = slot.startMinute;
+            slotObj["endHour"]     = slot.endHour;
+            slotObj["endMinute"]   = slot.endMinute;
+        }
     }
 
     File file = LittleFS.open(FS_CONFIG_FILE, "w");
@@ -5427,6 +5529,73 @@ void loopTime() {
     if (wifiConnected) {
         timeClient.update();
     }
+}
+
+// ============================================================================
+// Sleep Mode
+// ============================================================================
+
+static bool sleepSlotMatches(const SleepSlot& slot, uint8_t hour, uint8_t minute) {
+    uint16_t nowMinutes = (uint16_t)hour * 60 + minute;
+    uint16_t startMinutes = (uint16_t)slot.startHour * 60 + slot.startMinute;
+    uint16_t endMinutes = (uint16_t)slot.endHour * 60 + slot.endMinute;
+
+    if (startMinutes == endMinutes) {
+        return false;
+    }
+    if (endMinutes > startMinutes) {
+        return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+    }
+    return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+}
+
+static bool sleepScheduleSaysActive(uint8_t wday, uint8_t hour, uint8_t minute) {
+    const SleepDay& day = settings.sleep.days[wday];
+    if (day.allDay) return true;
+
+    for (uint8_t slotIndex = 0; slotIndex < day.slotCount; slotIndex++) {
+        if (sleepSlotMatches(day.slots[slotIndex], hour, minute)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// timeClient.getEpochTime() returns local epoch (NTP offset already applied).
+// sleepUntilEpoch is stored and compared in that same local-epoch frame —
+// callers that accept a UTC epoch from clients must add settings.ntpOffset
+// before writing it. AC5 requires NTP_NOT_SYNCED to win over the enabled
+// flag so the diagnostic stays accurate when the clock is unreliable.
+bool sleepIsActive() {
+    uint32_t epoch = timeClient.getEpochTime();
+
+    if (epoch <= NTP_VALID_EPOCH_THRESHOLD) {
+        lastSleepReason = SLEEP_REASON_NTP_NOT_SYNCED;
+        return false;
+    }
+
+    if (!settings.sleep.enabled) {
+        lastSleepReason = SLEEP_REASON_NONE;
+        return false;
+    }
+
+    if (epoch < settings.sleep.sleepUntilEpoch) {
+        lastSleepReason = SLEEP_REASON_OVERRIDE;
+        return true;
+    }
+
+    struct tm* timeinfo = gmtime((time_t*)&epoch);
+    uint8_t wday   = (uint8_t)timeinfo->tm_wday;
+    uint8_t hour   = (uint8_t)timeinfo->tm_hour;
+    uint8_t minute = (uint8_t)timeinfo->tm_min;
+
+    if (sleepScheduleSaysActive(wday, hour, minute)) {
+        lastSleepReason = SLEEP_REASON_SCHEDULE;
+        return true;
+    }
+
+    lastSleepReason = SLEEP_REASON_NONE;
+    return false;
 }
 
 // ============================================================================

@@ -504,6 +504,7 @@ void loopMQTT();
 void loopDisplay();
 void loopTime();
 void loopApps();
+void loopSleepTransition();
 
 void displayShowBoot();
 void displayShowIP();
@@ -620,6 +621,8 @@ void handleApiSettings(AsyncWebServerRequest *request);
 void handleApiApps(AsyncWebServerRequest *request);
 
 void logMemory();
+
+bool sleepIsActive();
 
 // ============================================================================
 // Setup
@@ -814,6 +817,7 @@ void loop() {
     loopWiFi();
     loopMQTT();
     loopTime();
+    loopSleepTransition();
     loopApps();
     loopDisplay();
 
@@ -5420,6 +5424,7 @@ AppItem* appGetCurrent() {
 
 void loopApps() {
     if (!wifiConnected) return;
+    if (sleepIsActive()) return;
 
     // ---- Notification priority check (before app rotation) ----
     unsigned long now = millis();
@@ -5602,8 +5607,46 @@ bool sleepIsActive() {
 // Display Loop
 // ============================================================================
 
+void loopSleepTransition()
+{
+    static bool wasSleeping = false;
+    static uint8_t previousBrightness = DEFAULT_BRIGHTNESS;
+    bool isSleeping = sleepIsActive();
+
+    if (isSleeping && !wasSleeping) {
+        Serial.printf("[SLEEP] entering at %lu\n", timeClient.getEpochTime());
+        previousBrightness = currentBrightness;
+        if (strcmp(settings.sleep.displayMode, "black") == 0) {
+            displaySetBrightness(0);
+            displayClear();
+        } else if (strcmp(settings.sleep.displayMode, "clock") == 0) {
+            // Render twice to flush both DMA buffers so the clock replaces
+            // any leftover app/notification frame immediately on entry.
+            displayShowTime();
+            displayShowTime();
+            lastDisplayUpdate = millis();
+        }
+    } else if (!isSleeping && wasSleeping) {
+        Serial.printf("[SLEEP] exiting at %lu\n", timeClient.getEpochTime());
+        displaySetBrightness(previousBrightness);
+        lastDisplayUpdate = 0;
+    }
+    wasSleeping = isSleeping;
+}
+
 void loopDisplay() {
     if (!wifiConnected) return;
+
+    if (sleepIsActive()) {
+        if (strcmp(settings.sleep.displayMode, "clock") == 0) {
+            unsigned long sleepNow = millis();
+            if (sleepNow - lastDisplayUpdate > 1000) {
+                displayShowTime();
+                lastDisplayUpdate = sleepNow;
+            }
+        }
+        return;
+    }
 
     unsigned long now = millis();
     bool needsRedraw = false;

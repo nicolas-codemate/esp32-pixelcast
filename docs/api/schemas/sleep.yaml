@@ -15,14 +15,18 @@ SleepSlot:
       type: string
       pattern: "^[0-2][0-9]:[0-5][0-9]$"
       description: >
-        Start time in 24h `HH:MM` format (zero-padded). Overnight slots are
-        supported (e.g. `start=20:00`, `end=07:00`).
+        Start time in 24h `HH:MM` format (zero-padded). See `end` for the
+        rule that lets a slot wrap past midnight (`end < start`).
       examples:
         - "20:00"
     end:
       type: string
       pattern: "^[0-2][0-9]:[0-5][0-9]$"
-      description: End time in 24h `HH:MM` format (zero-padded).
+      description: >
+        End time in 24h `HH:MM` format (zero-padded). When `end` is less than
+        `start`, the slot wraps past midnight into the following day
+        (e.g. `start=20:00`, `end=07:00` means 20:00 tonight through 07:00
+        tomorrow).
       examples:
         - "07:00"
 
@@ -43,8 +47,8 @@ SleepDay:
       items:
         $ref: "#/SleepSlot"
       description: >
-        Up to 2 sleep windows for this day. An overnight slot
-        (`start > end`) wraps to the next day.
+        Up to 2 sleep windows for this day. A slot with `end < start`
+        wraps past midnight into the next day.
 
 SleepSchedule:
   type: object
@@ -106,11 +110,15 @@ SleepState:
       description: True when the device is currently in a sleep state.
     reason:
       type: string
-      enum: [none, schedule, override, ntp_not_synced]
+      enum: [schedule, override, ntp_not_synced]
       description: >
-        Why the device is sleeping. Only present when `sleeping` is true.
-        `schedule` = matched a weekly slot; `override` = `sleep_until` in
-        the future; `ntp_not_synced` = NTP time not yet acquired.
+        Why the device is in its current state. Present when `sleeping` is
+        true, AND when `sleeping` is false because NTP is not yet synced
+        (fail-open: an unreliable clock takes precedence over the schedule
+        so the device stays awake while still surfacing the diagnostic).
+        Values: `schedule` = matched a weekly slot; `override` =
+        `sleep_until` is in the future; `ntp_not_synced` = NTP time not
+        acquired. Omitted otherwise (device awake under normal conditions).
     until:
       type: integer
       minimum: 0

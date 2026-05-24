@@ -3757,6 +3757,10 @@ void setupWebServer() {
                 doc["until"] = settings.sleep.sleepUntilEpoch;
             }
         }
+        else if (lastSleepReason == SLEEP_REASON_NTP_NOT_SYNCED)
+        {
+            doc["reason"] = sleepReasonToString(lastSleepReason);
+        }
         buildSleepConfigJson(doc["config"].to<JsonObject>());
 
         String output;

@@ -509,6 +509,31 @@ paths:
                       display_mode: "clock"
                       schedule: {}
                       sleep_until: 4102444800
+                scheduleActive:
+                  summary: Sleeping because the weekly schedule matches now
+                  value:
+                    sleeping: true
+                    reason: "schedule"
+                    config:
+                      enabled: true
+                      display_mode: "black"
+                      schedule:
+                        monday:
+                          all_day: false
+                          slots:
+                            - start: "20:00"
+                              end: "07:00"
+                      sleep_until: 0
+                ntpNotSynced:
+                  summary: NTP not yet synced (fail-open, schedule not evaluated)
+                  value:
+                    sleeping: false
+                    reason: "ntp_not_synced"
+                    config:
+                      enabled: true
+                      display_mode: "black"
+                      schedule: {}
+                      sleep_until: 0
     post:
       operationId: updateSleep
       summary: Update sleep configuration (partial)

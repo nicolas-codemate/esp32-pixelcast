@@ -623,6 +623,14 @@ void handleApiApps(AsyncWebServerRequest *request);
 void logMemory();
 
 bool sleepIsActive();
+static bool dayIndexFromName(const char* name, uint8_t& outIndex);
+static const char* dayNameFromIndex(uint8_t index);
+static bool parseHourMinute(const char* text, uint8_t& outHour, uint8_t& outMinute);
+static void formatHourMinute(uint8_t hour, uint8_t minute, char* out, size_t outSize);
+static const char* sleepReasonToString(SleepReason reason);
+static void buildSleepConfigJson(JsonObject root);
+static bool applySleepUpdate(JsonObject body, String& errorOut);
+static void wakeNow();
 
 // ============================================================================
 // Setup
@@ -3731,6 +3739,66 @@ void setupWebServer() {
     webServer.addHandler(trackerHandler);
 
     // ========================================================================
+    // Sleep API
+    // ========================================================================
+
+    webServer.on("/api/sleep", HTTP_GET, [](AsyncWebServerRequest *request)
+    {
+        Serial.println("[API] /sleep GET");
+
+        JsonDocument doc;
+        bool active = sleepIsActive();
+        doc["sleeping"] = active;
+        if (active)
+        {
+            doc["reason"] = sleepReasonToString(lastSleepReason);
+            if (lastSleepReason == SLEEP_REASON_OVERRIDE)
+            {
+                doc["until"] = settings.sleep.sleepUntilEpoch;
+            }
+        }
+        buildSleepConfigJson(doc["config"].to<JsonObject>());
+
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    AsyncCallbackJsonWebHandler *sleepHandler = new AsyncCallbackJsonWebHandler(
+        "/api/sleep",
+        [](AsyncWebServerRequest *request, JsonVariant &json)
+        {
+            Serial.println("[API] /sleep POST");
+
+            JsonObject body = json.as<JsonObject>();
+            if (body.isNull())
+            {
+                request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
+            }
+
+            String errorMessage;
+            if (!applySleepUpdate(body, errorMessage))
+            {
+                JsonDocument errorDoc;
+                errorDoc["error"] = errorMessage;
+                String output;
+                serializeJson(errorDoc, output);
+                request->send(400, "application/json", output);
+                return;
+            }
+            request->send(200, "application/json", "{\"success\":true}");
+        });
+    webServer.addHandler(sleepHandler);
+
+    webServer.on("/api/sleep/wake", HTTP_POST, [](AsyncWebServerRequest *request)
+    {
+        Serial.println("[API] /sleep/wake POST");
+        wakeNow();
+        request->send(200, "application/json", "{\"success\":true}");
+    });
+
+    // ========================================================================
     // Notification API
     // ========================================================================
 
@@ -4315,6 +4383,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         mqttHandleReboot();
         return;
     }
+    if (strcmp(relativeTopic, MQTT_TOPIC_WAKE) == 0) {
+        wakeNow();
+        return;
+    }
 
     // Parse JSON payload for all other topics
     JsonDocument doc;
@@ -4386,6 +4458,20 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             mqttHandleIndicator(idx - 1, obj);
         } else {
             Serial.printf("[MQTT] Invalid indicator index: %s\n", indexStr);
+        }
+    } else if (strcmp(relativeTopic, MQTT_TOPIC_SLEEP) == 0) {
+        if (!obj["until"].is<unsigned long>() && !obj["until"].is<long>()) {
+            Serial.println("[MQTT] /sleep payload missing or non-integer 'until'");
+            return;
+        }
+        uint32_t requestedUntil = obj["until"].as<uint32_t>();
+        JsonDocument overrideDoc;
+        JsonObject overrideBody = overrideDoc.to<JsonObject>();
+        overrideBody["sleep_until"] = requestedUntil;
+        String errorMessage;
+        if (!applySleepUpdate(overrideBody, errorMessage)) {
+            Serial.printf("[MQTT] /sleep rejected (until=%lu): %s\n",
+                          (unsigned long)requestedUntil, errorMessage.c_str());
         }
     } else {
         Serial.printf("[MQTT] Unknown topic: %s\n", relativeTopic);
@@ -5632,6 +5718,186 @@ void loopSleepTransition()
         lastDisplayUpdate = 0;
     }
     wasSleeping = isSleeping;
+}
+
+static const char* const CANONICAL_DAY_NAMES[7] = {
+    "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"
+};
+
+static bool dayIndexFromName(const char* name, uint8_t& outIndex)
+{
+    if (name == nullptr) return false;
+    for (uint8_t i = 0; i < 7; i++) {
+        if (strcmp(name, CANONICAL_DAY_NAMES[i]) == 0) {
+            outIndex = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char* dayNameFromIndex(uint8_t index)
+{
+    if (index >= 7) return "unknown";
+    return CANONICAL_DAY_NAMES[index];
+}
+
+static bool parseHourMinute(const char* text, uint8_t& outHour, uint8_t& outMinute)
+{
+    if (text == nullptr) return false;
+    if (strlen(text) != 5) return false;
+    if (text[2] != ':') return false;
+    if (!isdigit((unsigned char)text[0]) || !isdigit((unsigned char)text[1])) return false;
+    if (!isdigit((unsigned char)text[3]) || !isdigit((unsigned char)text[4])) return false;
+
+    uint8_t hour = (uint8_t)((text[0] - '0') * 10 + (text[1] - '0'));
+    uint8_t minute = (uint8_t)((text[3] - '0') * 10 + (text[4] - '0'));
+    if (hour > 23 || minute > 59) return false;
+
+    outHour = hour;
+    outMinute = minute;
+    return true;
+}
+
+static void formatHourMinute(uint8_t hour, uint8_t minute, char* out, size_t outSize)
+{
+    if (out == nullptr || outSize < 6) return;
+    snprintf(out, outSize, "%02u:%02u", (unsigned)hour, (unsigned)minute);
+}
+
+static const char* sleepReasonToString(SleepReason reason)
+{
+    switch (reason) {
+        case SLEEP_REASON_SCHEDULE:       return "schedule";
+        case SLEEP_REASON_OVERRIDE:       return "override";
+        case SLEEP_REASON_NTP_NOT_SYNCED: return "ntp_not_synced";
+        case SLEEP_REASON_NONE:
+        default:
+            return "none";
+    }
+}
+
+static void buildSleepConfigJson(JsonObject root)
+{
+    root["enabled"] = settings.sleep.enabled;
+    root["display_mode"] = settings.sleep.displayMode;
+
+    JsonObject schedule = root["schedule"].to<JsonObject>();
+    for (uint8_t i = 0; i < 7; i++) {
+        JsonObject dayObj = schedule[dayNameFromIndex(i)].to<JsonObject>();
+        dayObj["all_day"] = settings.sleep.days[i].allDay;
+        JsonArray slots = dayObj["slots"].to<JsonArray>();
+        for (uint8_t s = 0; s < settings.sleep.days[i].slotCount; s++) {
+            char startStr[6];
+            char endStr[6];
+            formatHourMinute(settings.sleep.days[i].slots[s].startHour,
+                             settings.sleep.days[i].slots[s].startMinute,
+                             startStr, sizeof(startStr));
+            formatHourMinute(settings.sleep.days[i].slots[s].endHour,
+                             settings.sleep.days[i].slots[s].endMinute,
+                             endStr, sizeof(endStr));
+            JsonObject slot = slots.add<JsonObject>();
+            slot["start"] = startStr;
+            slot["end"] = endStr;
+        }
+    }
+
+    root["sleep_until"] = settings.sleep.sleepUntilEpoch;
+}
+
+static bool applySleepUpdate(JsonObject body, String& errorOut)
+{
+    SleepSchedule scratch = settings.sleep;
+
+    if (body["enabled"].is<bool>()) {
+        scratch.enabled = body["enabled"].as<bool>();
+    }
+
+    if (!body["display_mode"].isNull()) {
+        if (!body["display_mode"].is<const char*>()) {
+            errorOut = "display_mode must be a string";
+            return false;
+        }
+        const char* mode = body["display_mode"].as<const char*>();
+        if (strcmp(mode, "black") != 0 && strcmp(mode, "clock") != 0) {
+            errorOut = "Invalid display_mode";
+            return false;
+        }
+        strlcpy(scratch.displayMode, mode, sizeof(scratch.displayMode));
+    }
+
+    if (!body["sleep_until"].isNull()) {
+        if (!body["sleep_until"].is<unsigned long>() && !body["sleep_until"].is<long>()) {
+            errorOut = "sleep_until must be an integer";
+            return false;
+        }
+        uint32_t requested = body["sleep_until"].as<uint32_t>();
+        if (requested != 0 && requested <= timeClient.getEpochTime()) {
+            errorOut = "sleep_until is in the past";
+            return false;
+        }
+        scratch.sleepUntilEpoch = requested;
+    }
+
+    if (body["schedule"].is<JsonObject>()) {
+        JsonObject schedule = body["schedule"].as<JsonObject>();
+        for (JsonPair kv : schedule) {
+            uint8_t dayIndex = 0;
+            if (!dayIndexFromName(kv.key().c_str(), dayIndex)) {
+                errorOut = String("Unknown day: ") + kv.key().c_str();
+                return false;
+            }
+
+            if (!kv.value().is<JsonObject>()) {
+                errorOut = String("Invalid day entry: ") + kv.key().c_str();
+                return false;
+            }
+            JsonObject dayBody = kv.value().as<JsonObject>();
+            SleepDay& day = scratch.days[dayIndex];
+
+            if (dayBody["all_day"].is<bool>()) {
+                day.allDay = dayBody["all_day"].as<bool>();
+            }
+
+            if (dayBody["slots"].is<JsonArray>()) {
+                JsonArray slotsArray = dayBody["slots"].as<JsonArray>();
+                day.slotCount = 0;
+                for (JsonObject slotObj : slotsArray) {
+                    if (day.slotCount >= MAX_SLOTS_PER_DAY) {
+                        errorOut = "Too many slots";
+                        return false;
+                    }
+                    const char* startText = slotObj["start"].as<const char*>();
+                    const char* endText = slotObj["end"].as<const char*>();
+                    uint8_t startHour = 0, startMinute = 0, endHour = 0, endMinute = 0;
+                    if (!parseHourMinute(startText, startHour, startMinute) ||
+                        !parseHourMinute(endText, endHour, endMinute)) {
+                        errorOut = "Invalid time format";
+                        return false;
+                    }
+                    SleepSlot& slot = day.slots[day.slotCount];
+                    slot.startHour = startHour;
+                    slot.startMinute = startMinute;
+                    slot.endHour = endHour;
+                    slot.endMinute = endMinute;
+                    day.slotCount++;
+                }
+            }
+        }
+    }
+
+    settings.sleep = scratch;
+    saveSettings();
+    loopSleepTransition();
+    return true;
+}
+
+static void wakeNow()
+{
+    settings.sleep.sleepUntilEpoch = 0;
+    saveSettings();
+    loopSleepTransition();
+    Serial.println("[SLEEP] Wake override cleared");
 }
 
 void loopDisplay() {

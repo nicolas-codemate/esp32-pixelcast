@@ -192,6 +192,33 @@ channels:
       rebootMessage:
         $ref: "#/components/messages/Empty"
 
+  sleep:
+    address: "{prefix}/sleep"
+    description: >
+      Set a manual sleep override. Payload is `{"until": <epoch>}` where the
+      epoch is in the device's *local* time frame (the device's NTP offset
+      has already been applied). Equivalent to the REST call
+      `POST /api/sleep` with `{"sleep_until": <epoch>}`. Past values are
+      rejected (logged to serial; state unchanged).
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      sleepOverrideMessage:
+        $ref: "#/components/messages/SleepOverride"
+
+  wake:
+    address: "{prefix}/wake"
+    description: >
+      Clear the manual sleep override and wake the device immediately.
+      Payload can be empty. Equivalent to `POST /api/sleep/wake`.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      wakeMessage:
+        $ref: "#/components/messages/Wake"
+
   # ===========================================================================
   # Status (published by device)
   # ===========================================================================
@@ -272,6 +299,14 @@ operations:
     action: receive
     channel:
       $ref: "#/channels/reboot"
+  receiveSleep:
+    action: receive
+    channel:
+      $ref: "#/channels/sleep"
+  receiveWake:
+    action: receive
+    channel:
+      $ref: "#/channels/wake"
 
   # Status (device publishes)
   publishStatus:
@@ -432,6 +467,33 @@ components:
             appCount: 3
             version: "0.1.0-dev"
             currentApp: "weather_clock"
+
+    SleepOverride:
+      payload:
+        type: object
+        required: [until]
+        properties:
+          until:
+            type: integer
+            minimum: 0
+            description: >
+              Epoch timestamp when the override expires, expressed in the
+              device's *local* time frame (NTP offset already applied).
+              Past values are rejected.
+            examples:
+              - 4102444800
+      examples:
+        - name: oneHourOverride
+          summary: Sleep until a specific epoch
+          payload:
+            until: 4102444800
+
+    Wake:
+      payload:
+        type: "null"
+      description: >
+        Wake-now command. Payload is ignored. Clears the active sleep
+        override; schedule-based sleep is not affected.
 
     Empty:
       payload:

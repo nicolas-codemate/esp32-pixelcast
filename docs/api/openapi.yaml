@@ -34,6 +34,12 @@ tags:
     description: Corner indicator LEDs (1-3).
   - name: Icons
     description: Icon filesystem management and LaMetric downloads.
+  - name: Sleep
+    description: >
+      Display sleep mode (schedule-based or manual override). Epoch values
+      use the device's local time frame: the NTP offset configured on the
+      device has already been applied, so clients whose source is UTC must
+      add `ntp_offset` before sending.
 
 paths:
   # ===========================================================================
@@ -458,6 +464,121 @@ paths:
             application/json:
               schema:
                 $ref: "schemas/common.yaml#/ErrorResponse"
+
+  # ===========================================================================
+  # Sleep
+  # ===========================================================================
+  /sleep:
+    get:
+      operationId: getSleep
+      summary: Get sleep state and configuration
+      description: >
+        Returns the current sleep state (active or not, reason, override
+        expiry) and the full sleep configuration snapshot.
+      tags: [Sleep]
+      responses:
+        "200":
+          description: Current sleep state and configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/sleep.yaml#/SleepState"
+              examples:
+                awake:
+                  summary: Device is awake
+                  value:
+                    sleeping: false
+                    config:
+                      enabled: true
+                      display_mode: "black"
+                      schedule:
+                        monday:
+                          all_day: false
+                          slots:
+                            - start: "20:00"
+                              end: "07:00"
+                      sleep_until: 0
+                overrideActive:
+                  summary: Manual override active
+                  value:
+                    sleeping: true
+                    reason: "override"
+                    until: 4102444800
+                    config:
+                      enabled: true
+                      display_mode: "clock"
+                      schedule: {}
+                      sleep_until: 4102444800
+    post:
+      operationId: updateSleep
+      summary: Update sleep configuration (partial)
+      description: >
+        Partial update of the sleep configuration. Only provided fields are
+        changed; omitted fields are left untouched. Rejected payloads do
+        not partially mutate state (atomic apply).
+
+
+        Validation errors returned as `400` with `{"error": "<message>"}`
+        include: `Invalid JSON`, `Invalid display_mode`,
+        `sleep_until is in the past`, `Unknown day: <name>`,
+        `Invalid time format`, `Too many slots`.
+      tags: [Sleep]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/sleep.yaml#/SleepConfig"
+            examples:
+              enableSchedule:
+                summary: Enable schedule with one weeknight slot
+                value:
+                  enabled: true
+                  display_mode: "black"
+                  schedule:
+                    monday:
+                      all_day: false
+                      slots:
+                        - start: "20:00"
+                          end: "07:00"
+              setOverride:
+                summary: Manual override (sleep until epoch)
+                value:
+                  sleep_until: 4102444800
+              clearOverride:
+                summary: Clear manual override
+                value:
+                  sleep_until: 0
+      responses:
+        "200":
+          description: Sleep configuration updated.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Invalid payload (see description for full error list).
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  /sleep/wake:
+    post:
+      operationId: wake
+      summary: Clear sleep override
+      description: >
+        Clears any active `sleep_until` override and wakes the device
+        immediately. Equivalent to `POST /api/sleep` with `{"sleep_until": 0}`.
+        Schedule-based sleep is not affected.
+      tags: [Sleep]
+      responses:
+        "200":
+          description: Override cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
 
   # ===========================================================================
   # Notifications

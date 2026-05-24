@@ -210,6 +210,8 @@
 #define MQTT_TOPIC_TRACKER      "/tracker"
 #define MQTT_TOPIC_STATS        "/stats"
 #define MQTT_TOPIC_STATUS       "/status"
+#define MQTT_TOPIC_SLEEP        "/sleep"
+#define MQTT_TOPIC_WAKE         "/wake"
 
 // ============================================================================
 // Web Server

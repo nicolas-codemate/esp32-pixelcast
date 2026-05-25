@@ -37,9 +37,9 @@ tags:
   - name: Sleep
     description: >
       Display sleep mode (schedule-based or manual override). Epoch values
-      use the device's local time frame: the NTP offset configured on the
-      device has already been applied, so clients whose source is UTC must
-      add `ntp_offset` before sending.
+      use the device's local time frame, decoded with the configured
+      `tz_posix`. Clients whose source is UTC must convert to local epoch
+      before sending.
 
 paths:
   # ===========================================================================

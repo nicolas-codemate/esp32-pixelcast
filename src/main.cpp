@@ -500,9 +500,6 @@ void loopDisplay();
 void loopApps();
 void loopSleepTransition();
 
-static uint32_t currentLocalEpoch();
-static void currentLocalTm(struct tm& localTm);
-
 void displayShowBoot();
 void displayShowIP();
 void displayShowTime();
@@ -932,8 +929,9 @@ void displayShowIP() {
 void displayShowTime() {
     dma_display->clearScreen();
 
+    time_t nowUtc = time(nullptr);
     struct tm localTm;
-    currentLocalTm(localTm);
+    localtime_r(&nowUtc, &localTm);
     int hours = localTm.tm_hour;
     int minutes = localTm.tm_min;
     int seconds = localTm.tm_sec;
@@ -976,9 +974,10 @@ void displayShowTime() {
 void displayShowDate() {
     dma_display->clearScreen();
 
-    // Get date from NTP epoch
-    unsigned long epochTime = currentLocalEpoch();
-    struct tm* timeinfo = gmtime((time_t*)&epochTime);
+    time_t nowUtc = time(nullptr);
+    struct tm tmLocal;
+    localtime_r(&nowUtc, &tmLocal);
+    struct tm* timeinfo = &tmLocal;
 
     uint8_t day = timeinfo->tm_mday;
     uint8_t month = timeinfo->tm_mon + 1;
@@ -1587,8 +1586,9 @@ void displayShowWeatherClock(uint16_t appDuration) {
     // Use global weatherLastDrawnMinute / weatherLastUpdateDrawn
     // (reset by displayShowApp on app switch to force full redraw)
 
+    time_t nowUtc = time(nullptr);
     struct tm localTm;
-    currentLocalTm(localTm);
+    localtime_r(&nowUtc, &localTm);
     int hours = localTm.tm_hour;
     int minutes = localTm.tm_min;
     int seconds = localTm.tm_sec;
@@ -1711,8 +1711,9 @@ void displayShowWeatherClock(uint16_t appDuration) {
 
         // ---- Date (y=21-30) ----
         dma_display->fillRect(0, 21, DISPLAY_WIDTH, 10, black);
-        unsigned long epochTime = currentLocalEpoch();
-        struct tm* timeinfo = gmtime((time_t*)&epochTime);
+        struct tm tmLocal;
+        localtime_r(&nowUtc, &tmLocal);
+        struct tm* timeinfo = &tmLocal;
 
         static const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
         static const char* monthNamesFr[] = {"JAN", "FEV", "MAR", "AVR", "MAI", "JUN",
@@ -5641,45 +5642,6 @@ void loopApps() {
             lastDisplayUpdate = now;
         }
     }
-}
-
-// ============================================================================
-// Time Functions
-// ============================================================================
-
-// Encode broken-down fields as if they were UTC (inverse of gmtime).
-// timegm is not available in ESP32 newlib; this uses Howard Hinnant's
-// days_from_civil formula, correct for any Gregorian date.
-static uint32_t encodeAsUtcEpoch(const struct tm& t) {
-    int y = t.tm_year + 1900;
-    unsigned m = t.tm_mon + 1;
-    unsigned d = t.tm_mday;
-    y -= (m <= 2);
-    int era = (y >= 0 ? y : y - 399) / 400;
-    unsigned yoe = (unsigned)(y - era * 400);
-    unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    long days = (long)era * 146097L + (long)doe - 719468L;
-    return (uint32_t)(days * 86400L + t.tm_hour * 3600L + t.tm_min * 60L + t.tm_sec);
-}
-
-// Local-frame epoch: legacy consumers (sleep schedule, gmtime-based decoding)
-// expect the local clock value encoded as if it were UTC, matching the old
-// NTPClient.getEpochTime() return. localtime_r is DST-aware by construction.
-static uint32_t currentLocalEpoch() {
-    time_t nowUtc = time(NULL);
-    if (nowUtc == 0) {
-        return 0;
-    }
-    struct tm localTm;
-    localtime_r(&nowUtc, &localTm);
-    return encodeAsUtcEpoch(localTm);
-}
-
-// localTm name avoids collision with PNGdec's `#define local static`.
-static void currentLocalTm(struct tm& localTm) {
-    time_t nowUtc = time(NULL);
-    localtime_r(&nowUtc, &localTm);
 }
 
 // ============================================================================

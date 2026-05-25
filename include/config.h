@@ -154,7 +154,7 @@
     #define MAX_SLOTS_PER_DAY 2
 #endif
 #ifndef NTP_VALID_EPOCH_THRESHOLD
-    #define NTP_VALID_EPOCH_THRESHOLD 1704067200    // ~2024-01-01, sanity floor on local epoch
+    #define NTP_VALID_EPOCH_THRESHOLD 1704067200    // 2024-01-01 UTC, NTP sync sanity floor
 #endif
 
 // App defaults

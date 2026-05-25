@@ -500,9 +500,6 @@ void loopDisplay();
 void loopApps();
 void loopSleepTransition();
 
-static uint32_t currentLocalEpoch();
-static void currentLocalTm(struct tm& localTm);
-
 void displayShowBoot();
 void displayShowIP();
 void displayShowTime();
@@ -932,8 +929,9 @@ void displayShowIP() {
 void displayShowTime() {
     dma_display->clearScreen();
 
+    time_t nowUtc = time(nullptr);
     struct tm localTm;
-    currentLocalTm(localTm);
+    localtime_r(&nowUtc, &localTm);
     int hours = localTm.tm_hour;
     int minutes = localTm.tm_min;
     int seconds = localTm.tm_sec;
@@ -976,13 +974,13 @@ void displayShowTime() {
 void displayShowDate() {
     dma_display->clearScreen();
 
-    // Get date from NTP epoch
-    unsigned long epochTime = currentLocalEpoch();
-    struct tm* timeinfo = gmtime((time_t*)&epochTime);
+    time_t nowUtc = time(nullptr);
+    struct tm localTm;
+    localtime_r(&nowUtc, &localTm);
 
-    uint8_t day = timeinfo->tm_mday;
-    uint8_t month = timeinfo->tm_mon + 1;
-    uint16_t year = timeinfo->tm_year + 1900;
+    uint8_t day = localTm.tm_mday;
+    uint8_t month = localTm.tm_mon + 1;
+    uint16_t year = localTm.tm_year + 1900;
 
     // Format date string based on settings
     char dateStr[16];
@@ -1587,8 +1585,9 @@ void displayShowWeatherClock(uint16_t appDuration) {
     // Use global weatherLastDrawnMinute / weatherLastUpdateDrawn
     // (reset by displayShowApp on app switch to force full redraw)
 
+    time_t nowUtc = time(nullptr);
     struct tm localTm;
-    currentLocalTm(localTm);
+    localtime_r(&nowUtc, &localTm);
     int hours = localTm.tm_hour;
     int minutes = localTm.tm_min;
     int seconds = localTm.tm_sec;
@@ -1711,8 +1710,6 @@ void displayShowWeatherClock(uint16_t appDuration) {
 
         // ---- Date (y=21-30) ----
         dma_display->fillRect(0, 21, DISPLAY_WIDTH, 10, black);
-        unsigned long epochTime = currentLocalEpoch();
-        struct tm* timeinfo = gmtime((time_t*)&epochTime);
 
         static const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
         static const char* monthNamesFr[] = {"JAN", "FEV", "MAR", "AVR", "MAI", "JUN",
@@ -1720,9 +1717,9 @@ void displayShowWeatherClock(uint16_t appDuration) {
 
         char dateStr[16];
         snprintf(dateStr, sizeof(dateStr), "%s %02d %s",
-                 dayNamesFr[timeinfo->tm_wday],
-                 timeinfo->tm_mday,
-                 monthNamesFr[timeinfo->tm_mon]);
+                 dayNamesFr[localTm.tm_wday],
+                 localTm.tm_mday,
+                 monthNamesFr[localTm.tm_mon]);
 
         dma_display->setFont(NULL);
         dma_display->setTextSize(1);
@@ -5644,45 +5641,6 @@ void loopApps() {
 }
 
 // ============================================================================
-// Time Functions
-// ============================================================================
-
-// Encode broken-down fields as if they were UTC (inverse of gmtime).
-// timegm is not available in ESP32 newlib; this uses Howard Hinnant's
-// days_from_civil formula, correct for any Gregorian date.
-static uint32_t encodeAsUtcEpoch(const struct tm& t) {
-    int y = t.tm_year + 1900;
-    unsigned m = t.tm_mon + 1;
-    unsigned d = t.tm_mday;
-    y -= (m <= 2);
-    int era = (y >= 0 ? y : y - 399) / 400;
-    unsigned yoe = (unsigned)(y - era * 400);
-    unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    long days = (long)era * 146097L + (long)doe - 719468L;
-    return (uint32_t)(days * 86400L + t.tm_hour * 3600L + t.tm_min * 60L + t.tm_sec);
-}
-
-// Local-frame epoch: legacy consumers (sleep schedule, gmtime-based decoding)
-// expect the local clock value encoded as if it were UTC, matching the old
-// NTPClient.getEpochTime() return. localtime_r is DST-aware by construction.
-static uint32_t currentLocalEpoch() {
-    time_t nowUtc = time(NULL);
-    if (nowUtc == 0) {
-        return 0;
-    }
-    struct tm localTm;
-    localtime_r(&nowUtc, &localTm);
-    return encodeAsUtcEpoch(localTm);
-}
-
-// localTm name avoids collision with PNGdec's `#define local static`.
-static void currentLocalTm(struct tm& localTm) {
-    time_t nowUtc = time(NULL);
-    localtime_r(&nowUtc, &localTm);
-}
-
-// ============================================================================
 // Sleep Mode
 // ============================================================================
 
@@ -5713,12 +5671,12 @@ static bool sleepScheduleSaysActive(uint8_t wday, uint8_t hour, uint8_t minute) 
 }
 
 // SLEEP_REASON_NTP_NOT_SYNCED wins over `enabled` so the diagnostic
-// stays accurate when the clock is unreliable. sleepUntilEpoch is
-// stored in the same local-frame epoch as currentLocalEpoch().
+// stays accurate when the clock is unreliable. sleepUntilEpoch is a
+// standard UTC epoch.
 bool sleepIsActive() {
-    uint32_t epoch = currentLocalEpoch();
+    time_t nowUtc = time(nullptr);
 
-    if (epoch <= NTP_VALID_EPOCH_THRESHOLD) {
+    if (nowUtc < NTP_VALID_EPOCH_THRESHOLD) {
         lastSleepReason = SLEEP_REASON_NTP_NOT_SYNCED;
         return false;
     }
@@ -5728,15 +5686,16 @@ bool sleepIsActive() {
         return false;
     }
 
-    if (epoch < settings.sleep.sleepUntilEpoch) {
+    if ((uint32_t)nowUtc < settings.sleep.sleepUntilEpoch) {
         lastSleepReason = SLEEP_REASON_OVERRIDE;
         return true;
     }
 
-    struct tm* timeinfo = gmtime((time_t*)&epoch);
-    uint8_t wday   = (uint8_t)timeinfo->tm_wday;
-    uint8_t hour   = (uint8_t)timeinfo->tm_hour;
-    uint8_t minute = (uint8_t)timeinfo->tm_min;
+    struct tm localTm;
+    localtime_r(&nowUtc, &localTm);
+    uint8_t wday   = (uint8_t)localTm.tm_wday;
+    uint8_t hour   = (uint8_t)localTm.tm_hour;
+    uint8_t minute = (uint8_t)localTm.tm_min;
 
     if (sleepScheduleSaysActive(wday, hour, minute)) {
         lastSleepReason = SLEEP_REASON_SCHEDULE;
@@ -5758,7 +5717,7 @@ void loopSleepTransition()
     bool isSleeping = sleepIsActive();
 
     if (isSleeping && !wasSleeping) {
-        Serial.printf("[SLEEP] entering at %u\n", (unsigned)currentLocalEpoch());
+        Serial.printf("[SLEEP] entering at %u\n", (unsigned)time(nullptr));
         previousBrightness = currentBrightness;
         if (strcmp(settings.sleep.displayMode, "black") == 0) {
             displaySetBrightness(0);
@@ -5771,7 +5730,7 @@ void loopSleepTransition()
             lastDisplayUpdate = millis();
         }
     } else if (!isSleeping && wasSleeping) {
-        Serial.printf("[SLEEP] exiting at %u\n", (unsigned)currentLocalEpoch());
+        Serial.printf("[SLEEP] exiting at %u\n", (unsigned)time(nullptr));
         displaySetBrightness(previousBrightness);
         lastDisplayUpdate = 0;
     }
@@ -5890,7 +5849,7 @@ static bool applySleepUpdate(JsonObject body, String& errorOut)
             return false;
         }
         uint32_t requested = body["sleep_until"].as<uint32_t>();
-        if (requested != 0 && requested <= currentLocalEpoch()) {
+        if (requested != 0 && requested <= (uint32_t)time(nullptr)) {
             errorOut = "sleep_until is in the past";
             return false;
         }

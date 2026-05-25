@@ -501,9 +501,7 @@ void loopApps();
 void loopSleepTransition();
 
 static uint32_t currentLocalEpoch();
-static int currentLocalHour();
-static int currentLocalMinute();
-static int currentLocalSecond();
+static void currentLocalTm(struct tm& localTm);
 
 void displayShowBoot();
 void displayShowIP();
@@ -934,10 +932,11 @@ void displayShowIP() {
 void displayShowTime() {
     dma_display->clearScreen();
 
-    // Get time
-    int hours = currentLocalHour();
-    int minutes = currentLocalMinute();
-    int seconds = currentLocalSecond();
+    struct tm localTm;
+    currentLocalTm(localTm);
+    int hours = localTm.tm_hour;
+    int minutes = localTm.tm_min;
+    int seconds = localTm.tm_sec;
 
     // Apply 12h format if configured
     if (!settings.clockFormat24h && hours > 12) {
@@ -1588,9 +1587,11 @@ void displayShowWeatherClock(uint16_t appDuration) {
     // Use global weatherLastDrawnMinute / weatherLastUpdateDrawn
     // (reset by displayShowApp on app switch to force full redraw)
 
-    int hours = currentLocalHour();
-    int minutes = currentLocalMinute();
-    int seconds = currentLocalSecond();
+    struct tm localTm;
+    currentLocalTm(localTm);
+    int hours = localTm.tm_hour;
+    int minutes = localTm.tm_min;
+    int seconds = localTm.tm_sec;
 
     if (!settings.clockFormat24h && hours > 12) {
         hours -= 12;
@@ -3463,7 +3464,13 @@ void setupWebServer() {
             if (doc["ntp"].is<JsonObject>()) {
                 JsonObject ntpUpdate = doc["ntp"].as<JsonObject>();
                 if (ntpUpdate["tz_posix"].is<const char*>()) {
-                    strlcpy(settings.tzPosix, ntpUpdate["tz_posix"].as<const char*>(), sizeof(settings.tzPosix));
+                    const char* tz = ntpUpdate["tz_posix"].as<const char*>();
+                    size_t tzLen = strlen(tz);
+                    if (tzLen == 0 || tzLen >= sizeof(settings.tzPosix)) {
+                        request->send(400, "application/json", "{\"error\":\"tz_posix length invalid\"}");
+                        return;
+                    }
+                    strlcpy(settings.tzPosix, tz, sizeof(settings.tzPosix));
                     ntpChanged = true;
                 }
                 if (ntpUpdate["server"].is<const char*>()) {
@@ -4911,15 +4918,11 @@ bool loadSettings() {
     const char* ntpSrv = doc["ntp"]["server"] | NTP_SERVER;
     strlcpy(settings.ntpServer, ntpSrv, sizeof(settings.ntpServer));
 
-    if (doc["ntp"]["tz_posix"].is<const char*>())
-    {
+    if (doc["ntp"]["tz_posix"].is<const char*>()) {
         strlcpy(settings.tzPosix, doc["ntp"]["tz_posix"].as<const char*>(), sizeof(settings.tzPosix));
-    }
-    else
-    {
+    } else {
         strlcpy(settings.tzPosix, DEFAULT_TZ_POSIX, sizeof(settings.tzPosix));
-        if (!doc["ntp"]["offset"].isNull())
-        {
+        if (!doc["ntp"]["offset"].isNull()) {
             Serial.println("[NTP] Legacy ntp.offset ignored, applying default tz_posix");
         }
     }
@@ -5644,47 +5647,39 @@ void loopApps() {
 // Time Functions
 // ============================================================================
 
-// Returns an epoch in the *local* time frame so legacy consumers
-// (sleep schedule, gmtime-based decoding) keep working without
-// adding the offset themselves. Real UTC stays available via time().
+// Encode broken-down fields as if they were UTC (inverse of gmtime).
+// timegm is not available in ESP32 newlib; this uses Howard Hinnant's
+// days_from_civil formula, correct for any Gregorian date.
+static uint32_t encodeAsUtcEpoch(const struct tm& t) {
+    int y = t.tm_year + 1900;
+    unsigned m = t.tm_mon + 1;
+    unsigned d = t.tm_mday;
+    y -= (m <= 2);
+    int era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long days = (long)era * 146097L + (long)doe - 719468L;
+    return (uint32_t)(days * 86400L + t.tm_hour * 3600L + t.tm_min * 60L + t.tm_sec);
+}
+
+// Local-frame epoch: legacy consumers (sleep schedule, gmtime-based decoding)
+// expect the local clock value encoded as if it were UTC, matching the old
+// NTPClient.getEpochTime() return. localtime_r is DST-aware by construction.
 static uint32_t currentLocalEpoch() {
     time_t nowUtc = time(NULL);
     if (nowUtc == 0) {
         return 0;
     }
-    // Compute local offset DST-aware without relying on tm_gmtoff:
-    // feeding UTC broken-down fields to mktime() (which assumes local
-    // input) returns an epoch shifted by the negative local offset.
-    struct tm utcTm;
-    gmtime_r(&nowUtc, &utcTm);
-    utcTm.tm_isdst = -1;
-    time_t utcAsLocal = mktime(&utcTm);
-    long localOffset = (long)(nowUtc - utcAsLocal);
-    return (uint32_t)((long)nowUtc + localOffset);
+    struct tm localTm;
+    localtime_r(&nowUtc, &localTm);
+    return encodeAsUtcEpoch(localTm);
 }
 
 // localTm name avoids collision with PNGdec's `#define local static`.
 static void currentLocalTm(struct tm& localTm) {
     time_t nowUtc = time(NULL);
     localtime_r(&nowUtc, &localTm);
-}
-
-static int currentLocalHour() {
-    struct tm localTm;
-    currentLocalTm(localTm);
-    return localTm.tm_hour;
-}
-
-static int currentLocalMinute() {
-    struct tm localTm;
-    currentLocalTm(localTm);
-    return localTm.tm_min;
-}
-
-static int currentLocalSecond() {
-    struct tm localTm;
-    currentLocalTm(localTm);
-    return localTm.tm_sec;
 }
 
 // ============================================================================

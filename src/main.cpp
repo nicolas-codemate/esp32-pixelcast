@@ -3460,6 +3460,9 @@ void setupWebServer() {
             bool ntpChanged = false;
             if (doc["ntp"].is<JsonObject>()) {
                 JsonObject ntpUpdate = doc["ntp"].as<JsonObject>();
+                if (!ntpUpdate["offset"].isNull() || !ntpUpdate["daylight_offset"].isNull()) {
+                    Serial.println("[NTP] Legacy ntp.offset/daylight_offset ignored, use ntp.tz_posix");
+                }
                 if (ntpUpdate["tz_posix"].is<const char*>()) {
                     const char* tz = ntpUpdate["tz_posix"].as<const char*>();
                     size_t tzLen = strlen(tz);
@@ -3468,16 +3471,17 @@ void setupWebServer() {
                         return;
                     }
                     strlcpy(settings.tzPosix, tz, sizeof(settings.tzPosix));
+                    Serial.printf("[NTP] tz_posix updated to %s\n", settings.tzPosix);
                     ntpChanged = true;
                 }
                 if (ntpUpdate["server"].is<const char*>()) {
                     strlcpy(settings.ntpServer, ntpUpdate["server"].as<const char*>(), sizeof(settings.ntpServer));
+                    Serial.printf("[NTP] server updated to %s\n", settings.ntpServer);
                     ntpChanged = true;
                 }
             }
             if (ntpChanged) {
                 configTzTime(settings.tzPosix, settings.ntpServer);
-                Serial.printf("[NTP] Re-applied: tz=%s server=%s\n", settings.tzPosix, settings.ntpServer);
             }
 
             saveSettings();

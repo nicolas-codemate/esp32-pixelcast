@@ -2,10 +2,10 @@
 #
 # Note on `sleep_until` / `until` epoch frame:
 # All epoch values in this schema are expressed in the device's *local* time
-# frame (the NTP offset configured on the device has already been applied).
-# Clients whose source of truth is UTC must add the device's `ntp_offset`
-# (seconds) to their UTC epoch before sending. Conversely, values returned
-# by the device are also in the local frame.
+# frame: the device decodes them with the same TZ rules it uses for the clock
+# display (POSIX `tz_posix`). Clients whose source of truth is UTC must
+# convert to local epoch before sending. Values returned by the device are
+# also in the local frame.
 
 SleepSlot:
   type: object
@@ -94,9 +94,9 @@ SleepConfig:
       minimum: 0
       description: >
         Manual sleep override expressed as an epoch timestamp in the device's
-        local time frame (NTP offset already applied). When non-zero and in
-        the future, the device sleeps regardless of `schedule`. A value of
-        `0` clears any active override.
+        local time frame (local-frame epoch decoded with the device's
+        `tz_posix`). When non-zero and in the future, the device sleeps
+        regardless of `schedule`. A value of `0` clears any active override.
       examples:
         - 4102444800
 

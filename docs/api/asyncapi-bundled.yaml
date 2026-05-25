@@ -1469,6 +1469,19 @@ channels:
             defaultDuration:
               type: integer
               description: Default app display duration in milliseconds.
+            ntp:
+              type: object
+              description: >
+                Update NTP source. Either field can be omitted; both are
+                re-applied without reboot via `configTzTime()`.
+              properties:
+                server:
+                  type: string
+                  description: NTP server hostname.
+                tz_posix:
+                  type: string
+                  maxLength: 64
+                  description: POSIX TZ string (e.g. `CET-1CEST,M3.5.0,M10.5.0/3`).
         examples:
           - name: updateSettings
             payload:
@@ -1907,8 +1920,8 @@ channels:
     address: '{prefix}/sleep'
     description: >
       Set a manual sleep override. Payload is `{"until": <epoch>}` where the
-      epoch is in the device's *local* time frame (the device's NTP offset has
-      already been applied). Equivalent to the REST call `POST /api/sleep` with
+      epoch is in the device's *local* time frame (decoded with the configured
+      `tz_posix`). Equivalent to the REST call `POST /api/sleep` with
       `{"sleep_until": <epoch>}`. Past values are rejected (logged to serial;
       state unchanged).
     parameters:
@@ -1926,7 +1939,7 @@ channels:
               minimum: 0
               description: >
                 Epoch timestamp when the override expires, expressed in the
-                device's *local* time frame (NTP offset already applied). Past
+                device's *local* time frame (decoded with `tz_posix`). Past
                 values are rejected.
               examples:
                 - 4102444800
@@ -2793,6 +2806,19 @@ components:
           defaultDuration:
             type: integer
             description: Default app display duration in milliseconds.
+          ntp:
+            type: object
+            description: >
+              Update NTP source. Either field can be omitted; both are
+              re-applied without reboot via `configTzTime()`.
+            properties:
+              server:
+                type: string
+                description: NTP server hostname.
+              tz_posix:
+                type: string
+                maxLength: 64
+                description: POSIX TZ string (e.g. `CET-1CEST,M3.5.0,M10.5.0/3`).
       examples:
         - name: updateSettings
           payload:
@@ -3092,8 +3118,8 @@ components:
             minimum: 0
             description: >
               Epoch timestamp when the override expires, expressed in the
-              device's *local* time frame (NTP offset already applied). Past
-              values are rejected.
+              device's *local* time frame (decoded with `tz_posix`). Past values
+              are rejected.
             examples:
               - 4102444800
       examples:

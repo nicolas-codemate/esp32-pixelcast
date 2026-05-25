@@ -196,8 +196,8 @@ channels:
     address: "{prefix}/sleep"
     description: >
       Set a manual sleep override. Payload is `{"until": <epoch>}` where the
-      epoch is in the device's *local* time frame (the device's NTP offset
-      has already been applied). Equivalent to the REST call
+      epoch is in the device's *local* time frame (decoded with the
+      configured `tz_posix`). Equivalent to the REST call
       `POST /api/sleep` with `{"sleep_until": <epoch>}`. Past values are
       rejected (logged to serial; state unchanged).
     parameters:
@@ -478,7 +478,7 @@ components:
             minimum: 0
             description: >
               Epoch timestamp when the override expires, expressed in the
-              device's *local* time frame (NTP offset already applied).
+              device's *local* time frame (decoded with `tz_posix`).
               Past values are rejected.
             examples:
               - 4102444800

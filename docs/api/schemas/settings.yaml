@@ -17,6 +17,19 @@ SettingsUpdateRequest:
     defaultDuration:
       type: integer
       description: Default app display duration in milliseconds.
+    ntp:
+      type: object
+      description: >
+        Update NTP source. Either field can be omitted; both are
+        re-applied without reboot via `configTzTime()`.
+      properties:
+        server:
+          type: string
+          description: NTP server hostname.
+        tz_posix:
+          type: string
+          maxLength: 64
+          description: POSIX TZ string (e.g. `CET-1CEST,M3.5.0,M10.5.0/3`).
 
 SettingsResponse:
   type: object
@@ -44,9 +57,15 @@ SettingsResponse:
         server:
           type: string
           description: NTP server hostname.
-        offset:
-          type: integer
-          description: UTC offset in seconds.
+        tz_posix:
+          type: string
+          maxLength: 64
+          description: >
+            POSIX TZ string controlling DST behaviour. Default
+            `CET-1CEST,M3.5.0,M10.5.0/3` (Europe/Paris). The runtime parses
+            this string and switches DST automatically.
+          examples:
+            - "CET-1CEST,M3.5.0,M10.5.0/3"
     mqtt:
       type: object
       properties:

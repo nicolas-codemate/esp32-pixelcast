@@ -497,7 +497,6 @@ void setupApps();
 void loopWiFi();
 void loopMQTT();
 void loopDisplay();
-void loopTime();
 void loopApps();
 void loopSleepTransition();
 
@@ -822,7 +821,6 @@ void loop() {
     ArduinoOTA.handle();
     loopWiFi();
     loopMQTT();
-    loopTime();
     loopSleepTransition();
     loopApps();
     loopDisplay();
@@ -5649,11 +5647,9 @@ void loopApps() {
 // Returns an epoch in the *local* time frame so legacy consumers
 // (sleep schedule, gmtime-based decoding) keep working without
 // adding the offset themselves. Real UTC stays available via time().
-static uint32_t currentLocalEpoch()
-{
+static uint32_t currentLocalEpoch() {
     time_t nowUtc = time(NULL);
-    if (nowUtc == 0)
-    {
+    if (nowUtc == 0) {
         return 0;
     }
     // Compute local offset DST-aware without relying on tm_gmtoff:
@@ -5667,31 +5663,28 @@ static uint32_t currentLocalEpoch()
     return (uint32_t)((long)nowUtc + localOffset);
 }
 
-static int currentLocalHour()
-{
+// localTm name avoids collision with PNGdec's `#define local static`.
+static void currentLocalTm(struct tm& localTm) {
     time_t nowUtc = time(NULL);
-    struct tm localTm;
     localtime_r(&nowUtc, &localTm);
+}
+
+static int currentLocalHour() {
+    struct tm localTm;
+    currentLocalTm(localTm);
     return localTm.tm_hour;
 }
 
-static int currentLocalMinute()
-{
-    time_t nowUtc = time(NULL);
+static int currentLocalMinute() {
     struct tm localTm;
-    localtime_r(&nowUtc, &localTm);
+    currentLocalTm(localTm);
     return localTm.tm_min;
 }
 
-static int currentLocalSecond()
-{
-    time_t nowUtc = time(NULL);
+static int currentLocalSecond() {
     struct tm localTm;
-    localtime_r(&nowUtc, &localTm);
+    currentLocalTm(localTm);
     return localTm.tm_sec;
-}
-
-void loopTime() {
 }
 
 // ============================================================================
@@ -5724,11 +5717,9 @@ static bool sleepScheduleSaysActive(uint8_t wday, uint8_t hour, uint8_t minute) 
     return false;
 }
 
-// currentLocalEpoch() returns a local-frame epoch so sleepUntilEpoch
-// comparisons stay in the same frame as gmtime() below. Clients that
-// pass a UTC epoch must add the local offset before POSTing it.
 // SLEEP_REASON_NTP_NOT_SYNCED wins over `enabled` so the diagnostic
-// is accurate when the clock is unreliable.
+// stays accurate when the clock is unreliable. sleepUntilEpoch is
+// stored in the same local-frame epoch as currentLocalEpoch().
 bool sleepIsActive() {
     uint32_t epoch = currentLocalEpoch();
 

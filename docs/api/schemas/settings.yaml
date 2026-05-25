@@ -28,7 +28,7 @@ SettingsUpdateRequest:
           description: NTP server hostname.
         tz_posix:
           type: string
-          maxLength: 64
+          maxLength: 63
           description: POSIX TZ string (e.g. `CET-1CEST,M3.5.0,M10.5.0/3`).
 
 SettingsResponse:
@@ -59,7 +59,7 @@ SettingsResponse:
           description: NTP server hostname.
         tz_posix:
           type: string
-          maxLength: 64
+          maxLength: 63
           description: >
             POSIX TZ string controlling DST behaviour. Default
             `CET-1CEST,M3.5.0,M10.5.0/3` (Europe/Paris). The runtime parses

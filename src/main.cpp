@@ -42,8 +42,7 @@
 #include <Fonts/TomThumb.h>
 
 // NTP
-#include <NTPClient.h>
-#include <WiFiUdp.h>
+#include <time.h>
 
 // HTTPS for LaMetric icon download
 #include <WiFiClientSecure.h>
@@ -111,10 +110,6 @@ AsyncWebServer webServer(WEB_SERVER_PORT);
 
 // MQTT
 PubSubClient mqttClient(wifiClient);
-
-// NTP
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, NTP_SERVER, NTP_OFFSET, NTP_UPDATE_INTERVAL);
 
 // State
 bool wifiConnected = false;
@@ -203,7 +198,7 @@ struct Settings {
     bool autoRotate;
     uint16_t defaultDuration;
     char ntpServer[48];
-    int32_t ntpOffset;
+    char tzPosix[64];
     bool clockEnabled;
     bool clockFormat24h;
     bool clockShowSeconds;
@@ -506,6 +501,11 @@ void loopTime();
 void loopApps();
 void loopSleepTransition();
 
+static uint32_t currentLocalEpoch();
+static int currentLocalHour();
+static int currentLocalMinute();
+static int currentLocalSecond();
+
 void displayShowBoot();
 void displayShowIP();
 void displayShowTime();
@@ -756,9 +756,7 @@ void setup() {
         ArduinoOTA.begin();
 
         Serial.println("[INIT] Setting up NTP...");
-        timeClient.setPoolServerName(settings.ntpServer);
-        timeClient.setTimeOffset(settings.ntpOffset);
-        timeClient.begin();
+        configTzTime(settings.tzPosix, settings.ntpServer);
 
         displayShowIP();
         delay(2000);
@@ -939,9 +937,9 @@ void displayShowTime() {
     dma_display->clearScreen();
 
     // Get time
-    int hours = timeClient.getHours();
-    int minutes = timeClient.getMinutes();
-    int seconds = timeClient.getSeconds();
+    int hours = currentLocalHour();
+    int minutes = currentLocalMinute();
+    int seconds = currentLocalSecond();
 
     // Apply 12h format if configured
     if (!settings.clockFormat24h && hours > 12) {
@@ -982,7 +980,7 @@ void displayShowDate() {
     dma_display->clearScreen();
 
     // Get date from NTP epoch
-    unsigned long epochTime = timeClient.getEpochTime();
+    unsigned long epochTime = currentLocalEpoch();
     struct tm* timeinfo = gmtime((time_t*)&epochTime);
 
     uint8_t day = timeinfo->tm_mday;
@@ -1592,9 +1590,9 @@ void displayShowWeatherClock(uint16_t appDuration) {
     // Use global weatherLastDrawnMinute / weatherLastUpdateDrawn
     // (reset by displayShowApp on app switch to force full redraw)
 
-    int hours = timeClient.getHours();
-    int minutes = timeClient.getMinutes();
-    int seconds = timeClient.getSeconds();
+    int hours = currentLocalHour();
+    int minutes = currentLocalMinute();
+    int seconds = currentLocalSecond();
 
     if (!settings.clockFormat24h && hours > 12) {
         hours -= 12;
@@ -1714,7 +1712,7 @@ void displayShowWeatherClock(uint16_t appDuration) {
 
         // ---- Date (y=21-30) ----
         dma_display->fillRect(0, 21, DISPLAY_WIDTH, 10, black);
-        unsigned long epochTime = timeClient.getEpochTime();
+        unsigned long epochTime = currentLocalEpoch();
         struct tm* timeinfo = gmtime((time_t*)&epochTime);
 
         static const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
@@ -4189,7 +4187,7 @@ void handleApiSettings(AsyncWebServerRequest *request) {
     doc["display"]["width"] = DISPLAY_WIDTH;
     doc["display"]["height"] = DISPLAY_HEIGHT;
     doc["ntp"]["server"] = settings.ntpServer;
-    doc["ntp"]["offset"] = settings.ntpOffset;
+    doc["ntp"]["tz_posix"] = settings.tzPosix;
     doc["mqtt"]["enabled"] = settings.mqttEnabled;
     doc["mqtt"]["prefix"] = settings.mqttPrefix;
 
@@ -4841,7 +4839,7 @@ void initDefaultSettings() {
     settings.defaultDuration = DEFAULT_APP_DURATION;
 
     strlcpy(settings.ntpServer, NTP_SERVER, sizeof(settings.ntpServer));
-    settings.ntpOffset = NTP_OFFSET;
+    strlcpy(settings.tzPosix, DEFAULT_TZ_POSIX, sizeof(settings.tzPosix));
 
     settings.clockEnabled = true;
     settings.clockFormat24h = true;
@@ -4897,7 +4895,7 @@ bool loadSettings() {
     // NTP settings
     const char* ntpSrv = doc["ntp"]["server"] | NTP_SERVER;
     strlcpy(settings.ntpServer, ntpSrv, sizeof(settings.ntpServer));
-    settings.ntpOffset = doc["ntp"]["offset"] | NTP_OFFSET;
+    strlcpy(settings.tzPosix, doc["ntp"]["tz_posix"] | DEFAULT_TZ_POSIX, sizeof(settings.tzPosix));
 
     // Clock app settings
     settings.clockEnabled = doc["apps"]["clock"]["enabled"] | true;
@@ -5042,7 +5040,7 @@ bool saveSettings() {
 
     // NTP settings
     doc["ntp"]["server"] = settings.ntpServer;
-    doc["ntp"]["offset"] = settings.ntpOffset;
+    doc["ntp"]["tz_posix"] = settings.tzPosix;
     doc["ntp"]["daylightOffset"] = 3600;
 
     // Clock app settings
@@ -5620,10 +5618,52 @@ void loopApps() {
 // Time Functions
 // ============================================================================
 
-void loopTime() {
-    if (wifiConnected) {
-        timeClient.update();
+// Returns an epoch in the *local* time frame so legacy consumers
+// (sleep schedule, gmtime-based decoding) keep working without
+// adding the offset themselves. Real UTC stays available via time().
+static uint32_t currentLocalEpoch()
+{
+    time_t nowUtc = time(NULL);
+    if (nowUtc == 0)
+    {
+        return 0;
     }
+    // Compute local offset DST-aware without relying on tm_gmtoff:
+    // feeding UTC broken-down fields to mktime() (which assumes local
+    // input) returns an epoch shifted by the negative local offset.
+    struct tm utcTm;
+    gmtime_r(&nowUtc, &utcTm);
+    utcTm.tm_isdst = -1;
+    time_t utcAsLocal = mktime(&utcTm);
+    long localOffset = (long)(nowUtc - utcAsLocal);
+    return (uint32_t)((long)nowUtc + localOffset);
+}
+
+static int currentLocalHour()
+{
+    time_t nowUtc = time(NULL);
+    struct tm localTm;
+    localtime_r(&nowUtc, &localTm);
+    return localTm.tm_hour;
+}
+
+static int currentLocalMinute()
+{
+    time_t nowUtc = time(NULL);
+    struct tm localTm;
+    localtime_r(&nowUtc, &localTm);
+    return localTm.tm_min;
+}
+
+static int currentLocalSecond()
+{
+    time_t nowUtc = time(NULL);
+    struct tm localTm;
+    localtime_r(&nowUtc, &localTm);
+    return localTm.tm_sec;
+}
+
+void loopTime() {
 }
 
 // ============================================================================
@@ -5656,13 +5696,13 @@ static bool sleepScheduleSaysActive(uint8_t wday, uint8_t hour, uint8_t minute) 
     return false;
 }
 
-// timeClient.getEpochTime() returns local epoch (NTP offset already applied).
-// sleepUntilEpoch is stored and compared in that same local-epoch frame —
-// callers that accept a UTC epoch from clients must add settings.ntpOffset
-// before writing it. AC5 requires NTP_NOT_SYNCED to win over the enabled
-// flag so the diagnostic stays accurate when the clock is unreliable.
+// currentLocalEpoch() returns a local-frame epoch so sleepUntilEpoch
+// comparisons stay in the same frame as gmtime() below. Clients that
+// pass a UTC epoch must add the local offset before POSTing it.
+// SLEEP_REASON_NTP_NOT_SYNCED wins over `enabled` so the diagnostic
+// is accurate when the clock is unreliable.
 bool sleepIsActive() {
-    uint32_t epoch = timeClient.getEpochTime();
+    uint32_t epoch = currentLocalEpoch();
 
     if (epoch <= NTP_VALID_EPOCH_THRESHOLD) {
         lastSleepReason = SLEEP_REASON_NTP_NOT_SYNCED;
@@ -5704,7 +5744,7 @@ void loopSleepTransition()
     bool isSleeping = sleepIsActive();
 
     if (isSleeping && !wasSleeping) {
-        Serial.printf("[SLEEP] entering at %lu\n", timeClient.getEpochTime());
+        Serial.printf("[SLEEP] entering at %u\n", (unsigned)currentLocalEpoch());
         previousBrightness = currentBrightness;
         if (strcmp(settings.sleep.displayMode, "black") == 0) {
             displaySetBrightness(0);
@@ -5717,7 +5757,7 @@ void loopSleepTransition()
             lastDisplayUpdate = millis();
         }
     } else if (!isSleeping && wasSleeping) {
-        Serial.printf("[SLEEP] exiting at %lu\n", timeClient.getEpochTime());
+        Serial.printf("[SLEEP] exiting at %u\n", (unsigned)currentLocalEpoch());
         displaySetBrightness(previousBrightness);
         lastDisplayUpdate = 0;
     }
@@ -5836,7 +5876,7 @@ static bool applySleepUpdate(JsonObject body, String& errorOut)
             return false;
         }
         uint32_t requested = body["sleep_until"].as<uint32_t>();
-        if (requested != 0 && requested <= timeClient.getEpochTime()) {
+        if (requested != 0 && requested <= currentLocalEpoch()) {
             errorOut = "sleep_until is in the past";
             return false;
         }

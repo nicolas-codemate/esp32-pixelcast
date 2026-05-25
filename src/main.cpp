@@ -4895,7 +4895,19 @@ bool loadSettings() {
     // NTP settings
     const char* ntpSrv = doc["ntp"]["server"] | NTP_SERVER;
     strlcpy(settings.ntpServer, ntpSrv, sizeof(settings.ntpServer));
-    strlcpy(settings.tzPosix, doc["ntp"]["tz_posix"] | DEFAULT_TZ_POSIX, sizeof(settings.tzPosix));
+
+    if (doc["ntp"]["tz_posix"].is<const char*>())
+    {
+        strlcpy(settings.tzPosix, doc["ntp"]["tz_posix"].as<const char*>(), sizeof(settings.tzPosix));
+    }
+    else
+    {
+        strlcpy(settings.tzPosix, DEFAULT_TZ_POSIX, sizeof(settings.tzPosix));
+        if (!doc["ntp"]["offset"].isNull())
+        {
+            Serial.println("[NTP] Legacy ntp.offset ignored, applying default tz_posix");
+        }
+    }
 
     // Clock app settings
     settings.clockEnabled = doc["apps"]["clock"]["enabled"] | true;
@@ -5041,7 +5053,6 @@ bool saveSettings() {
     // NTP settings
     doc["ntp"]["server"] = settings.ntpServer;
     doc["ntp"]["tz_posix"] = settings.tzPosix;
-    doc["ntp"]["daylightOffset"] = 3600;
 
     // Clock app settings
     doc["apps"]["clock"]["enabled"] = settings.clockEnabled;

@@ -3461,6 +3461,23 @@ void setupWebServer() {
                 settings.defaultDuration = doc["defaultDuration"].as<uint16_t>();
             }
 
+            bool ntpChanged = false;
+            if (doc["ntp"].is<JsonObject>()) {
+                JsonObject ntpUpdate = doc["ntp"].as<JsonObject>();
+                if (ntpUpdate["tz_posix"].is<const char*>()) {
+                    strlcpy(settings.tzPosix, ntpUpdate["tz_posix"].as<const char*>(), sizeof(settings.tzPosix));
+                    ntpChanged = true;
+                }
+                if (ntpUpdate["server"].is<const char*>()) {
+                    strlcpy(settings.ntpServer, ntpUpdate["server"].as<const char*>(), sizeof(settings.ntpServer));
+                    ntpChanged = true;
+                }
+            }
+            if (ntpChanged) {
+                configTzTime(settings.tzPosix, settings.ntpServer);
+                Serial.printf("[NTP] Re-applied: tz=%s server=%s\n", settings.tzPosix, settings.ntpServer);
+            }
+
             saveSettings();
             Serial.println("[API] Settings updated");
             request->send(200, "application/json", "{\"success\":true}");

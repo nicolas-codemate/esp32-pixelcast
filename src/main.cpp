@@ -975,13 +975,12 @@ void displayShowDate() {
     dma_display->clearScreen();
 
     time_t nowUtc = time(nullptr);
-    struct tm tmLocal;
-    localtime_r(&nowUtc, &tmLocal);
-    struct tm* timeinfo = &tmLocal;
+    struct tm localTm;
+    localtime_r(&nowUtc, &localTm);
 
-    uint8_t day = timeinfo->tm_mday;
-    uint8_t month = timeinfo->tm_mon + 1;
-    uint16_t year = timeinfo->tm_year + 1900;
+    uint8_t day = localTm.tm_mday;
+    uint8_t month = localTm.tm_mon + 1;
+    uint16_t year = localTm.tm_year + 1900;
 
     // Format date string based on settings
     char dateStr[16];
@@ -1711,9 +1710,6 @@ void displayShowWeatherClock(uint16_t appDuration) {
 
         // ---- Date (y=21-30) ----
         dma_display->fillRect(0, 21, DISPLAY_WIDTH, 10, black);
-        struct tm tmLocal;
-        localtime_r(&nowUtc, &tmLocal);
-        struct tm* timeinfo = &tmLocal;
 
         static const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
         static const char* monthNamesFr[] = {"JAN", "FEV", "MAR", "AVR", "MAI", "JUN",
@@ -1721,9 +1717,9 @@ void displayShowWeatherClock(uint16_t appDuration) {
 
         char dateStr[16];
         snprintf(dateStr, sizeof(dateStr), "%s %02d %s",
-                 dayNamesFr[timeinfo->tm_wday],
-                 timeinfo->tm_mday,
-                 monthNamesFr[timeinfo->tm_mon]);
+                 dayNamesFr[localTm.tm_wday],
+                 localTm.tm_mday,
+                 monthNamesFr[localTm.tm_mon]);
 
         dma_display->setFont(NULL);
         dma_display->setTextSize(1);
@@ -5695,11 +5691,11 @@ bool sleepIsActive() {
         return true;
     }
 
-    struct tm tmLocal;
-    localtime_r(&nowUtc, &tmLocal);
-    uint8_t wday   = (uint8_t)tmLocal.tm_wday;
-    uint8_t hour   = (uint8_t)tmLocal.tm_hour;
-    uint8_t minute = (uint8_t)tmLocal.tm_min;
+    struct tm localTm;
+    localtime_r(&nowUtc, &localTm);
+    uint8_t wday   = (uint8_t)localTm.tm_wday;
+    uint8_t hour   = (uint8_t)localTm.tm_hour;
+    uint8_t minute = (uint8_t)localTm.tm_min;
 
     if (sleepScheduleSaysActive(wday, hour, minute)) {
         lastSleepReason = SLEEP_REASON_SCHEDULE;

@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: ESP32-PixelCast MQTT API
-  version: 0.1.0
+  version: 0.2.0
   description: >
     MQTT interface for controlling a HUB75 LED matrix panel (64x64) running
     on ESP32 Trinity. JSON payloads mirror the REST API. MQTT must be enabled
@@ -17,6 +17,10 @@ info:
     - Name can be in topic path or JSON body for custom/tracker.
 
     - No icon management over MQTT.
+
+    **BREAKING (v0.2.0)**: sleep `until` epoch semantics changed from the
+    device's local frame to UTC Unix timestamps. Clients that previously
+    added the device's NTP offset before sending must stop doing so.
   license:
     name: MIT
 
@@ -196,10 +200,10 @@ channels:
     address: "{prefix}/sleep"
     description: >
       Set a manual sleep override. Payload is `{"until": <epoch>}` where the
-      epoch is in the device's *local* time frame (decoded with the
-      configured `tz_posix`). Equivalent to the REST call
-      `POST /api/sleep` with `{"sleep_until": <epoch>}`. Past values are
-      rejected (logged to serial; state unchanged).
+      epoch is a UTC Unix timestamp (seconds since 1970-01-01 UTC).
+      Equivalent to the REST call `POST /api/sleep` with
+      `{"sleep_until": <epoch>}`. Past values are rejected (logged to serial;
+      state unchanged).
     parameters:
       prefix:
         default: pixelcast
@@ -477,9 +481,8 @@ components:
             type: integer
             minimum: 0
             description: >
-              Epoch timestamp when the override expires, expressed in the
-              device's *local* time frame (decoded with `tz_posix`).
-              Past values are rejected.
+              UTC Unix timestamp when the override expires (seconds since
+              1970-01-01 UTC). Past values are rejected.
             examples:
               - 4102444800
       examples:

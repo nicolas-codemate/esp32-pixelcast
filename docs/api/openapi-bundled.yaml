@@ -1,9 +1,11 @@
 openapi: 3.1.0
 info:
   title: ESP32-PixelCast REST API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     REST API for controlling a HUB75 LED matrix panel (64x64) running on ESP32 Trinity. Manages custom apps, notifications, weather, trackers, indicators, icons, and system settings.
+
+    **BREAKING (v0.2.0)**: sleep `sleep_until` / `until` epoch semantics changed from the device's local frame to UTC Unix timestamps. Clients that previously added the device's NTP offset before sending must stop doing so.
   license:
     name: MIT
     identifier: MIT
@@ -32,7 +34,7 @@ tags:
     description: Icon filesystem management and LaMetric downloads.
   - name: Sleep
     description: |
-      Display sleep mode (schedule-based or manual override). Epoch values use the device's local time frame, decoded with the configured `tz_posix`. Clients whose source is UTC must convert to local epoch before sending.
+      Display sleep mode (schedule-based or manual override). Epoch values are standard UTC Unix timestamps (seconds since 1970-01-01 UTC); the device handles local time display via `ntp.tz_posix`. BREAKING in v0.2.0: previously these epochs were in the device's local frame.
 paths:
   /stats:
     get:
@@ -151,9 +153,12 @@ paths:
                         type: string
                         maxLength: 63
                         description: |
-                          POSIX TZ string controlling DST behaviour. Default `CET-1CEST,M3.5.0,M10.5.0/3` (Europe/Paris). The runtime parses this string and switches DST automatically.
+                          POSIX TZ string controlling local time display and DST behaviour. Example: "CET-1CEST,M3.5.0,M10.5.0/3" for Europe/Paris with EU DST. The device does not embed an IANA tz database — clients should convert IANA names (e.g. "Europe/Paris") to POSIX TZ before sending.
                         examples:
                           - 'CET-1CEST,M3.5.0,M10.5.0/3'
+                          - UTC0
+                          - 'EST5EDT,M3.2.0,M11.1.0'
+                        default: 'CET-1CEST,M3.5.0,M10.5.0/3'
                   mqtt:
                     type: object
                     properties:
@@ -200,7 +205,13 @@ paths:
                     tz_posix:
                       type: string
                       maxLength: 63
-                      description: 'POSIX TZ string (e.g. `CET-1CEST,M3.5.0,M10.5.0/3`).'
+                      description: |
+                        POSIX TZ string controlling local time display and DST behaviour. Example: "CET-1CEST,M3.5.0,M10.5.0/3" for Europe/Paris with EU DST. The device does not embed an IANA tz database — clients should convert IANA names (e.g. "Europe/Paris") to POSIX TZ before sending.
+                      examples:
+                        - 'CET-1CEST,M3.5.0,M10.5.0/3'
+                        - UTC0
+                        - 'EST5EDT,M3.2.0,M11.1.0'
+                      default: 'CET-1CEST,M3.5.0,M10.5.0/3'
       responses:
         '200':
           description: Settings updated.
@@ -997,7 +1008,7 @@ paths:
                     type: integer
                     minimum: 0
                     description: |
-                      Epoch (local frame) at which the override expires. Only present when `reason` is `override`.
+                      UTC Unix timestamp at which the override expires. Only present when `reason` is `override`.
                     examples:
                       - 4102444800
                   config:
@@ -1137,7 +1148,7 @@ paths:
                   type: integer
                   minimum: 0
                   description: |
-                    Manual sleep override expressed as an epoch timestamp in the device's local time frame (local-frame epoch decoded with the device's `tz_posix`). When non-zero and in the future, the device sleeps regardless of `schedule`. A value of `0` clears any active override.
+                    Manual sleep override expressed as a UTC Unix timestamp (seconds since 1970-01-01 UTC). When non-zero and in the future, the device sleeps regardless of `schedule`. A value of `0` clears any active override.
                   examples:
                     - 4102444800
             examples:

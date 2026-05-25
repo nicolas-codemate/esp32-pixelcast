@@ -1,11 +1,14 @@
 # Sleep schemas
 #
 # Note on `sleep_until` / `until` epoch frame:
-# All epoch values in this schema are expressed in the device's *local* time
-# frame: the device decodes them with the same TZ rules it uses for the clock
-# display (POSIX `tz_posix`). Clients whose source of truth is UTC must
-# convert to local epoch before sending. Values returned by the device are
-# also in the local frame.
+# All epoch values in this schema are standard UTC Unix timestamps (seconds
+# since 1970-01-01 UTC). The device handles local time display via its
+# configured `ntp.tz_posix`; clients send and receive epochs in UTC
+# unchanged.
+#
+# BREAKING (v0.2.0): `sleep_until` epoch semantics changed from the device's
+# local frame to UTC. Clients that previously added the device's `ntp_offset`
+# to their UTC timestamp before sending must stop doing so.
 
 SleepSlot:
   type: object
@@ -93,10 +96,10 @@ SleepConfig:
       type: integer
       minimum: 0
       description: >
-        Manual sleep override expressed as an epoch timestamp in the device's
-        local time frame (local-frame epoch decoded with the device's
-        `tz_posix`). When non-zero and in the future, the device sleeps
-        regardless of `schedule`. A value of `0` clears any active override.
+        Manual sleep override expressed as a UTC Unix timestamp (seconds
+        since 1970-01-01 UTC). When non-zero and in the future, the device
+        sleeps regardless of `schedule`. A value of `0` clears any active
+        override.
       examples:
         - 4102444800
 
@@ -123,7 +126,7 @@ SleepState:
       type: integer
       minimum: 0
       description: >
-        Epoch (local frame) at which the override expires. Only present
+        UTC Unix timestamp at which the override expires. Only present
         when `reason` is `override`.
       examples:
         - 4102444800

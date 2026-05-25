@@ -1,11 +1,17 @@
 openapi: 3.1.0
 info:
   title: ESP32-PixelCast REST API
-  version: 0.1.0
+  version: 0.2.0
   description: >
     REST API for controlling a HUB75 LED matrix panel (64x64) running on
     ESP32 Trinity. Manages custom apps, notifications, weather, trackers,
     indicators, icons, and system settings.
+
+
+    **BREAKING (v0.2.0)**: sleep `sleep_until` / `until` epoch semantics
+    changed from the device's local frame to UTC Unix timestamps. Clients
+    that previously added the device's NTP offset before sending must stop
+    doing so.
   license:
     name: MIT
     identifier: MIT
@@ -37,9 +43,9 @@ tags:
   - name: Sleep
     description: >
       Display sleep mode (schedule-based or manual override). Epoch values
-      use the device's local time frame, decoded with the configured
-      `tz_posix`. Clients whose source is UTC must convert to local epoch
-      before sending.
+      are standard UTC Unix timestamps (seconds since 1970-01-01 UTC); the
+      device handles local time display via `ntp.tz_posix`. BREAKING in
+      v0.2.0: previously these epochs were in the device's local frame.
 
 paths:
   # ===========================================================================

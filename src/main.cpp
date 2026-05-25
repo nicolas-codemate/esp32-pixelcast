@@ -5713,12 +5713,12 @@ static bool sleepScheduleSaysActive(uint8_t wday, uint8_t hour, uint8_t minute) 
 }
 
 // SLEEP_REASON_NTP_NOT_SYNCED wins over `enabled` so the diagnostic
-// stays accurate when the clock is unreliable. sleepUntilEpoch is
-// stored in the same local-frame epoch as currentLocalEpoch().
+// stays accurate when the clock is unreliable. sleepUntilEpoch is a
+// standard UTC epoch.
 bool sleepIsActive() {
-    uint32_t epoch = currentLocalEpoch();
+    time_t nowUtc = time(nullptr);
 
-    if (epoch <= NTP_VALID_EPOCH_THRESHOLD) {
+    if (nowUtc < NTP_VALID_EPOCH_THRESHOLD) {
         lastSleepReason = SLEEP_REASON_NTP_NOT_SYNCED;
         return false;
     }
@@ -5728,15 +5728,16 @@ bool sleepIsActive() {
         return false;
     }
 
-    if (epoch < settings.sleep.sleepUntilEpoch) {
+    if ((uint32_t)nowUtc < settings.sleep.sleepUntilEpoch) {
         lastSleepReason = SLEEP_REASON_OVERRIDE;
         return true;
     }
 
-    struct tm* timeinfo = gmtime((time_t*)&epoch);
-    uint8_t wday   = (uint8_t)timeinfo->tm_wday;
-    uint8_t hour   = (uint8_t)timeinfo->tm_hour;
-    uint8_t minute = (uint8_t)timeinfo->tm_min;
+    struct tm tmLocal;
+    localtime_r(&nowUtc, &tmLocal);
+    uint8_t wday   = (uint8_t)tmLocal.tm_wday;
+    uint8_t hour   = (uint8_t)tmLocal.tm_hour;
+    uint8_t minute = (uint8_t)tmLocal.tm_min;
 
     if (sleepScheduleSaysActive(wday, hour, minute)) {
         lastSleepReason = SLEEP_REASON_SCHEDULE;
@@ -5758,7 +5759,7 @@ void loopSleepTransition()
     bool isSleeping = sleepIsActive();
 
     if (isSleeping && !wasSleeping) {
-        Serial.printf("[SLEEP] entering at %u\n", (unsigned)currentLocalEpoch());
+        Serial.printf("[SLEEP] entering at %u\n", (unsigned)time(nullptr));
         previousBrightness = currentBrightness;
         if (strcmp(settings.sleep.displayMode, "black") == 0) {
             displaySetBrightness(0);
@@ -5771,7 +5772,7 @@ void loopSleepTransition()
             lastDisplayUpdate = millis();
         }
     } else if (!isSleeping && wasSleeping) {
-        Serial.printf("[SLEEP] exiting at %u\n", (unsigned)currentLocalEpoch());
+        Serial.printf("[SLEEP] exiting at %u\n", (unsigned)time(nullptr));
         displaySetBrightness(previousBrightness);
         lastDisplayUpdate = 0;
     }
@@ -5890,7 +5891,7 @@ static bool applySleepUpdate(JsonObject body, String& errorOut)
             return false;
         }
         uint32_t requested = body["sleep_until"].as<uint32_t>();
-        if (requested != 0 && requested <= currentLocalEpoch()) {
+        if (requested != 0 && requested <= (uint32_t)time(nullptr)) {
             errorOut = "sleep_until is in the past";
             return false;
         }

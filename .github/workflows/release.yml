@@ -1,0 +1,98 @@
+name: Release Firmware
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify-version:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag against VERSION_STRING
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          STRING=$(sed -n 's/.*-D VERSION_STRING=\\"\(.*\)\\".*/\1/p' platformio.ini)
+          MAJOR=$(sed -n 's/.*-D VERSION_MAJOR=\([0-9]*\).*/\1/p' platformio.ini)
+          MINOR=$(sed -n 's/.*-D VERSION_MINOR=\([0-9]*\).*/\1/p' platformio.ini)
+          PATCH=$(sed -n 's/.*-D VERSION_PATCH=\([0-9]*\).*/\1/p' platformio.ini)
+
+          echo "tag=$TAG platformio=$STRING triple=$MAJOR.$MINOR.$PATCH"
+
+          if [ -z "$STRING" ]; then
+            echo "::error::VERSION_STRING not found in platformio.ini"
+            exit 1
+          fi
+          if [ "$TAG" != "$STRING" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match VERSION_STRING=$STRING in platformio.ini"
+            exit 1
+          fi
+          if [ "$STRING" != "$MAJOR.$MINOR.$PATCH" ]; then
+            echo "::error::VERSION_STRING=$STRING disagrees with VERSION_MAJOR/MINOR/PATCH=$MAJOR.$MINOR.$PATCH"
+            exit 1
+          fi
+
+  build:
+    needs: verify-version
+    if: always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [trinity, devkit, esp32s3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build ${{ matrix.environment }}
+        run: pio run -e ${{ matrix.environment }}
+
+      - name: Name the binary after the release
+        run: |
+          VERSION=$(sed -n 's/.*-D VERSION_STRING=\\"\(.*\)\\".*/\1/p' platformio.ini)
+          cp ".pio/build/${{ matrix.environment }}/firmware.bin" \
+             "pixelcast-${{ matrix.environment }}-${VERSION}.bin"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.environment }}
+          path: pixelcast-${{ matrix.environment }}-*.bin
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-*
+          merge-multiple: true
+
+      - name: Attach binaries to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: pixelcast-*.bin
+          generate_release_notes: true
+          fail_on_unmatched_files: true

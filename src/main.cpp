@@ -339,6 +339,11 @@ unsigned long lastForecastPageSwitch = 0;
 // Weather display cache (global so they can be reset on app switch)
 int weatherLastDrawnMinute = -1;
 unsigned long weatherLastUpdateDrawn = 0;
+int weatherTodayLastDrawnMinute = -1;
+unsigned long weatherTodayLastUpdateDrawn = 0;
+
+// Indexed by tm_wday, so Sunday first
+const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
 
 // Tracker display cache (global so they can be reset on app switch)
 unsigned long trackerLastUpdateDrawn = 0;
@@ -534,6 +539,7 @@ void displayShowTime();
 void displayShowDate();
 void displayShowApp(AppItem* app);
 void displayShowWeatherClock(uint16_t appDuration = 10000);
+void displayShowWeatherToday();
 void drawDropIcon(int16_t x, int16_t y, uint16_t color);
 void drawSeparatorLine(int16_t y, uint16_t color);
 void drawIconAtScale(CachedIcon* icon, int16_t x, int16_t y, uint8_t scale);
@@ -1816,7 +1822,6 @@ void displayShowWeatherClock(uint16_t appDuration) {
         // ---- Date (y=21-30) ----
         dma_display->fillRect(0, 21, DISPLAY_WIDTH, 10, black);
 
-        static const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
         static const char* monthNamesFr[] = {"JAN", "FEV", "MAR", "AVR", "MAI", "JUN",
                                              "JUL", "AOU", "SEP", "OCT", "NOV", "DEC"};
 
@@ -1948,6 +1953,288 @@ void displayShowWeatherClock(uint16_t appDuration) {
     #endif
 }
 
+// Above 1.0 mm within the hour the precipitation bars switch to the saturated blue
+#define TODAY_HEAVY_PRECIP_TENTHS 10
+
+void displayShowWeatherToday()
+{
+    // ============================================================
+    // Layout map (64x64 display) - app "weathertoday"
+    // NULL font: setCursor = top-left of glyph, char is 7px tall
+    // TomThumb: setCursor = baseline, uppercase chars 5px above baseline
+    // ============================================================
+    // y=0-6:    HH:MM (NULL font, x=2) + short date "MAR 04" (TomThumb, ends at x=58)
+    // y=8-15:   sky segments (8x8 icons, centred on their hour span)
+    // y=17-21:  segment switch hours (TomThumb, baseline y=21)
+    // y=23:     separator
+    // y=24-28:  curve min/max annotation (TomThumb, baseline y=28)
+    // y=30-45:  temperature curve (12 points, 5px pitch)
+    // y=47-57:  precipitation bars (12 bars, 4px wide + 1px gutter)
+    // y=59-63:  hour axis every 3 hours (TomThumb, baseline y=63)
+    // ============================================================
+
+    unsigned long weatherAge = millis() - weatherData.lastUpdate;
+    if (!weatherData.valid || weatherAge > 3600000 || weatherData.today.hourCount == 0)
+    {
+        displayShowTime();
+        return;
+    }
+
+    time_t nowUtc = time(nullptr);
+    struct tm localTm;
+    localtime_r(&nowUtc, &localTm);
+    int hours = localTm.tm_hour;
+    int minutes = localTm.tm_min;
+
+    if (!settings.clockFormat24h && hours > 12)
+    {
+        hours -= 12;
+    }
+
+    bool hasNewWeatherData = (weatherTodayLastUpdateDrawn != weatherData.lastUpdate);
+    bool minuteChanged = (weatherTodayLastDrawnMinute != minutes);
+
+    // The screen carries no seconds, so an unchanged minute with unchanged data has nothing to paint
+    if (!hasNewWeatherData && !minuteChanged)
+    {
+        drawIndicators();
+        #if DOUBLE_BUFFER
+            dma_display->flipDMABuffer();
+        #endif
+        return;
+    }
+
+    const TodayWindow* today = &weatherData.today;
+
+    const int16_t hourOriginX = 2;
+    const int16_t hourPitchX = 5;
+    const int16_t barWidth = 4;
+
+    uint16_t black = dma_display->color565(0, 0, 0);
+    uint16_t gray = dma_display->color565(140, 140, 140);
+    uint16_t dimGray = dma_display->color565(40, 40, 40);
+    uint16_t mintGreen = dma_display->color565(100, 255, 180);
+    uint16_t coral = dma_display->color565(255, 140, 100);
+    uint16_t coldBlue = dma_display->color565(80, 140, 255);
+    uint16_t curveWhite = dma_display->color565(180, 180, 180);
+    uint16_t lightRainBlue = dma_display->color565(0, 90, 180);
+    uint16_t heavyRainBlue = dma_display->color565(0, 170, 255);
+
+    // ---- Header (y=0-6) ----
+    dma_display->fillRect(0, 0, DISPLAY_WIDTH, 7, black);
+
+    char timeStr[6];
+    snprintf(timeStr, sizeof(timeStr), "%02d:%02d", hours, minutes);
+    dma_display->setFont(NULL);
+    dma_display->setTextSize(1);
+    dma_display->setTextColor(mintGreen);
+    dma_display->setCursor(2, 0);
+    dma_display->print(timeStr);
+
+    // Right edge stops at 58: indicator 1 owns x=59-63 and would overprint the date
+    char shortDateStr[8];
+    snprintf(shortDateStr, sizeof(shortDateStr), "%s %02d",
+             dayNamesFr[localTm.tm_wday], localTm.tm_mday);
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(gray);
+    dma_display->setCursor(58 - (int16_t)strlen(shortDateStr) * 4, 6);
+    dma_display->print(shortDateStr);
+    dma_display->setFont(NULL);
+
+    if (!hasNewWeatherData)
+    {
+        weatherTodayLastDrawnMinute = minutes;
+        drawIndicators();
+        #if DOUBLE_BUFFER
+            dma_display->flipDMABuffer();
+        #endif
+        return;
+    }
+
+    dma_display->fillRect(0, 7, DISPLAY_WIDTH, DISPLAY_HEIGHT - 7, black);
+
+    // ---- Sky segments (y=8-15) and switch hours (y=17-21) ----
+    int16_t previousSwitchLabelRightEdge = -1;
+    for (uint8_t segmentIndex = 0; segmentIndex < today->segmentCount; segmentIndex++)
+    {
+        const TodaySegment* segment = &today->segments[segmentIndex];
+
+        // Hours are located by value, never by subtraction: a window crossing midnight
+        // (22, 23, 0, 1) would map hour 0 to a negative position
+        uint8_t fromHourIndex = 0;
+        uint8_t toHourIndex = today->hourCount - 1;
+        for (uint8_t i = 0; i < today->hourCount; i++)
+        {
+            if (today->hours[i].hour == segment->fromHour)
+            {
+                fromHourIndex = i;
+            }
+            if (today->hours[i].hour == segment->toHour)
+            {
+                toHourIndex = i;
+            }
+        }
+        if (toHourIndex < fromHourIndex)
+        {
+            toHourIndex = fromHourIndex;
+        }
+
+        int16_t spanLeftX = hourOriginX + (int16_t)fromHourIndex * hourPitchX;
+        int16_t spanRightX = hourOriginX + (int16_t)toHourIndex * hourPitchX + barWidth - 1;
+        int16_t spanWidth = spanRightX - spanLeftX + 1;
+
+        if (spanWidth >= 10)
+        {
+            int16_t iconX = spanLeftX + (spanWidth - 8) / 2;
+            iconX = constrain(iconX, (int16_t)0, (int16_t)(DISPLAY_WIDTH - 8));
+
+            const uint16_t* builtinSegmentIcon = getBuiltinWeatherIcon(segment->icon);
+            if (builtinSegmentIcon)
+            {
+                drawProgmemIcon(dma_display, builtinSegmentIcon, iconX, 8, 1);
+            }
+            else
+            {
+                CachedIcon* segmentIcon = getIcon(segment->icon);
+                if (segmentIcon && segmentIcon->valid)
+                {
+                    drawIconAtScale(segmentIcon, iconX, 8, 1);
+                }
+            }
+        }
+
+        int16_t switchLabelX = constrain(spanLeftX, (int16_t)0, (int16_t)(DISPLAY_WIDTH - 8));
+        if (switchLabelX > previousSwitchLabelRightEdge)
+        {
+            char switchHourStr[4];
+            snprintf(switchHourStr, sizeof(switchHourStr), "%02d", segment->fromHour);
+            dma_display->setFont(&TomThumb);
+            dma_display->setTextColor(gray);
+            dma_display->setCursor(switchLabelX, 21);
+            dma_display->print(switchHourStr);
+            previousSwitchLabelRightEdge = switchLabelX + 8;
+        }
+    }
+    dma_display->setFont(NULL);
+
+    // ---- Separator (y=23) ----
+    drawSeparatorLine(23, dimGray);
+
+    // ---- Temperature curve (y=30-45) ----
+    int16_t temperatureMin = today->hours[0].temp;
+    int16_t temperatureMax = today->hours[0].temp;
+    uint8_t temperatureMinIndex = 0;
+    uint8_t temperatureMaxIndex = 0;
+    for (uint8_t i = 1; i < today->hourCount; i++)
+    {
+        if (today->hours[i].temp < temperatureMin)
+        {
+            temperatureMin = today->hours[i].temp;
+            temperatureMinIndex = i;
+        }
+        if (today->hours[i].temp > temperatureMax)
+        {
+            temperatureMax = today->hours[i].temp;
+            temperatureMaxIndex = i;
+        }
+    }
+
+    const int16_t curveBottomY = 45;
+    const int16_t curveAmplitude = 15;
+    const int16_t curveFlatY = 37;
+    int16_t temperatureRange = temperatureMax - temperatureMin;
+
+    int16_t curvePointY[MAX_TODAY_HOURS];
+    for (uint8_t i = 0; i < today->hourCount; i++)
+    {
+        if (temperatureRange == 0)
+        {
+            curvePointY[i] = curveFlatY;
+        }
+        else
+        {
+            curvePointY[i] = curveBottomY -
+                (int16_t)((int32_t)(today->hours[i].temp - temperatureMin) * curveAmplitude / temperatureRange);
+        }
+    }
+
+    for (uint8_t i = 0; i + 1 < today->hourCount; i++)
+    {
+        int16_t pointX = hourOriginX + (int16_t)i * hourPitchX;
+        int16_t nextPointX = pointX + hourPitchX;
+        dma_display->drawLine(pointX, curvePointY[i], nextPointX, curvePointY[i + 1], curveWhite);
+    }
+
+    // Extremes wear the colour of their own annotation, so each label maps to a point
+    dma_display->drawPixel(hourOriginX + (int16_t)temperatureMaxIndex * hourPitchX,
+                           curvePointY[temperatureMaxIndex], coral);
+    dma_display->drawPixel(hourOriginX + (int16_t)temperatureMinIndex * hourPitchX,
+                           curvePointY[temperatureMinIndex], coldBlue);
+
+    // ---- Curve min/max annotation (baseline y=28), fixed corners so close extremes never collide ----
+    char temperatureMaxStr[8];
+    snprintf(temperatureMaxStr, sizeof(temperatureMaxStr), "%d", temperatureMax);
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(coral);
+    dma_display->setCursor(2, 28);
+    dma_display->print(temperatureMaxStr);
+
+    char temperatureMinStr[8];
+    snprintf(temperatureMinStr, sizeof(temperatureMinStr), "%d", temperatureMin);
+    dma_display->setTextColor(coldBlue);
+    dma_display->setCursor(58 - (int16_t)strlen(temperatureMinStr) * 4, 28);
+    dma_display->print(temperatureMinStr);
+    dma_display->setFont(NULL);
+
+    // ---- Precipitation bars (y=47-57) ----
+    const int16_t barBottomY = 57;
+    const int16_t barMaxHeight = 11;
+    for (uint8_t i = 0; i < today->hourCount; i++)
+    {
+        uint8_t precipProbability = today->hours[i].precipProbability;
+        if (precipProbability == 0)
+        {
+            continue;
+        }
+
+        // Floored to 1 px so a 9% hour stays visible next to a 10% one
+        int16_t barHeight = (int16_t)precipProbability * barMaxHeight / 100;
+        if (barHeight < 1)
+        {
+            barHeight = 1;
+        }
+
+        uint16_t barColor = (today->hours[i].precipTenthsOfMm >= TODAY_HEAVY_PRECIP_TENTHS)
+            ? heavyRainBlue
+            : lightRainBlue;
+        dma_display->fillRect(hourOriginX + (int16_t)i * hourPitchX,
+                              barBottomY - barHeight + 1, barWidth, barHeight, barColor);
+    }
+
+    // ---- Hour axis (y=59-63) ----
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(gray);
+    for (uint8_t i = 0; i < today->hourCount; i += 3)
+    {
+        char axisHourStr[4];
+        snprintf(axisHourStr, sizeof(axisHourStr), "%02d", today->hours[i].hour);
+        int16_t axisLabelX = hourOriginX + (int16_t)i * hourPitchX - 4;
+        axisLabelX = constrain(axisLabelX, (int16_t)0, (int16_t)(DISPLAY_WIDTH - 8));
+        dma_display->setCursor(axisLabelX, 63);
+        dma_display->print(axisHourStr);
+    }
+    dma_display->setFont(NULL);
+
+    weatherTodayLastDrawnMinute = minutes;
+    weatherTodayLastUpdateDrawn = weatherData.lastUpdate;
+
+    drawIndicators();
+
+    #if DOUBLE_BUFFER
+        dma_display->flipDMABuffer();
+    #endif
+}
+
 void displayShowApp(AppItem* app) {
     if (!app) return;
 
@@ -1963,6 +2250,8 @@ void displayShowApp(AppItem* app) {
         // Reset weather display cache to force full redraw
         weatherLastDrawnMinute = -1;
         weatherLastUpdateDrawn = 0;
+        weatherTodayLastDrawnMinute = -1;
+        weatherTodayLastUpdateDrawn = 0;
         // Reset tracker display cache to force full redraw
         trackerLastUpdateDrawn = 0;
         // Reset forecast pagination to first page
@@ -1983,6 +2272,11 @@ void displayShowApp(AppItem* app) {
 
     if (strcmp(app->id, "weatherclock") == 0) {
         displayShowWeatherClock(app->duration);
+        return;
+    }
+
+    if (strcmp(app->id, "weathertoday") == 0) {
+        displayShowWeatherToday();
         return;
     }
 
@@ -5732,6 +6026,8 @@ void loopApps() {
         // Reset weather clock cache to force full redraw (not just seconds update)
         weatherLastDrawnMinute = -1;
         weatherLastUpdateDrawn = 0;
+        weatherTodayLastDrawnMinute = -1;
+        weatherTodayLastUpdateDrawn = 0;
         // Reset tracker cache too, otherwise the restored tracker screen stays blank
         trackerLastUpdateDrawn = 0;
         Serial.println("[NOTIF] All dismissed, resuming app rotation");

@@ -14,17 +14,19 @@
 // ============================================================================
 // Version
 // ============================================================================
+// Kept in sync with platformio.ini, which overrides these via build flags.
+// The release workflow refuses to publish when the git tag and VERSION_STRING disagree.
 #ifndef VERSION_MAJOR
-    #define VERSION_MAJOR 0
+    #define VERSION_MAJOR 1
 #endif
 #ifndef VERSION_MINOR
-    #define VERSION_MINOR 1
+    #define VERSION_MINOR 0
 #endif
 #ifndef VERSION_PATCH
     #define VERSION_PATCH 0
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "0.1.0-dev"
+    #define VERSION_STRING "1.0.0"
 #endif
 
 // ============================================================================

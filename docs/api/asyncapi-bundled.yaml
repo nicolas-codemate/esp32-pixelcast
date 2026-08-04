@@ -1736,6 +1736,16 @@ channels:
               description: Optional footer text displayed at the bottom.
               examples:
                 - 'Vol 24h: 42B'
+            sparklinePeriod:
+              type: string
+              maxLength: 4
+              default: 24h
+              description: >
+                Period covered by the sparkline series, displayed as a short
+                label above the chart (e.g. "24h", "7d", "30d"). Send an empty
+                string to hide it.
+              examples:
+                - 7d
             duration:
               type: integer
               description: Display duration in milliseconds.
@@ -1758,6 +1768,7 @@ channels:
               symbolColor: '#FF8800'
               sparklineColor: '#00D4FF'
               bottomText: 'Vol 24h: 42B'
+              sparklinePeriod: 7d
           - name: deleteTracker
             summary: Delete a tracker
             payload:
@@ -1893,6 +1904,16 @@ channels:
               description: Optional footer text displayed at the bottom.
               examples:
                 - 'Vol 24h: 42B'
+            sparklinePeriod:
+              type: string
+              maxLength: 4
+              default: 24h
+              description: >
+                Period covered by the sparkline series, displayed as a short
+                label above the chart (e.g. "24h", "7d", "30d"). Send an empty
+                string to hide it.
+              examples:
+                - 7d
             duration:
               type: integer
               description: Display duration in milliseconds.
@@ -1915,6 +1936,7 @@ channels:
               symbolColor: '#FF8800'
               sparklineColor: '#00D4FF'
               bottomText: 'Vol 24h: 42B'
+              sparklinePeriod: 7d
           - name: deleteTracker
             summary: Delete a tracker
             payload:
@@ -3063,6 +3085,16 @@ components:
             description: Optional footer text displayed at the bottom.
             examples:
               - 'Vol 24h: 42B'
+          sparklinePeriod:
+            type: string
+            maxLength: 4
+            default: 24h
+            description: >
+              Period covered by the sparkline series, displayed as a short label
+              above the chart (e.g. "24h", "7d", "30d"). Send an empty string to
+              hide it.
+            examples:
+              - 7d
           duration:
             type: integer
             description: Display duration in milliseconds.
@@ -3085,6 +3117,7 @@ components:
             symbolColor: '#FF8800'
             sparklineColor: '#00D4FF'
             bottomText: 'Vol 24h: 42B'
+            sparklinePeriod: 7d
         - name: deleteTracker
           summary: Delete a tracker
           payload:

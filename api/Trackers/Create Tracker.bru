@@ -29,6 +29,7 @@ body:json {
     "symbolColor": "#FF8800",
     "sparklineColor": "#00D4FF",
     "bottomText": "Vol 24h: 42B",
+    "sparklinePeriod": "7d",
     "duration": 10000
   }
 }
@@ -53,6 +54,7 @@ docs {
   - symbolColor: Header color - hex "#FF8800", RGB [255,136,0], or uint32
   - sparklineColor: Chart color - same formats as symbolColor
   - bottomText: Optional footer text, max 31 chars
+  - sparklinePeriod: Label above the chart, max 4 chars (default: "24h")
   - duration: Display duration in ms (default: 10000)
 
   Stale behavior:

@@ -443,6 +443,7 @@ components:
             symbolColor: "#FF8800"
             sparklineColor: "#00D4FF"
             bottomText: "Vol 24h: 42B"
+            sparklinePeriod: "7d"
         - name: deleteTracker
           summary: Delete a tracker
           payload:

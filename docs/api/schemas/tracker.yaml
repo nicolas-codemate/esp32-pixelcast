@@ -57,6 +57,15 @@ TrackerUpdateRequest:
       description: Optional footer text displayed at the bottom.
       examples:
         - "Vol 24h: 42B"
+    sparklinePeriod:
+      type: string
+      maxLength: 4
+      default: "24h"
+      description: >
+        Period covered by the sparkline series, displayed as a short label above
+        the chart (e.g. "24h", "7d", "30d"). Send an empty string to hide it.
+      examples:
+        - "7d"
     duration:
       type: integer
       description: Display duration in milliseconds.
@@ -92,6 +101,8 @@ TrackerResponse:
       examples:
         - "#00D4FF"
     bottomText:
+      type: string
+    sparklinePeriod:
       type: string
     age:
       type: integer

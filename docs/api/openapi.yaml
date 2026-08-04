@@ -420,6 +420,7 @@ paths:
                   symbolColor: "#FF8800"
                   sparklineColor: "#00D4FF"
                   bottomText: "Vol 24h: 42B"
+                  sparklinePeriod: "7d"
       responses:
         "200":
           description: Tracker created or updated.

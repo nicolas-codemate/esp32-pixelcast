@@ -126,7 +126,7 @@ This document details the development phases of the ESP32-PixelCast project, fro
 - [x] Dynamic app registration (auto-creates app in rotation on first POST)
 - [x] App IDs prefixed with `tracker_` (e.g. `tracker_btc`)
 - [x] Sparkline chart (24 points, float array scaled to uint16)
-- [x] Layout: icon+symbol / price+currency / arrow+change% / separator / 24h+sparkline / separator / bottomText
+- [x] Layout: icon+symbol / price+currency / arrow+change% / separator / period+sparkline / separator / bottomText
 - [x] Customizable colors (text, price, sparkline, change, bottomText)
 - [x] Stale data detection (>1h: dims colors to 1/4, shows "STALE" badge)
 - [x] `parseColorValue()` extracted as reusable helper

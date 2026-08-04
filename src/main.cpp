@@ -317,6 +317,10 @@ unsigned long lastForecastPageSwitch = 0;
 int weatherLastDrawnMinute = -1;
 unsigned long weatherLastUpdateDrawn = 0;
 
+// Tracker display cache (global so they can be reset on app switch)
+unsigned long trackerLastUpdateDrawn = 0;
+bool trackerStaleDrawn = false;
+
 // Icon Upload State
 File uploadFile;
 String uploadIconName;
@@ -1454,10 +1458,27 @@ void formatTrackerValue(float value, char* buffer, size_t bufSize) {
 void displayShowTracker(TrackerData* tracker) {
     if (!tracker) return;
 
-    dma_display->clearScreen();
-
     unsigned long trackerAge = millis() - tracker->lastUpdate;
     bool isStale = (trackerAge > TRACKER_STALE_TIMEOUT);
+
+    // A tracker screen shows a fixed snapshot, so it only has to be painted when the data
+    // arrives or when it goes stale. Repainting it every second would blank the framebuffer
+    // the DMA is reading, which shows up as flicker on single-buffered builds.
+    bool needsFullRedraw = (trackerLastUpdateDrawn != tracker->lastUpdate) ||
+                           (trackerStaleDrawn != isStale);
+
+    if (!needsFullRedraw) {
+        drawIndicators();
+        #if DOUBLE_BUFFER
+            dma_display->flipDMABuffer();
+        #endif
+        return;
+    }
+
+    trackerLastUpdateDrawn = tracker->lastUpdate;
+    trackerStaleDrawn = isStale;
+
+    dma_display->clearScreen();
 
     // Color helpers
     uint16_t white = dma_display->color565(255, 255, 255);
@@ -1863,6 +1884,8 @@ void displayShowApp(AppItem* app) {
         // Reset weather display cache to force full redraw
         weatherLastDrawnMinute = -1;
         weatherLastUpdateDrawn = 0;
+        // Reset tracker display cache to force full redraw
+        trackerLastUpdateDrawn = 0;
         // Reset forecast pagination to first page
         forecastPage = 0;
         lastForecastPageSwitch = millis();
@@ -5605,6 +5628,8 @@ void loopApps() {
         // Reset weather clock cache to force full redraw (not just seconds update)
         weatherLastDrawnMinute = -1;
         weatherLastUpdateDrawn = 0;
+        // Reset tracker cache too, otherwise the restored tracker screen stays blank
+        trackerLastUpdateDrawn = 0;
         Serial.println("[NOTIF] All dismissed, resuming app rotation");
         // Clear both DMA buffers to remove any notification pixel remnants,
         // then force immediate app redraw on both buffers
@@ -5749,6 +5774,8 @@ void loopSleepTransition()
         Serial.printf("[SLEEP] exiting at %u\n", (unsigned)time(nullptr));
         displaySetBrightness(previousBrightness);
         lastDisplayUpdate = 0;
+        // The sleep clock overwrote the app frame, so a tracker screen has to repaint
+        trackerLastUpdateDrawn = 0;
     }
     wasSleeping = isSleeping;
 }

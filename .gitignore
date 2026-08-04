@@ -39,3 +39,6 @@ test_output/
 
 # Documentation build
 docs/_build/
+
+# Project instructions are versioned, overriding a global ignore of CLAUDE.md
+!CLAUDE.md

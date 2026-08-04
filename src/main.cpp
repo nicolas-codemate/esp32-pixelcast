@@ -251,6 +251,7 @@ struct TrackerData {
     uint32_t symbolColor;     // Header color (0xRRGGBB)
     uint32_t sparklineColor;  // Chart color
     char bottomText[32];      // Optional footer
+    char sparklinePeriod[8];  // Chart period label, e.g. "24h", "7d"
     unsigned long lastUpdate;
     bool valid;
 };
@@ -1087,6 +1088,7 @@ TrackerData* trackerAllocate(const char* name) {
             strlcpy(trackers[i].name, name, sizeof(trackers[i].name));
             trackers[i].symbolColor = 0xFFFFFF;    // Default white
             trackers[i].sparklineColor = 0x00D4FF;  // Default cyan
+            strlcpy(trackers[i].sparklinePeriod, "24h", sizeof(trackers[i].sparklinePeriod));
             trackers[i].valid = true;
             trackerCount++;
             return &trackers[i];
@@ -1530,12 +1532,15 @@ void displayShowTracker(TrackerData* tracker) {
     // --- Separator line (y=37) ---
     drawSeparatorLine(37, dimGray);
 
-    // --- "24h" label right-aligned (y=39) ---
-    dma_display->setFont(&TomThumb);
-    dma_display->setTextColor(dimWhite);
-    dma_display->setCursor(51, 43);
-    dma_display->print("24h");
-    dma_display->setFont(NULL);
+    // --- Sparkline period label right-aligned (y=39) ---
+    if (strlen(tracker->sparklinePeriod) > 0) {
+        dma_display->setFont(&TomThumb);
+        dma_display->setTextColor(dimWhite);
+        int16_t periodWidth = strlen(tracker->sparklinePeriod) * 4;
+        dma_display->setCursor(62 - periodWidth, 43);
+        dma_display->print(tracker->sparklinePeriod);
+        dma_display->setFont(NULL);
+    }
 
     // --- Sparkline chart (y=40..53, x=2..61) ---
     if (tracker->sparklineCount >= 2) {
@@ -3633,6 +3638,7 @@ void setupWebServer() {
         formatColorHex(tracker->sparklineColor, sparklineColorHex, sizeof(sparklineColorHex));
         doc["sparklineColor"] = sparklineColorHex;
         doc["bottomText"] = tracker->bottomText;
+        doc["sparklinePeriod"] = tracker->sparklinePeriod;
 
         unsigned long ageMs = millis() - tracker->lastUpdate;
         doc["age"] = ageMs / 1000;
@@ -3712,6 +3718,9 @@ void setupWebServer() {
             }
             if (!doc["bottomText"].isNull()) {
                 strlcpy(tracker->bottomText, doc["bottomText"] | "", sizeof(tracker->bottomText));
+            }
+            if (!doc["sparklinePeriod"].isNull()) {
+                strlcpy(tracker->sparklinePeriod, doc["sparklinePeriod"] | "", sizeof(tracker->sparklinePeriod));
             }
 
             tracker->symbolColor = parseColorValue(doc["symbolColor"], tracker->symbolColor);
@@ -4744,6 +4753,9 @@ void mqttHandleTracker(const char* name, JsonObject& doc) {
     }
     if (!doc["bottomText"].isNull()) {
         strlcpy(tracker->bottomText, doc["bottomText"] | "", sizeof(tracker->bottomText));
+    }
+    if (!doc["sparklinePeriod"].isNull()) {
+        strlcpy(tracker->sparklinePeriod, doc["sparklinePeriod"] | "", sizeof(tracker->sparklinePeriod));
     }
 
     tracker->symbolColor = parseColorValue(doc["symbolColor"], tracker->symbolColor);

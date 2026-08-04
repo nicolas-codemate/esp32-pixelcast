@@ -59,7 +59,7 @@ TrackerUpdateRequest:
         - "Vol 24h: 42B"
     sparklinePeriod:
       type: string
-      maxLength: 7
+      maxLength: 4
       default: "24h"
       description: >
         Period covered by the sparkline series, displayed as a short label above

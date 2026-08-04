@@ -85,14 +85,15 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      # Only trinity is published: devkit and esp32s3 are built above as a compile check,
+      # but no hardware is available to test them, so they are not shipped as releases.
       - uses: actions/download-artifact@v8
         with:
-          pattern: firmware-*
-          merge-multiple: true
+          name: firmware-trinity
 
-      - name: Attach binaries to the release
+      - name: Attach the firmware to the release
         uses: softprops/action-gh-release@v3
         with:
-          files: pixelcast-*.bin
+          files: pixelcast-trinity-*.bin
           generate_release_notes: true
           fail_on_unmatched_files: true

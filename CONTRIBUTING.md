@@ -93,11 +93,17 @@ API field and leaves the version untouched is incomplete.
 1. Make sure both files carry the new version, and merge to `main`
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`
 3. `.github/workflows/release.yml` checks that the tag, `VERSION_STRING` and the
-   `MAJOR.MINOR.PATCH` triple all agree, builds `trinity`, `devkit` and `esp32s3`, and
-   attaches `pixelcast-<env>-<version>.bin` to the GitHub release
+   `MAJOR.MINOR.PATCH` triple all agree, then builds `trinity`, `devkit` and `esp32s3`
 
 The workflow refuses to publish on any mismatch. Do not work around it by moving the tag:
 correct the version in the two files and tag again.
+
+### What ships
+
+Only `pixelcast-trinity-<version>.bin` is attached to the release. `devkit` and `esp32s3`
+are built to catch compilation breakage, not shipped: no hardware is available to test them,
+and publishing an untested binary claims a support level the project does not have. Add a
+target to the release step once someone can verify it on the matching board.
 
 ## Questions?
 

@@ -67,6 +67,78 @@ WeatherCurrent:
       maximum: 100
       description: Humidity percentage.
 
+TodayHour:
+  type: object
+  required: [h, temp]
+  properties:
+    h:
+      type: integer
+      minimum: 0
+      maximum: 23
+      description: Local hour of the day.
+      examples:
+        - 15
+    temp:
+      type: integer
+      description: Temperature for that hour, same unit as the current conditions.
+    pop:
+      type: integer
+      minimum: 0
+      maximum: 100
+      description: Precipitation probability, in percent.
+    precip:
+      type: integer
+      minimum: 0
+      maximum: 255
+      description: "Precipitation quantity in tenths of a millimetre (2 means 0.2 mm)."
+
+TodaySegment:
+  type: object
+  required: [from, to, icon]
+  properties:
+    from:
+      type: integer
+      minimum: 0
+      maximum: 23
+      description: First local hour of the segment (inclusive).
+    to:
+      type: integer
+      minimum: 0
+      maximum: 23
+      description: Last local hour of the segment (inclusive).
+    icon:
+      type: string
+      description: >
+        Weather icon name for the whole segment. Built-in PROGMEM icons:
+        w_clear_day, w_clear_night, w_partly_day, w_partly_night, w_cloudy,
+        w_rain, w_heavy_rain, w_thunder, w_snow, w_fog.
+      examples:
+        - "w_partly_day"
+
+WeatherToday:
+  type: object
+  description: >
+    Hourly window displayed by the WeatherToday app: a temperature curve, the
+    precipitation bars, and the sky segments above them. Hours are absolute
+    local hours and are displayed as received, so the sender decides where the
+    window starts. The app joins the rotation on the first payload carrying a
+    non-empty hours array.
+  properties:
+    hours:
+      type: array
+      items:
+        $ref: "#/TodayHour"
+      maxItems: 12
+      description: "Hourly values (up to 12). Extra entries are ignored."
+    segments:
+      type: array
+      items:
+        $ref: "#/TodaySegment"
+      maxItems: 4
+      description: >
+        Sky segments covering the window (up to 4). Segments are computed by
+        the sender; the device only renders their icon over the hour span.
+
 WeatherUpdateRequest:
   type: object
   required: [current]
@@ -81,6 +153,8 @@ WeatherUpdateRequest:
       description: >
         Forecast days (up to 7). Displayed in pages of 3 columns with
         automatic scrolling. Page timing is proportional to app duration.
+    today:
+      $ref: "#/WeatherToday"
 
 WeatherResponse:
   type: object
@@ -101,3 +175,5 @@ WeatherResponse:
       type: array
       items:
         $ref: "#/ForecastDay"
+    today:
+      $ref: "#/WeatherToday"

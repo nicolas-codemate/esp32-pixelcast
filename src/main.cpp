@@ -219,6 +219,28 @@ SleepReason lastSleepReason = SLEEP_REASON_NONE;
 // Weather Data (populated by POST /api/weather)
 #define MAX_FORECAST_DAYS 7    // Max storage (1 week)
 #define FORECAST_COLUMNS  3    // Columns displayed simultaneously
+#define MAX_TODAY_HOURS   12   // Hourly window of the weathertoday app
+#define MAX_TODAY_SEGMENTS 4   // Sky segments covering that window
+
+struct TodayHour {
+    uint8_t hour;              // Local hour 0-23
+    int16_t temp;
+    uint8_t precipProbability; // 0-100 percent
+    uint8_t precipTenthsOfMm;  // 2 means 0.2 mm
+};
+
+struct TodaySegment {
+    uint8_t fromHour;          // Inclusive, local hour 0-23
+    uint8_t toHour;            // Inclusive, local hour 0-23
+    char icon[32];
+};
+
+struct TodayWindow {
+    TodayHour hours[MAX_TODAY_HOURS];
+    TodaySegment segments[MAX_TODAY_SEGMENTS];
+    uint8_t hourCount;
+    uint8_t segmentCount;
+};
 
 struct WeatherData {
     char currentIcon[32];
@@ -233,6 +255,7 @@ struct WeatherData {
         char dayName[4];  // "LUN", "MAR", etc.
     } forecast[MAX_FORECAST_DAYS];
     uint8_t forecastCount;     // Number of forecast days received
+    TodayWindow today;
     unsigned long lastUpdate;
     bool valid;
 };
@@ -542,6 +565,8 @@ void printTextWithSpecialChars(const char* text, int16_t x, int16_t y);
 bool ensureDirectories();
 bool loadApps();
 bool saveApps();
+
+void weatherParseTodayBlock(JsonObjectConst todayBlock);
 
 int8_t appAdd(const char* id, const char* text, const char* icon,
               uint32_t textColor, uint16_t duration,
@@ -1064,6 +1089,60 @@ void drawDropIcon(int16_t x, int16_t y, uint16_t color) {
 void drawSeparatorLine(int16_t y, uint16_t color) {
     for (int16_t x = 4; x < DISPLAY_WIDTH - 4; x++) {
         dma_display->drawPixel(x, y, color);
+    }
+}
+
+// ============================================================================
+// Weather Data Functions
+// ============================================================================
+
+void weatherParseTodayBlock(JsonObjectConst todayBlock)
+{
+    weatherData.today.hourCount = 0;
+    weatherData.today.segmentCount = 0;
+
+    if (todayBlock.isNull())
+    {
+        return;
+    }
+
+    if (todayBlock["hours"].is<JsonArrayConst>())
+    {
+        JsonArrayConst hoursArray = todayBlock["hours"];
+        int hourCount = min((int)hoursArray.size(), (int)MAX_TODAY_HOURS);
+        for (int i = 0; i < hourCount; i++)
+        {
+            JsonObjectConst hourObject = hoursArray[i];
+            TodayHour* hourSlot = &weatherData.today.hours[i];
+            hourSlot->hour = constrain((int)(hourObject["h"] | 0), 0, 23);
+            hourSlot->temp = hourObject["temp"] | 0;
+            hourSlot->precipProbability = constrain((int)(hourObject["pop"] | 0), 0, 100);
+            hourSlot->precipTenthsOfMm = constrain((int)(hourObject["precip"] | 0), 0, 255);
+        }
+        weatherData.today.hourCount = hourCount;
+    }
+
+    if (todayBlock["segments"].is<JsonArrayConst>())
+    {
+        JsonArrayConst segmentsArray = todayBlock["segments"];
+        int segmentCount = min((int)segmentsArray.size(), (int)MAX_TODAY_SEGMENTS);
+        for (int i = 0; i < segmentCount; i++)
+        {
+            JsonObjectConst segmentObject = segmentsArray[i];
+            TodaySegment* segmentSlot = &weatherData.today.segments[i];
+            segmentSlot->fromHour = constrain((int)(segmentObject["from"] | 0), 0, 23);
+            segmentSlot->toHour = constrain((int)(segmentObject["to"] | 0), 0, 23);
+            strlcpy(segmentSlot->icon, segmentObject["icon"] | "", sizeof(segmentSlot->icon));
+        }
+        weatherData.today.segmentCount = segmentCount;
+    }
+
+    // The app joins the rotation only once real hourly data exists
+    if (weatherData.today.hourCount > 0 && appFind("weathertoday") < 0)
+    {
+        appAdd("weathertoday", "WeatherToday", "", settings.clockColor,
+               settings.defaultDuration, 0, 1, true);
+        Serial.println("[APPS] WeatherToday app added");
     }
 }
 
@@ -3544,6 +3623,27 @@ void setupWebServer() {
                 fc["temp_min"] = weatherData.forecast[i].tempMin;
                 fc["temp_max"] = weatherData.forecast[i].tempMax;
             }
+
+            if (weatherData.today.hourCount > 0) {
+                JsonObject today = doc["today"].to<JsonObject>();
+
+                JsonArray hoursArr = today["hours"].to<JsonArray>();
+                for (uint8_t i = 0; i < weatherData.today.hourCount; i++) {
+                    JsonObject hourObj = hoursArr.add<JsonObject>();
+                    hourObj["h"] = weatherData.today.hours[i].hour;
+                    hourObj["temp"] = weatherData.today.hours[i].temp;
+                    hourObj["pop"] = weatherData.today.hours[i].precipProbability;
+                    hourObj["precip"] = weatherData.today.hours[i].precipTenthsOfMm;
+                }
+
+                JsonArray segmentsArr = today["segments"].to<JsonArray>();
+                for (uint8_t i = 0; i < weatherData.today.segmentCount; i++) {
+                    JsonObject segmentObj = segmentsArr.add<JsonObject>();
+                    segmentObj["from"] = weatherData.today.segments[i].fromHour;
+                    segmentObj["to"] = weatherData.today.segments[i].toHour;
+                    segmentObj["icon"] = weatherData.today.segments[i].icon;
+                }
+            }
         }
 
         String output;
@@ -3590,6 +3690,8 @@ void setupWebServer() {
             } else {
                 weatherData.forecastCount = 0;
             }
+
+            weatherParseTodayBlock(doc["today"].as<JsonObjectConst>());
 
             // Reset forecast pagination on new data
             forecastPage = 0;
@@ -4738,6 +4840,8 @@ void mqttHandleWeather(JsonObject& doc) {
     } else {
         weatherData.forecastCount = 0;
     }
+
+    weatherParseTodayBlock(doc["today"].as<JsonObjectConst>());
 
     // Reset forecast pagination on new data
     forecastPage = 0;

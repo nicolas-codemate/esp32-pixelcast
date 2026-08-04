@@ -194,7 +194,7 @@
     #define MQTT_PREFIX "pixelcast"
 #endif
 #ifndef MQTT_BUFFER_SIZE
-    #define MQTT_BUFFER_SIZE 1024
+    #define MQTT_BUFFER_SIZE 2048
 #endif
 #define MQTT_RECONNECT_DELAY 5000  // 5 seconds
 #define MQTT_KEEPALIVE 60  // seconds

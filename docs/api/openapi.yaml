@@ -293,9 +293,11 @@ paths:
       operationId: updateWeather
       summary: Update weather data
       description: >
-        Push current conditions and optional 7-day forecast. The WeatherClock
-        system app displays this data and falls back to a simple clock when
-        data is stale (>1 hour).
+        Push current conditions, an optional 7-day forecast and an optional
+        hourly window. The WeatherClock system app displays the current
+        conditions and the forecast; the WeatherToday app displays the hourly
+        window and joins the rotation on the first payload carrying one. Both
+        fall back to a simple clock when data is stale (>1 hour).
       tags: [Weather]
       requestBody:
         required: true
@@ -305,7 +307,7 @@ paths:
               $ref: "schemas/weather.yaml#/WeatherUpdateRequest"
             examples:
               threeDayForecast:
-                summary: Current + 3-day forecast
+                summary: Current + 3-day forecast + hourly window
                 value:
                   current:
                     icon: "w_clear_day"
@@ -326,6 +328,18 @@ paths:
                       icon: "w_snow"
                       temp_min: -2
                       temp_max: 3
+                  today:
+                    hours:
+                      - { h: 15, temp: 22, pop: 0, precip: 0 }
+                      - { h: 16, temp: 23, pop: 10, precip: 2 }
+                      - { h: 17, temp: 23, pop: 40, precip: 8 }
+                      - { h: 18, temp: 21, pop: 80, precip: 25 }
+                      - { h: 19, temp: 19, pop: 30, precip: 4 }
+                      - { h: 20, temp: 18, pop: 10, precip: 0 }
+                    segments:
+                      - { from: 15, to: 16, icon: "w_partly_day" }
+                      - { from: 17, to: 19, icon: "w_rain" }
+                      - { from: 20, to: 20, icon: "w_clear_night" }
       responses:
         "200":
           description: Weather data updated.

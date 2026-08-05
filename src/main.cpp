@@ -220,6 +220,8 @@ SleepReason lastSleepReason = SLEEP_REASON_NONE;
 // Weather Data (populated by POST /api/weather)
 #define MAX_FORECAST_DAYS 7    // Max storage (1 week)
 #define FORECAST_COLUMNS  3    // Columns displayed simultaneously
+// Past three pages the rotation moves on before the last one has been read
+#define MAX_CAROUSEL_PAGES 3
 #define MAX_TODAY_HOURS   12   // Hourly window charted by weatherclock
 #define MAX_TODAY_SEGMENTS 4   // Sky segments covering that window
 
@@ -2100,6 +2102,7 @@ void displayShowWeatherClock(uint16_t appDuration) {
     uint8_t dayPageCount =
         (weatherData.forecastCount + FORECAST_COLUMNS - 1) / FORECAST_COLUMNS;
     uint8_t forecastPageCount = max((uint8_t)1, (uint8_t)(dayPageCount + (hasHourlyPage ? 1 : 0)));
+    forecastPageCount = min(forecastPageCount, (uint8_t)MAX_CAROUSEL_PAGES);
 
     // The hourly page holds the screen HOURLY_PAGE_WEIGHT times longer than a day
     // page, and the app's total time is unchanged: the day pages give up what the

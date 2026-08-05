@@ -69,6 +69,14 @@ docs {
   window starts. The page appears on the first payload carrying a
   non-empty "today.hours" array.
 
+  Start "forecast" at tomorrow: today's min and max are on screen at all
+  times as current.temp_min and current.temp_max, so a column for today
+  would repeat them.
+
+  The carousel is capped at 3 pages. Sending "today" spends the first on
+  the chart, leaving 6 forecast days; without it, 7 days fill 3 pages.
+  Days beyond that are stored and echoed back, but never displayed.
+
   Data older than 1 hour is considered stale and the display falls back
   to a simple clock.
 

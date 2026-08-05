@@ -159,8 +159,20 @@ WeatherUpdateRequest:
         $ref: "#/ForecastDay"
       maxItems: 7
       description: >
-        Forecast days (up to 7). Displayed in pages of 3 columns with
-        automatic scrolling. Page timing is proportional to app duration.
+        Forecast days, displayed in pages of 3 columns with automatic
+        scrolling. Page timing is proportional to app duration.
+
+
+        Start at tomorrow, not today: today's minimum and maximum are already
+        on screen at all times as `current.temp_min` and `current.temp_max`,
+        so a column for today would repeat them.
+
+
+        The carousel is capped at 3 pages, which bounds how many days are
+        actually shown. Sending `today` spends the first page on the hourly
+        chart, leaving 6 days; without it, 9 days would fit but `maxItems`
+        caps the array at 7. Days beyond what the carousel can show are
+        stored and echoed back, but never displayed.
     today:
       $ref: "#/WeatherToday"
 

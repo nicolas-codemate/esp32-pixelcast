@@ -19,4 +19,7 @@ docs {
   - stale: True if data is older than 1 hour
   - current: Current weather conditions
   - forecast: Array of forecast days
+  - today: Hourly window, present only when hours were received.
+    Echoes back what was stored, clamped to 12 hours and 4 segments.
+    Segments are echoed even though the display does not draw them.
 }

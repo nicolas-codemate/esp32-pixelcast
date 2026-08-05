@@ -19,6 +19,7 @@ body:json {
     "brightness": 128,
     "autoRotate": true,
     "defaultDuration": 10000,
+    "weatherDuration": 12000,
     "ntp": {
       "server": "pool.ntp.org",
       "tz_posix": "CET-1CEST,M3.5.0,M10.5.0/3"
@@ -33,6 +34,7 @@ docs {
   - brightness: Display brightness 0-255
   - autoRotate: Enable/disable app rotation
   - defaultDuration: Default app display duration in ms
+  - weatherDuration: weatherclock display duration in ms (3000-60000, default 12000), applied live without reboot
   - ntp.server: NTP server hostname
   - ntp.tz_posix: POSIX TZ string (1..63 chars), applied live via configTzTime() without reboot
 

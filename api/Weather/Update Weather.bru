@@ -30,15 +30,52 @@ body:json {
       { "day": "JEU", "icon": "w_clear_day", "temp_min": 14, "temp_max": 26 },
       { "day": "VEN", "icon": "w_cloudy", "temp_min": 10, "temp_max": 19 },
       { "day": "SAM", "icon": "w_partly_day", "temp_min": 15, "temp_max": 28 }
-    ]
+    ],
+    "today": {
+      "hours": [
+        { "h": 15, "temp": 22, "pop": 0,  "precip": 0 },
+        { "h": 16, "temp": 23, "pop": 10, "precip": 2 },
+        { "h": 17, "temp": 23, "pop": 40, "precip": 8 },
+        { "h": 18, "temp": 21, "pop": 80, "precip": 25 },
+        { "h": 19, "temp": 19, "pop": 30, "precip": 4 },
+        { "h": 20, "temp": 18, "pop": 10, "precip": 0 },
+        { "h": 21, "temp": 17, "pop": 0,  "precip": 0 },
+        { "h": 22, "temp": 16, "pop": 0,  "precip": 0 },
+        { "h": 23, "temp": 16, "pop": 0,  "precip": 0 },
+        { "h": 0,  "temp": 15, "pop": 10, "precip": 0 },
+        { "h": 1,  "temp": 15, "pop": 10, "precip": 1 },
+        { "h": 2,  "temp": 14, "pop": 20, "precip": 2 }
+      ],
+      "segments": [
+        { "from": 15, "to": 16, "icon": "w_partly_day" },
+        { "from": 17, "to": 19, "icon": "w_rain" },
+        { "from": 20, "to": 2,  "icon": "w_clear_night" }
+      ]
+    }
   }
 }
 
 docs {
-  Updates the WeatherClock with current conditions and forecast.
+  Updates the WeatherClock with current conditions, forecast and the
+  hourly window.
 
   The WeatherClock is a system app that displays current weather, time,
-  date, and a paginated forecast (pages of 3 columns, auto-scrolling).
+  date, and a paginated carousel below them (auto-scrolling).
+
+  The hourly window sent in "today" is charted on the first page of that
+  carousel: a temperature curve over the precipitation bars. The forecast
+  days follow on the next pages (3 columns each). Hours are absolute local
+  hours and are displayed as received, so the sender decides where the
+  window starts. The page appears on the first payload carrying a
+  non-empty "today.hours" array.
+
+  Start "forecast" at tomorrow: today's min and max are on screen at all
+  times as current.temp_min and current.temp_max, so a column for today
+  would repeat them.
+
+  The carousel is capped at 3 pages. Sending "today" spends the first on
+  the chart, leaving 6 forecast days; without it, 7 days fill 3 pages.
+  Days beyond that are stored and echoed back, but never displayed.
 
   Data older than 1 hour is considered stale and the display falls back
   to a simple clock.
@@ -54,4 +91,14 @@ docs {
   - forecast[].icon: Icon name
   - forecast[].temp_min: Min temperature
   - forecast[].temp_max: Max temperature
+  - today.hours[]: Up to 12 hourly entries, extra ones are ignored
+  - today.hours[].h: Local hour, 0-23
+  - today.hours[].temp: Temperature for that hour, -100 to 100
+  - today.hours[].pop: Precipitation probability, 0-100
+  - today.hours[].precip: Quantity in tenths of mm (2 = 0.2 mm)
+  - today.segments[]: Up to 4 sky segments, extra ones are ignored.
+    Stored and echoed back by GET /api/weather, but not drawn.
+  - today.segments[].from: First hour of the segment, inclusive
+  - today.segments[].to: Last hour of the segment, inclusive
+  - today.segments[].icon: Icon name for the whole segment (31 chars max)
 }

@@ -141,7 +141,10 @@ channels:
 
   settings:
     address: "{prefix}/settings"
-    description: Update device settings (partial update).
+    description: >
+      Update device settings (partial update). Same payload as
+      `POST /api/settings`, except that out-of-range values are clamped to their
+      bounds instead of rejected, since MQTT has no response channel.
     parameters:
       prefix:
         default: pixelcast
@@ -404,6 +407,7 @@ components:
             brightness: 100
             autoRotate: true
             defaultDuration: 15000
+            weatherDuration: 12000
 
     Weather:
       payload:
@@ -426,6 +430,15 @@ components:
                 icon: "w_rain"
                 temp_min: 10
                 temp_max: 17
+            today:
+              hours:
+                - { h: 15, temp: 22, pop: 0, precip: 0 }
+                - { h: 16, temp: 23, pop: 10, precip: 2 }
+                - { h: 17, temp: 23, pop: 40, precip: 8 }
+                - { h: 18, temp: 21, pop: 80, precip: 25 }
+              segments:
+                - { from: 15, to: 16, icon: "w_partly_day" }
+                - { from: 17, to: 18, icon: "w_rain" }
 
     Tracker:
       payload:

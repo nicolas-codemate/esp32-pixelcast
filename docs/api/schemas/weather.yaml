@@ -67,6 +67,86 @@ WeatherCurrent:
       maximum: 100
       description: Humidity percentage.
 
+TodayHour:
+  type: object
+  required: [h, temp]
+  properties:
+    h:
+      type: integer
+      minimum: 0
+      maximum: 23
+      description: Local hour of the day.
+      examples:
+        - 15
+    temp:
+      type: integer
+      minimum: -100
+      maximum: 100
+      description: >
+        Temperature for that hour, same unit as the current conditions. Values
+        outside the range are clamped to it.
+    pop:
+      type: integer
+      minimum: 0
+      maximum: 100
+      description: Precipitation probability, in percent.
+    precip:
+      type: integer
+      minimum: 0
+      maximum: 255
+      description: "Precipitation quantity in tenths of a millimetre (2 means 0.2 mm)."
+
+TodaySegment:
+  type: object
+  required: [from, to, icon]
+  properties:
+    from:
+      type: integer
+      minimum: 0
+      maximum: 23
+      description: First local hour of the segment (inclusive).
+    to:
+      type: integer
+      minimum: 0
+      maximum: 23
+      description: Last local hour of the segment (inclusive).
+    icon:
+      type: string
+      maxLength: 31
+      description: >
+        Weather icon name for the whole segment. Built-in PROGMEM icons:
+        w_clear_day, w_clear_night, w_partly_day, w_partly_night, w_cloudy,
+        w_rain, w_heavy_rain, w_thunder, w_snow, w_fog. Longer names are
+        truncated to 31 characters.
+      examples:
+        - "w_partly_day"
+
+WeatherToday:
+  type: object
+  description: >
+    Hourly window charted on the first carousel page of the WeatherClock app: a
+    temperature curve over the precipitation bars. Hours are absolute local
+    hours and are displayed as received, so the sender decides where the window
+    starts. The page appears on the first payload carrying a non-empty hours
+    array. The segments array is stored and echoed back but is not currently
+    drawn.
+  properties:
+    hours:
+      type: array
+      items:
+        $ref: "#/TodayHour"
+      maxItems: 12
+      description: "Hourly values (up to 12). Extra entries are ignored."
+    segments:
+      type: array
+      items:
+        $ref: "#/TodaySegment"
+      maxItems: 4
+      description: >
+        Sky segments covering the window (up to 4). Extra entries are ignored.
+        Segments are computed by the sender; they are stored and echoed back
+        but are not currently drawn.
+
 WeatherUpdateRequest:
   type: object
   required: [current]
@@ -79,8 +159,22 @@ WeatherUpdateRequest:
         $ref: "#/ForecastDay"
       maxItems: 7
       description: >
-        Forecast days (up to 7). Displayed in pages of 3 columns with
-        automatic scrolling. Page timing is proportional to app duration.
+        Forecast days, displayed in pages of 3 columns with automatic
+        scrolling. Page timing is proportional to app duration.
+
+
+        Start at tomorrow, not today: today's minimum and maximum are already
+        on screen at all times as `current.temp_min` and `current.temp_max`,
+        so a column for today would repeat them.
+
+
+        The carousel is capped at 3 pages, which bounds how many days are
+        actually shown. Sending `today` spends the first page on the hourly
+        chart, leaving 6 days; without it, 9 days would fit but `maxItems`
+        caps the array at 7. Days beyond what the carousel can show are
+        stored and echoed back, but never displayed.
+    today:
+      $ref: "#/WeatherToday"
 
 WeatherResponse:
   type: object
@@ -101,3 +195,5 @@ WeatherResponse:
       type: array
       items:
         $ref: "#/ForecastDay"
+    today:
+      $ref: "#/WeatherToday"

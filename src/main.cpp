@@ -197,6 +197,7 @@ struct Settings {
     uint8_t brightness;
     bool autoRotate;
     uint16_t defaultDuration;
+    uint16_t weatherDuration;
     char ntpServer[48];
     char tzPosix[64];
     bool clockEnabled;
@@ -219,6 +220,30 @@ SleepReason lastSleepReason = SLEEP_REASON_NONE;
 // Weather Data (populated by POST /api/weather)
 #define MAX_FORECAST_DAYS 7    // Max storage (1 week)
 #define FORECAST_COLUMNS  3    // Columns displayed simultaneously
+// Past three pages the rotation moves on before the last one has been read
+#define MAX_CAROUSEL_PAGES 3
+#define MAX_TODAY_HOURS   12   // Hourly window charted by weatherclock
+#define MAX_TODAY_SEGMENTS 4   // Sky segments covering that window
+
+struct TodayHour {
+    uint8_t hour;              // Local hour 0-23
+    int16_t temp;
+    uint8_t precipProbability; // 0-100 percent
+    uint8_t precipTenthsOfMm;  // 2 means 0.2 mm
+};
+
+struct TodaySegment {
+    uint8_t fromHour;          // Inclusive, local hour 0-23
+    uint8_t toHour;            // Inclusive, local hour 0-23
+    char icon[32];
+};
+
+struct TodayWindow {
+    TodayHour hours[MAX_TODAY_HOURS];
+    TodaySegment segments[MAX_TODAY_SEGMENTS];
+    uint8_t hourCount;
+    uint8_t segmentCount;
+};
 
 struct WeatherData {
     char currentIcon[32];
@@ -233,6 +258,7 @@ struct WeatherData {
         char dayName[4];  // "LUN", "MAR", etc.
     } forecast[MAX_FORECAST_DAYS];
     uint8_t forecastCount;     // Number of forecast days received
+    TodayWindow today;
     unsigned long lastUpdate;
     bool valid;
 };
@@ -510,7 +536,7 @@ void displayShowIP();
 void displayShowTime();
 void displayShowDate();
 void displayShowApp(AppItem* app);
-void displayShowWeatherClock(uint16_t appDuration = 10000);
+void displayShowWeatherClock(uint16_t appDuration);
 void drawDropIcon(int16_t x, int16_t y, uint16_t color);
 void drawSeparatorLine(int16_t y, uint16_t color);
 void drawIconAtScale(CachedIcon* icon, int16_t x, int16_t y, uint8_t scale);
@@ -518,6 +544,7 @@ void displayClear();
 void displaySetBrightness(uint8_t brightness);
 
 int16_t calculateTextWidth(const char* text);
+int16_t calculateTomThumbTextWidth(const char* text);
 bool textNeedsScroll(const char* text, int16_t availableWidth);
 void resetScrollState();
 
@@ -542,6 +569,9 @@ void printTextWithSpecialChars(const char* text, int16_t x, int16_t y);
 bool ensureDirectories();
 bool loadApps();
 bool saveApps();
+
+void weatherParseTodayBlock(JsonObjectConst todayBlock);
+void weatherClockApplyDuration(uint16_t durationMs);
 
 int8_t appAdd(const char* id, const char* text, const char* icon,
               uint32_t textColor, uint16_t duration,
@@ -1064,6 +1094,54 @@ void drawDropIcon(int16_t x, int16_t y, uint16_t color) {
 void drawSeparatorLine(int16_t y, uint16_t color) {
     for (int16_t x = 4; x < DISPLAY_WIDTH - 4; x++) {
         dma_display->drawPixel(x, y, color);
+    }
+}
+
+// ============================================================================
+// Weather Data Functions
+// ============================================================================
+
+void weatherParseTodayBlock(JsonObjectConst todayBlock)
+{
+    weatherData.today.hourCount = 0;
+    weatherData.today.segmentCount = 0;
+
+    if (todayBlock.isNull())
+    {
+        return;
+    }
+
+    if (todayBlock["hours"].is<JsonArrayConst>())
+    {
+        JsonArrayConst hoursArray = todayBlock["hours"];
+        int hourCount = min((int)hoursArray.size(), (int)MAX_TODAY_HOURS);
+        for (int i = 0; i < hourCount; i++)
+        {
+            JsonObjectConst hourObject = hoursArray[i];
+            TodayHour* hourSlot = &weatherData.today.hours[i];
+            hourSlot->hour = constrain((int)(hourObject["h"] | 0), 0, 23);
+            // No reading on Earth comes near +/-100 C, and a wider span would
+            // overflow the int16_t arithmetic behind the curve
+            hourSlot->temp = constrain((int)(hourObject["temp"] | 0), -100, 100);
+            hourSlot->precipProbability = constrain((int)(hourObject["pop"] | 0), 0, 100);
+            hourSlot->precipTenthsOfMm = constrain((int)(hourObject["precip"] | 0), 0, 255);
+        }
+        weatherData.today.hourCount = hourCount;
+    }
+
+    if (todayBlock["segments"].is<JsonArrayConst>())
+    {
+        JsonArrayConst segmentsArray = todayBlock["segments"];
+        int segmentCount = min((int)segmentsArray.size(), (int)MAX_TODAY_SEGMENTS);
+        for (int i = 0; i < segmentCount; i++)
+        {
+            JsonObjectConst segmentObject = segmentsArray[i];
+            TodaySegment* segmentSlot = &weatherData.today.segments[i];
+            segmentSlot->fromHour = constrain((int)(segmentObject["from"] | 0), 0, 23);
+            segmentSlot->toHour = constrain((int)(segmentObject["to"] | 0), 0, 23);
+            strlcpy(segmentSlot->icon, segmentObject["icon"] | "", sizeof(segmentSlot->icon));
+        }
+        weatherData.today.segmentCount = segmentCount;
     }
 }
 
@@ -1600,6 +1678,399 @@ void displayShowTracker(TrackerData* tracker) {
     #endif
 }
 
+#define TODAY_HEAVY_PRECIP_TENTHS 10
+#define TODAY_MIN_PRECIP_PROBABILITY 15
+
+// Hourly chart geometry, all of it inside the y=32-63 block of weatherclock.
+// x=61-62 belong to the page indicator, so nothing here goes past x=59.
+#define TODAY_HOUR_PITCH_X      5
+#define TODAY_FIRST_COLUMN_X    2
+#define TODAY_BAR_WIDTH         4
+#define TODAY_BAR_MAX_HEIGHT    13
+#define TODAY_CHART_RIGHT_X     59
+#define TODAY_EXTREMES_TOP_Y    33
+#define TODAY_EXTREMES_LEFT_X   1
+#define TODAY_EXTREMES_RIGHT_X  59
+#define TODAY_CURVE_TOP_Y       40
+#define TODAY_CURVE_BOTTOM_Y    54
+#define TODAY_AREA_FLOOR_Y      55
+#define TODAY_BASELINE_Y        56
+#define TODAY_HOUR_LABEL_TOP_Y  58
+#define TODAY_HOUR_LABEL_STEP   4    // one hour label and one tick every four hours
+
+// TomThumb carries neither a degree sign, nor an hour mark short enough to read
+// as a unit, nor an mm ligature narrow enough to fit, so the three are painted
+// pixel by pixel. Each row below is a bitmask drawn left to right from x, and
+// topY is the top of the glyph box: a leading empty row means the glyph hangs
+// lower than the digits it follows.
+#define DEGREE_GLYPH_WIDTH 3
+#define HOUR_UNIT_GLYPH_WIDTH 3
+#define MILLIMETRE_GLYPH_WIDTH 7
+
+void drawGlyphRows(int16_t x, int16_t topY, uint8_t width,
+                   const uint8_t* rowBits, uint8_t rowCount, uint16_t color)
+{
+    for (uint8_t row = 0; row < rowCount; row++)
+    {
+        for (uint8_t column = 0; column < width; column++)
+        {
+            if (rowBits[row] & (1 << (width - 1 - column)))
+            {
+                dma_display->drawPixel(x + column, topY + row, color);
+            }
+        }
+    }
+}
+
+void drawDegreeGlyph(int16_t x, int16_t topY, uint16_t color)
+{
+    static const uint8_t degreeRows[] = {
+        0b010,
+        0b101,
+        0b010
+    };
+    drawGlyphRows(x, topY, DEGREE_GLYPH_WIDTH, degreeRows, sizeof(degreeRows), color);
+}
+
+void drawHourUnitGlyph(int16_t x, int16_t topY, uint16_t color)
+{
+    static const uint8_t hourUnitRows[] = {
+        0b000,
+        0b100,
+        0b100,
+        0b111,
+        0b101
+    };
+    drawGlyphRows(x, topY, HOUR_UNIT_GLYPH_WIDTH, hourUnitRows, sizeof(hourUnitRows), color);
+}
+
+void drawMillimetreGlyph(int16_t x, int16_t topY, uint16_t color)
+{
+    static const uint8_t millimetreRows[] = {
+        0b0000000,
+        0b0000000,
+        0b1111111,
+        0b1010101,
+        0b1010101
+    };
+    drawGlyphRows(x, topY, MILLIMETRE_GLYPH_WIDTH, millimetreRows, sizeof(millimetreRows), color);
+}
+
+// The ramp is anchored on absolute Celsius, not on the extremes of the window:
+// anchored on the window, a -6 degree hour would take the warm end of the ramp
+// simply for being the mildest hour of a freezing day. Outside these two bounds
+// the ramp saturates.
+#define TODAY_RAMP_COLD_CELSIUS (-10)
+#define TODAY_RAMP_WARM_CELSIUS 35
+
+// Tenths of a degree: the ramp is sampled once per pixel column, and whole degrees
+// would break the gradient into five-pixel steps between two hours.
+uint8_t weatherTemperatureWarmth(int16_t temperatureTenths)
+{
+    const int16_t coldTenths = TODAY_RAMP_COLD_CELSIUS * 10;
+    const int16_t warmTenths = TODAY_RAMP_WARM_CELSIUS * 10;
+    int16_t clampedTenths = constrain(temperatureTenths, coldTenths, warmTenths);
+    return (uint8_t)((int32_t)(clampedTenths - coldTenths) * 255 / (warmTenths - coldTenths));
+}
+
+// The panel bleeds on saturated red, so the warm end stops at orange. Every stop
+// keeps its red channel above 110, which is what separates the ramp from the rain
+// bars: those are pure blues with no red at all.
+uint16_t weatherTemperatureRampColor(uint8_t warmth)
+{
+    // { ramp position, red, green, blue }, one stop per named temperature:
+    // -10 violet, 0 periwinkle, 10 teal, 18 yellow green, 26 gold, 35 orange
+    static const uint8_t rampStops[][4] = {
+        {   0, 140,  70, 240 },
+        {  57, 130, 130, 245 },
+        { 113, 120, 205, 200 },
+        { 159, 160, 225, 110 },
+        { 204, 235, 205,  80 },
+        { 255, 255, 140,  20 }
+    };
+    const uint8_t rampStopCount = sizeof(rampStops) / sizeof(rampStops[0]);
+
+    uint8_t upperStop = rampStopCount - 1;
+    for (uint8_t stop = 1; stop < rampStopCount; stop++)
+    {
+        if (warmth <= rampStops[stop][0])
+        {
+            upperStop = stop;
+            break;
+        }
+    }
+    uint8_t lowerStop = upperStop - 1;
+
+    int16_t stopDistance = (int16_t)rampStops[upperStop][0] - (int16_t)rampStops[lowerStop][0];
+    int16_t positionInStop = (int16_t)warmth - (int16_t)rampStops[lowerStop][0];
+
+    uint8_t channelValue[3];
+    for (uint8_t channel = 0; channel < 3; channel++)
+    {
+        int16_t fromValue = (int16_t)rampStops[lowerStop][channel + 1];
+        int16_t toValue = (int16_t)rampStops[upperStop][channel + 1];
+        int16_t interpolated = fromValue +
+            (int16_t)((int32_t)(toValue - fromValue) * positionInStop / stopDistance);
+        channelValue[channel] = (uint8_t)interpolated;
+    }
+
+    return dma_display->color565(channelValue[0], channelValue[1], channelValue[2]);
+}
+
+int16_t todayColumnCenterX(uint8_t hourIndex)
+{
+    return TODAY_FIRST_COLUMN_X + TODAY_HOUR_PITCH_X * (int16_t)hourIndex;
+}
+
+// Called twice: once with fillArea before the rain bars, once without after them,
+// so the crest stays readable where a bar crosses it.
+void displayDrawTodayCurve(const TodayWindow* today, const int16_t* pointY,
+                           int16_t lastColumnX, bool fillArea)
+{
+    uint16_t areaTint = dma_display->color565(26, 32, 50);
+    uint8_t lastHourIndex = today->hourCount - 1;
+    int16_t previousColumnY = -1;
+
+    for (int16_t columnX = 0; columnX <= lastColumnX; columnX++)
+    {
+        // Flat lead-in and lead-out: the first and last hours own the columns
+        // outside their centres, so the crest spans the whole axis
+        uint8_t anchorIndex = 0;
+        int16_t offsetWithinHour = 0;
+        if (columnX >= todayColumnCenterX(lastHourIndex))
+        {
+            anchorIndex = lastHourIndex;
+        }
+        else if (columnX > todayColumnCenterX(0))
+        {
+            anchorIndex = (uint8_t)((columnX - TODAY_FIRST_COLUMN_X) / TODAY_HOUR_PITCH_X);
+            offsetWithinHour = columnX - todayColumnCenterX(anchorIndex);
+        }
+
+        int16_t columnY = pointY[anchorIndex];
+        int16_t columnTemperatureTenths = (int16_t)today->hours[anchorIndex].temp * 10;
+        if (offsetWithinHour > 0)
+        {
+            int16_t rowSpan = pointY[anchorIndex + 1] - pointY[anchorIndex];
+            // The row is rounded as a whole rather than the offset alone, so a
+            // half-row tie lands one row lower, like the reference render
+            int32_t scaledRow = (int32_t)pointY[anchorIndex] * 2 * TODAY_HOUR_PITCH_X +
+                                2 * (int32_t)rowSpan * offsetWithinHour + TODAY_HOUR_PITCH_X;
+            columnY = (int16_t)(scaledRow / (2 * TODAY_HOUR_PITCH_X));
+
+            int16_t temperatureSpanTenths =
+                ((int16_t)today->hours[anchorIndex + 1].temp -
+                 (int16_t)today->hours[anchorIndex].temp) * 10;
+            columnTemperatureTenths +=
+                (int16_t)((int32_t)temperatureSpanTenths * offsetWithinHour / TODAY_HOUR_PITCH_X);
+        }
+
+        uint16_t crestColor =
+            weatherTemperatureRampColor(weatherTemperatureWarmth(columnTemperatureTenths));
+
+        if (fillArea && columnY < TODAY_AREA_FLOOR_Y)
+        {
+            dma_display->drawFastVLine(columnX, columnY + 1,
+                                       TODAY_AREA_FLOOR_Y - columnY, areaTint);
+        }
+
+        if (previousColumnY >= 0)
+        {
+            // A jump of more than one row would leave the crest as a dotted line
+            int16_t rowsClimbed = abs(columnY - previousColumnY);
+            if (rowsClimbed > 1)
+            {
+                dma_display->drawFastVLine(columnX, min(columnY, previousColumnY),
+                                           rowsClimbed + 1, crestColor);
+            }
+        }
+        dma_display->drawPixel(columnX, columnY, crestColor);
+
+        previousColumnY = columnY;
+    }
+}
+
+void displayDrawTodayRainTotal(const TodayWindow* today, uint16_t rainColor)
+{
+    uint16_t totalTenthsOfMm = 0;
+    for (uint8_t i = 0; i < today->hourCount; i++)
+    {
+        totalTenthsOfMm += today->hours[i].precipTenthsOfMm;
+    }
+
+    if (totalTenthsOfMm == 0)
+    {
+        return;
+    }
+
+    // A tenth of a millimetre stops being worth a character above 10 mm
+    char totalLabel[8];
+    if (totalTenthsOfMm >= 100)
+    {
+        snprintf(totalLabel, sizeof(totalLabel), "%d", (totalTenthsOfMm + 5) / 10);
+    }
+    else
+    {
+        snprintf(totalLabel, sizeof(totalLabel), "%d.%d",
+                 totalTenthsOfMm / 10, totalTenthsOfMm % 10);
+    }
+
+    int16_t numberWidth = calculateTomThumbTextWidth(totalLabel);
+    int16_t labelWidth = numberWidth + 1 + MILLIMETRE_GLYPH_WIDTH;
+    int16_t labelX = (DISPLAY_WIDTH - labelWidth) / 2;
+
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(rainColor);
+    dma_display->setCursor(labelX, TODAY_EXTREMES_TOP_Y + 5);
+    dma_display->print(totalLabel);
+    drawMillimetreGlyph(labelX + numberWidth + 1, TODAY_EXTREMES_TOP_Y, rainColor);
+    dma_display->setFont(NULL);
+}
+
+void displayShowTodayChart(const TodayWindow* today)
+{
+    // ============================================================
+    // Layout map of the hourly page (y=32-63 of weatherclock)
+    // A TomThumb glyph paints from baseline-5 to baseline-1, so a band whose
+    // top row is Y is written with setCursor(_, Y + 5).
+    // ============================================================
+    // y=33-37:  summary row - window maximum, rain total, window minimum,
+    //           the two temperatures each in its own ramp hue
+    // y=40-54:  temperature crest, one pixel per column
+    // y=43-55:  rain bars, hanging from the top of their height onto the axis
+    // y=41-55:  area under the crest
+    // y=56:     axis, brighter every four hours
+    // y=58-62:  hour labels every four hours
+    // ============================================================
+
+    uint16_t labelGray = dma_display->color565(100, 100, 100);
+    uint16_t axisGray = dma_display->color565(40, 40, 40);
+    uint16_t lightRainBlue = dma_display->color565(0, 90, 180);
+    uint16_t heavyRainBlue = dma_display->color565(0, 170, 255);
+
+    int16_t temperatureMin = today->hours[0].temp;
+    int16_t temperatureMax = today->hours[0].temp;
+    for (uint8_t i = 1; i < today->hourCount; i++)
+    {
+        temperatureMin = min(temperatureMin, today->hours[i].temp);
+        temperatureMax = max(temperatureMax, today->hours[i].temp);
+    }
+
+    // ---- Window extremes (y=33-37) ----
+    dma_display->setFont(&TomThumb);
+
+    char maxLabel[8];
+    snprintf(maxLabel, sizeof(maxLabel), "%d", temperatureMax);
+    uint16_t maxColor = weatherTemperatureRampColor(weatherTemperatureWarmth(temperatureMax * 10));
+    dma_display->setTextColor(maxColor);
+    dma_display->setCursor(TODAY_EXTREMES_LEFT_X, TODAY_EXTREMES_TOP_Y + 5);
+    dma_display->print(maxLabel);
+    drawDegreeGlyph(TODAY_EXTREMES_LEFT_X + calculateTomThumbTextWidth(maxLabel),
+                    TODAY_EXTREMES_TOP_Y, maxColor);
+
+    char minLabel[8];
+    snprintf(minLabel, sizeof(minLabel), "%d", temperatureMin);
+    uint16_t minColor = weatherTemperatureRampColor(weatherTemperatureWarmth(temperatureMin * 10));
+    // The diamond ends on the right edge of the chart, the number sits before it
+    int16_t minDegreeX = TODAY_EXTREMES_RIGHT_X - (DEGREE_GLYPH_WIDTH - 1);
+    dma_display->setTextColor(minColor);
+    dma_display->setCursor(minDegreeX - calculateTomThumbTextWidth(minLabel), TODAY_EXTREMES_TOP_Y + 5);
+    dma_display->print(minLabel);
+    drawDegreeGlyph(minDegreeX, TODAY_EXTREMES_TOP_Y, minColor);
+    dma_display->setFont(NULL);
+
+    // ---- Curve, filled pass (y=40-55) ----
+    const int16_t curveHeight = TODAY_CURVE_BOTTOM_Y - TODAY_CURVE_TOP_Y;
+    int16_t temperatureRange = temperatureMax - temperatureMin;
+
+    int16_t pointY[MAX_TODAY_HOURS];
+    for (uint8_t i = 0; i < today->hourCount; i++)
+    {
+        if (temperatureRange == 0)
+        {
+            pointY[i] = (TODAY_CURVE_TOP_Y + TODAY_CURVE_BOTTOM_Y) / 2;
+        }
+        else
+        {
+            // The row is rounded as a whole rather than the offset alone, so a
+            // half-row tie lands one row lower, like the reference render
+            int32_t scaledRow = (int32_t)TODAY_CURVE_BOTTOM_Y * 2 * temperatureRange +
+                                temperatureRange -
+                                2 * (int32_t)(today->hours[i].temp - temperatureMin) * curveHeight;
+            pointY[i] = (int16_t)(scaledRow / (2 * temperatureRange));
+        }
+    }
+
+    // A window shorter than twelve hours keeps the same pitch and stops where its
+    // data stops, rather than extending the last hour across the empty half
+    int16_t lastColumnX = min((int16_t)TODAY_CHART_RIGHT_X,
+                              (int16_t)(todayColumnCenterX(today->hourCount - 1) + 2));
+    displayDrawTodayCurve(today, pointY, lastColumnX, true);
+
+    // ---- Rain bars (y=43-55) ----
+    for (uint8_t i = 0; i < today->hourCount; i++)
+    {
+        uint8_t probability = today->hours[i].precipProbability;
+        if (probability < TODAY_MIN_PRECIP_PROBABILITY)
+        {
+            continue;
+        }
+        uint8_t barHeight = (uint8_t)max(1, (probability * TODAY_BAR_MAX_HEIGHT + 50) / 100);
+
+        uint16_t barColor = (today->hours[i].precipTenthsOfMm >= TODAY_HEAVY_PRECIP_TENTHS)
+            ? heavyRainBlue
+            : lightRainBlue;
+        dma_display->fillRect(todayColumnCenterX(i) - TODAY_BAR_WIDTH / 2,
+                              TODAY_BASELINE_Y - barHeight,
+                              TODAY_BAR_WIDTH, barHeight, barColor);
+    }
+
+    // ---- Curve, bare pass over the bars ----
+    displayDrawTodayCurve(today, pointY, lastColumnX, false);
+
+    // ---- Axis (y=56) and hour labels (y=58-62) ----
+    dma_display->drawFastHLine(0, TODAY_BASELINE_Y, TODAY_CHART_RIGHT_X + 1, axisGray);
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(labelGray);
+    for (uint8_t i = 0; i < today->hourCount; i += TODAY_HOUR_LABEL_STEP)
+    {
+        int16_t columnCenterX = todayColumnCenterX(i);
+        dma_display->drawPixel(columnCenterX, TODAY_BASELINE_Y, labelGray);
+
+        char hourLabel[4];
+        snprintf(hourLabel, sizeof(hourLabel), "%d", today->hours[i].hour);
+        int16_t hourNumberWidth = calculateTomThumbTextWidth(hourLabel);
+        int16_t hourLabelWidth = hourNumberWidth + 1 + HOUR_UNIT_GLYPH_WIDTH;
+        int16_t hourLabelX = max(0, columnCenterX - hourLabelWidth / 2);
+
+        dma_display->setCursor(hourLabelX, TODAY_HOUR_LABEL_TOP_Y + 5);
+        dma_display->print(hourLabel);
+        drawHourUnitGlyph(hourLabelX + hourNumberWidth + 1, TODAY_HOUR_LABEL_TOP_Y, labelGray);
+    }
+    dma_display->setFont(NULL);
+
+    displayDrawTodayRainTotal(today, heavyRainBlue);
+}
+
+// Number plus degree diamond, the pair centred as a whole on centerX. baselineY is
+// the TomThumb baseline, so the diamond hangs from baselineY - 5.
+void drawCenteredTemperature(int16_t centerX, int16_t baselineY, int16_t temperature, uint16_t color)
+{
+    char label[8];
+    snprintf(label, sizeof(label), "%d", temperature);
+    int16_t labelWidth = calculateTomThumbTextWidth(label);
+    int16_t labelX = centerX - (labelWidth + DEGREE_GLYPH_WIDTH) / 2;
+
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(color);
+    dma_display->setCursor(labelX, baselineY);
+    dma_display->print(label);
+    drawDegreeGlyph(labelX + labelWidth, baselineY - 5, color);
+}
+
+// Dwell of the hourly carousel page, in day pages
+#define HOURLY_PAGE_WEIGHT 2
+
 void displayShowWeatherClock(uint16_t appDuration) {
     // Fallback to time display if weather data is stale or missing
     unsigned long weatherAge = millis() - weatherData.lastUpdate;
@@ -1625,20 +2096,46 @@ void displayShowWeatherClock(uint16_t appDuration) {
     bool needsFullRedraw = (weatherLastDrawnMinute != minutes) ||
                            (weatherLastUpdateDrawn != weatherData.lastUpdate);
 
-    // Forecast pagination
-    uint8_t forecastPageCount = max((uint8_t)1,
-        (uint8_t)((weatherData.forecastCount + FORECAST_COLUMNS - 1) / FORECAST_COLUMNS));
-    unsigned long pageInterval = (unsigned long)appDuration / forecastPageCount;
+    // Forecast pagination. The hourly window, when there is one, takes the first
+    // page of the same carousel and pushes the days one page to the right.
+    bool hasHourlyPage = (weatherData.today.hourCount > 0);
+    uint8_t dayPageCount =
+        (weatherData.forecastCount + FORECAST_COLUMNS - 1) / FORECAST_COLUMNS;
+    uint8_t forecastPageCount = max((uint8_t)1, (uint8_t)(dayPageCount + (hasHourlyPage ? 1 : 0)));
+    forecastPageCount = min(forecastPageCount, (uint8_t)MAX_CAROUSEL_PAGES);
+
+    // The hourly page holds the screen HOURLY_PAGE_WEIGHT times longer than a day
+    // page, and the app's total time is unchanged: the day pages give up what the
+    // chart takes.
+    uint8_t totalPageWeight = forecastPageCount + (hasHourlyPage ? HOURLY_PAGE_WEIGHT - 1 : 0);
+    unsigned long dayPageInterval = (unsigned long)appDuration / totalPageWeight;
+
+    // The API handler runs on another task and can reset forecastPage mid-frame,
+    // so the whole frame is drawn from one snapshot of it
+    uint8_t currentPage = forecastPage;
+
+    // A payload with fewer days, or with the hourly window dropped, can leave the
+    // carousel parked on a page that no longer exists
+    if (currentPage >= forecastPageCount) {
+        currentPage = 0;
+    }
+
+    bool showingHourlyPage = (hasHourlyPage && currentPage == 0);
+    unsigned long pageInterval = showingHourlyPage
+        ? dayPageInterval * HOURLY_PAGE_WEIGHT
+        : dayPageInterval;
 
     bool pageChanged = false;
     if (forecastPageCount > 1) {
         unsigned long now = millis();
         if (now - lastForecastPageSwitch >= pageInterval) {
-            forecastPage = (forecastPage + 1) % forecastPageCount;
+            currentPage = (currentPage + 1) % forecastPageCount;
             lastForecastPageSwitch = now;
             pageChanged = true;
         }
     }
+
+    forecastPage = currentPage;
 
     bool needsForecastRedraw = needsFullRedraw || pageChanged;
 
@@ -1662,7 +2159,8 @@ void displayShowWeatherClock(uint16_t appDuration) {
     // y=13-19:  HH:MM (NULL font top=13) + :SS (TomThumb baseline=20)
     // y=22-28:  date (NULL font top=22)
     // y=31:     separator
-    // y=32-63:  forecast (32px) - paginated by FORECAST_COLUMNS
+    // y=32-63:  carousel (32px) - hourly chart first when the data is there,
+    //           then the forecast days FORECAST_COLUMNS at a time
     //   y=39:     day names (TomThumb baseline=39)
     //   y=41-48:  forecast icons (8x8)
     //   y=56:     min temps (TomThumb baseline=56)
@@ -1692,43 +2190,47 @@ void displayShowWeatherClock(uint16_t appDuration) {
         dma_display->setTextSize(1);
         dma_display->setTextColor(white);
 
+        // Today's min/max on the right, chained left to right from the measured
+        // widths so a one- or three-digit value keeps its diamond attached
+        char todayMinStr[8], todayMaxStr[8];
+        snprintf(todayMinStr, sizeof(todayMinStr), "%d", weatherData.currentTempMin);
+        snprintf(todayMaxStr, sizeof(todayMaxStr), "%d", weatherData.currentTempMax);
+
+        const int16_t degreeAdvance = DEGREE_GLYPH_WIDTH + 1;
+        int16_t minAdvance = calculateTomThumbTextWidth(todayMinStr);
+        int16_t maxAdvance = calculateTomThumbTextWidth(todayMaxStr);
+        int16_t slashAdvance = calculateTomThumbTextWidth("/");
+        int16_t pairWidth = minAdvance + degreeAdvance + slashAdvance + maxAdvance + DEGREE_GLYPH_WIDTH;
+        int16_t minX = DISPLAY_WIDTH - 2 - pairWidth;
+
         char tempStr[8];
         snprintf(tempStr, sizeof(tempStr), "%d", weatherData.currentTemp);
         dma_display->setCursor(weatherTextX, 2);
         dma_display->print(tempStr);
 
-        // Degree symbol (small circle, superscript position)
+        // Sub-zero on all three values runs the current temperature into the pair,
+        // and the diamond is the first thing worth giving up
         int16_t degreeX = weatherTextX + strlen(tempStr) * 6;
-        dma_display->drawPixel(degreeX + 1, 1, white);
-        dma_display->drawPixel(degreeX,     2, white);
-        dma_display->drawPixel(degreeX + 2, 2, white);
-        dma_display->drawPixel(degreeX + 1, 3, white);
-
-        // "C" after degree (NULL font, same top as temp)
-        int16_t cX = degreeX + 4;
-        dma_display->setCursor(cX, 2);
-        dma_display->print("C");
-
-        // Today's min/max on right side (NULL font, right-aligned)
-        char todayMinStr[8], todayMaxStr[8];
-        snprintf(todayMinStr, sizeof(todayMinStr), "%d", weatherData.currentTempMin);
-        snprintf(todayMaxStr, sizeof(todayMaxStr), "%d", weatherData.currentTempMax);
-        int16_t todayMinW = strlen(todayMinStr) * 4;
-        int16_t todaySlashW = 4;
-        int16_t todayMaxW = strlen(todayMaxStr) * 4;
-        int16_t todayTotalW = todayMinW + todaySlashW + todayMaxW;
-        int16_t todayX = DISPLAY_WIDTH - todayTotalW - 1;
+        if (degreeX + DEGREE_GLYPH_WIDTH <= minX) {
+            drawDegreeGlyph(degreeX, 1, white);
+        }
 
         dma_display->setFont(&TomThumb);
         dma_display->setTextColor(coldBlue);
-        dma_display->setCursor(todayX, 8);
+        dma_display->setCursor(minX, 8);
         dma_display->print(todayMinStr);
+        drawDegreeGlyph(minX + minAdvance, 3, coldBlue);
+
+        int16_t slashX = minX + minAdvance + degreeAdvance;
         dma_display->setTextColor(gray);
-        dma_display->setCursor(todayX + todayMinW, 8);
+        dma_display->setCursor(slashX, 8);
         dma_display->print("/");
+
+        int16_t maxX = slashX + slashAdvance;
         dma_display->setTextColor(warmRed);
-        dma_display->setCursor(todayX + todayMinW + todaySlashW, 8);
+        dma_display->setCursor(maxX, 8);
         dma_display->print(todayMaxStr);
+        drawDegreeGlyph(maxX + maxAdvance, 3, warmRed);
 
         // ---- Separator (y=10) ----
         dma_display->fillRect(0, 10, DISPLAY_WIDTH, 1, black);
@@ -1737,9 +2239,12 @@ void displayShowWeatherClock(uint16_t appDuration) {
         // ---- Date (y=21-30) ----
         dma_display->fillRect(0, 21, DISPLAY_WIDTH, 10, black);
 
-        static const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
         static const char* monthNamesFr[] = {"JAN", "FEV", "MAR", "AVR", "MAI", "JUN",
                                              "JUL", "AOU", "SEP", "OCT", "NOV", "DEC"};
+
+        // Indexed by tm_wday, so Sunday first
+        static const char* const dayNamesFr[] = {"DIM", "LUN", "MAR", "MER",
+                                                 "JEU", "VEN", "SAM"};
 
         char dateStr[16];
         snprintf(dateStr, sizeof(dateStr), "%s %02d %s",
@@ -1767,58 +2272,56 @@ void displayShowWeatherClock(uint16_t appDuration) {
     if (needsForecastRedraw) {
         dma_display->fillRect(0, 32, DISPLAY_WIDTH, 32, black);
 
-        // Compute which forecast days to display on the current page
-        uint8_t pageStart = forecastPage * FORECAST_COLUMNS;
-        uint8_t displayCount = min((uint8_t)FORECAST_COLUMNS,
-            (uint8_t)(weatherData.forecastCount - pageStart));
+        if (hasHourlyPage && currentPage == 0) {
+            displayShowTodayChart(&weatherData.today);
+        } else {
+            // Compute which forecast days to display on the current page
+            uint8_t dayPage = hasHourlyPage ? (currentPage - 1) : currentPage;
+            uint8_t pageStart = dayPage * FORECAST_COLUMNS;
+            uint8_t displayCount = (pageStart < weatherData.forecastCount)
+                ? min((uint8_t)FORECAST_COLUMNS,
+                      (uint8_t)(weatherData.forecastCount - pageStart))
+                : 0;
 
-        for (int col = 0; col < displayCount; col++) {
-            int forecastIndex = pageStart + col;
+            for (int col = 0; col < displayCount; col++) {
+                int forecastIndex = pageStart + col;
 
-            // Dynamic centering based on number of columns on this page
-            int16_t colCenter;
-            if (displayCount == 1) {
-                colCenter = 32;
-            } else if (displayCount == 2) {
-                colCenter = 16 + col * 32;
-            } else {
-                colCenter = 11 + col * 21;
-            }
-
-            // Day name (TomThumb baseline=39, glyphs y=34-38)
-            dma_display->setFont(&TomThumb);
-            dma_display->setTextColor(coral);
-            int16_t dayNameWidth = strlen(weatherData.forecast[forecastIndex].dayName) * 4;
-            dma_display->setCursor(colCenter - dayNameWidth / 2, 39);
-            dma_display->print(weatherData.forecast[forecastIndex].dayName);
-
-            // Forecast icon (8x8 native, y=41-48)
-            const uint16_t* builtinForecastIcon = getBuiltinWeatherIcon(weatherData.forecast[forecastIndex].icon);
-            if (builtinForecastIcon) {
-                drawProgmemIcon(dma_display, builtinForecastIcon, colCenter - 4, 41, 1);
-            } else {
-                CachedIcon* forecastIcon = getIcon(weatherData.forecast[forecastIndex].icon);
-                if (forecastIcon && forecastIcon->valid) {
-                    drawIconAtScale(forecastIcon, colCenter - 4, 41, 1);
+                // Dynamic centering based on number of columns on this page
+                int16_t colCenter;
+                if (displayCount == 1) {
+                    colCenter = 32;
+                } else if (displayCount == 2) {
+                    colCenter = 16 + col * 32;
+                } else {
+                    colCenter = 11 + col * 21;
                 }
+
+                // Day name (TomThumb baseline=39, glyphs y=34-38)
+                dma_display->setFont(&TomThumb);
+                dma_display->setTextColor(coral);
+                int16_t dayNameWidth = strlen(weatherData.forecast[forecastIndex].dayName) * 4;
+                dma_display->setCursor(colCenter - dayNameWidth / 2, 39);
+                dma_display->print(weatherData.forecast[forecastIndex].dayName);
+
+                // Forecast icon (8x8 native, y=41-48)
+                const uint16_t* builtinForecastIcon = getBuiltinWeatherIcon(weatherData.forecast[forecastIndex].icon);
+                if (builtinForecastIcon) {
+                    drawProgmemIcon(dma_display, builtinForecastIcon, colCenter - 4, 41, 1);
+                } else {
+                    CachedIcon* forecastIcon = getIcon(weatherData.forecast[forecastIndex].icon);
+                    if (forecastIcon && forecastIcon->valid) {
+                        drawIconAtScale(forecastIcon, colCenter - 4, 41, 1);
+                    }
+                }
+
+                // Min temp in blue (TomThumb baseline=56, glyphs y=51-55)
+                drawCenteredTemperature(colCenter, 56,
+                                        weatherData.forecast[forecastIndex].tempMin, coldBlue);
+
+                // Max temp in red (TomThumb baseline=63, glyphs y=58-62)
+                drawCenteredTemperature(colCenter, 63,
+                                        weatherData.forecast[forecastIndex].tempMax, warmRed);
             }
-
-            // Min temp in blue (TomThumb baseline=56, glyphs y=51-55)
-            char minStr[8];
-            snprintf(minStr, sizeof(minStr), "%d", weatherData.forecast[forecastIndex].tempMin);
-            dma_display->setFont(&TomThumb);
-            dma_display->setTextColor(coldBlue);
-            int16_t minWidth = strlen(minStr) * 4;
-            dma_display->setCursor(colCenter - minWidth / 2, 56);
-            dma_display->print(minStr);
-
-            // Max temp in red (TomThumb baseline=63, glyphs y=58-62)
-            char maxStr[8];
-            snprintf(maxStr, sizeof(maxStr), "%d", weatherData.forecast[forecastIndex].tempMax);
-            dma_display->setTextColor(warmRed);
-            int16_t maxWidth = strlen(maxStr) * 4;
-            dma_display->setCursor(colCenter - maxWidth / 2, 63);
-            dma_display->print(maxStr);
         }
 
         // Page indicator squares (vertical, right edge, just below second separator)
@@ -1830,7 +2333,7 @@ void displayShowWeatherClock(uint16_t appDuration) {
             int dotX = 61;               // 2px margin from right edge (x=63)
             int dotStartY = 33;          // Just below separator at y=31
             for (int d = 0; d < forecastPageCount; d++) {
-                uint16_t dotColor = (d == forecastPage) ? activeDot : dimGray;
+                uint16_t dotColor = (d == currentPage) ? activeDot : dimGray;
                 dma_display->fillRect(dotX, dotStartY + d * step, squareSize, squareSize, dotColor);
             }
         }
@@ -2208,6 +2711,24 @@ void displaySetBrightness(uint8_t brightness) {
 int16_t calculateTextWidth(const char* text) {
     // Default 5x7 font with 1px spacing = 6 pixels per character
     return strlen(text) * 6;
+}
+
+// TomThumb is not monospaced: '1' advances 3 px and space 2 px where most
+// glyphs advance 4, so a strlen-based estimate misplaces right-aligned and
+// centred strings and makes them jitter as their digits change.
+int16_t calculateTomThumbTextWidth(const char* text)
+{
+    int16_t totalWidth = 0;
+    for (const char* character = text; *character; character++)
+    {
+        uint8_t characterCode = (uint8_t)*character;
+        if (characterCode < 0x20 || characterCode > 0x7E)
+        {
+            continue;
+        }
+        totalWidth += (int16_t)pgm_read_byte(&TomThumbGlyphs[characterCode - 0x20].xAdvance);
+    }
+    return totalWidth;
 }
 
 bool textNeedsScroll(const char* text, int16_t availableWidth) {
@@ -3472,7 +3993,38 @@ void setupWebServer() {
                 return;
             }
 
-            // Update settings from JSON
+            // Everything is validated before anything is applied: a payload that
+            // gets a 400 must leave the panel and the stored settings untouched
+            JsonObject ntpUpdate;
+            if (doc["ntp"].is<JsonObject>()) {
+                ntpUpdate = doc["ntp"].as<JsonObject>();
+            }
+
+            bool hasWeatherDuration = !doc["weatherDuration"].isNull();
+            uint32_t requestedWeatherDuration = 0;
+            if (hasWeatherDuration) {
+                requestedWeatherDuration = doc["weatherDuration"].as<uint32_t>();
+                if (requestedWeatherDuration < (uint32_t)MIN_WEATHER_DURATION ||
+                    requestedWeatherDuration > (uint32_t)MAX_WEATHER_DURATION) {
+                    char errorMessage[96];
+                    snprintf(errorMessage, sizeof(errorMessage),
+                             "{\"error\":\"weatherDuration must be between %d and %d ms\"}",
+                             MIN_WEATHER_DURATION, MAX_WEATHER_DURATION);
+                    request->send(400, "application/json", errorMessage);
+                    return;
+                }
+            }
+
+            const char* requestedTzPosix = nullptr;
+            if (!ntpUpdate.isNull() && ntpUpdate["tz_posix"].is<const char*>()) {
+                requestedTzPosix = ntpUpdate["tz_posix"].as<const char*>();
+                size_t tzLen = strlen(requestedTzPosix);
+                if (tzLen == 0 || tzLen >= sizeof(settings.tzPosix)) {
+                    request->send(400, "application/json", "{\"error\":\"tz_posix length invalid\"}");
+                    return;
+                }
+            }
+
             if (!doc["brightness"].isNull()) {
                 settings.brightness = doc["brightness"].as<uint8_t>();
                 displaySetBrightness(settings.brightness);
@@ -3484,21 +4036,18 @@ void setupWebServer() {
             if (!doc["defaultDuration"].isNull()) {
                 settings.defaultDuration = doc["defaultDuration"].as<uint16_t>();
             }
+            if (hasWeatherDuration) {
+                settings.weatherDuration = (uint16_t)requestedWeatherDuration;
+                weatherClockApplyDuration(settings.weatherDuration);
+            }
 
             bool ntpChanged = false;
-            if (doc["ntp"].is<JsonObject>()) {
-                JsonObject ntpUpdate = doc["ntp"].as<JsonObject>();
+            if (!ntpUpdate.isNull()) {
                 if (!ntpUpdate["offset"].isNull() || !ntpUpdate["daylight_offset"].isNull()) {
                     Serial.println("[NTP] Legacy ntp.offset/daylight_offset ignored, use ntp.tz_posix");
                 }
-                if (ntpUpdate["tz_posix"].is<const char*>()) {
-                    const char* tz = ntpUpdate["tz_posix"].as<const char*>();
-                    size_t tzLen = strlen(tz);
-                    if (tzLen == 0 || tzLen >= sizeof(settings.tzPosix)) {
-                        request->send(400, "application/json", "{\"error\":\"tz_posix length invalid\"}");
-                        return;
-                    }
-                    strlcpy(settings.tzPosix, tz, sizeof(settings.tzPosix));
+                if (requestedTzPosix) {
+                    strlcpy(settings.tzPosix, requestedTzPosix, sizeof(settings.tzPosix));
                     Serial.printf("[NTP] tz_posix updated to %s\n", settings.tzPosix);
                     ntpChanged = true;
                 }
@@ -3543,6 +4092,27 @@ void setupWebServer() {
                 fc["icon"] = weatherData.forecast[i].icon;
                 fc["temp_min"] = weatherData.forecast[i].tempMin;
                 fc["temp_max"] = weatherData.forecast[i].tempMax;
+            }
+
+            if (weatherData.today.hourCount > 0) {
+                JsonObject today = doc["today"].to<JsonObject>();
+
+                JsonArray hoursArr = today["hours"].to<JsonArray>();
+                for (uint8_t i = 0; i < weatherData.today.hourCount; i++) {
+                    JsonObject hourObj = hoursArr.add<JsonObject>();
+                    hourObj["h"] = weatherData.today.hours[i].hour;
+                    hourObj["temp"] = weatherData.today.hours[i].temp;
+                    hourObj["pop"] = weatherData.today.hours[i].precipProbability;
+                    hourObj["precip"] = weatherData.today.hours[i].precipTenthsOfMm;
+                }
+
+                JsonArray segmentsArr = today["segments"].to<JsonArray>();
+                for (uint8_t i = 0; i < weatherData.today.segmentCount; i++) {
+                    JsonObject segmentObj = segmentsArr.add<JsonObject>();
+                    segmentObj["from"] = weatherData.today.segments[i].fromHour;
+                    segmentObj["to"] = weatherData.today.segments[i].toHour;
+                    segmentObj["icon"] = weatherData.today.segments[i].icon;
+                }
             }
         }
 
@@ -3590,6 +4160,8 @@ void setupWebServer() {
             } else {
                 weatherData.forecastCount = 0;
             }
+
+            weatherParseTodayBlock(doc["today"].as<JsonObjectConst>());
 
             // Reset forecast pagination on new data
             forecastPage = 0;
@@ -4239,6 +4811,7 @@ void handleApiSettings(AsyncWebServerRequest *request) {
     doc["brightness"] = settings.brightness;
     doc["autoRotate"] = settings.autoRotate;
     doc["defaultDuration"] = settings.defaultDuration;
+    doc["weatherDuration"] = settings.weatherDuration;
     doc["display"]["width"] = DISPLAY_WIDTH;
     doc["display"]["height"] = DISPLAY_HEIGHT;
     doc["ntp"]["server"] = settings.ntpServer;
@@ -4739,6 +5312,8 @@ void mqttHandleWeather(JsonObject& doc) {
         weatherData.forecastCount = 0;
     }
 
+    weatherParseTodayBlock(doc["today"].as<JsonObjectConst>());
+
     // Reset forecast pagination on new data
     forecastPage = 0;
     lastForecastPageSwitch = millis();
@@ -4842,6 +5417,13 @@ void mqttHandleSettings(JsonObject& doc) {
     if (!doc["defaultDuration"].isNull()) {
         settings.defaultDuration = doc["defaultDuration"].as<uint16_t>();
     }
+    if (!doc["weatherDuration"].isNull()) {
+        uint32_t requestedWeatherDuration = doc["weatherDuration"].as<uint32_t>();
+        settings.weatherDuration = constrain(requestedWeatherDuration,
+                                             (uint32_t)MIN_WEATHER_DURATION,
+                                             (uint32_t)MAX_WEATHER_DURATION);
+        weatherClockApplyDuration(settings.weatherDuration);
+    }
 
     saveSettings();
     Serial.println("[MQTT] Settings updated");
@@ -4895,6 +5477,7 @@ void initDefaultSettings() {
     settings.brightness = DEFAULT_BRIGHTNESS;
     settings.autoRotate = true;
     settings.defaultDuration = DEFAULT_APP_DURATION;
+    settings.weatherDuration = DEFAULT_WEATHER_DURATION;
 
     strlcpy(settings.ntpServer, NTP_SERVER, sizeof(settings.ntpServer));
     strlcpy(settings.tzPosix, DEFAULT_TZ_POSIX, sizeof(settings.tzPosix));
@@ -4962,6 +5545,12 @@ bool loadSettings() {
             Serial.println("[NTP] Legacy ntp.offset ignored, applying default tz_posix");
         }
     }
+
+    // WeatherClock app settings
+    uint32_t storedWeatherDuration = doc["apps"]["weatherclock"]["duration"] | (uint32_t)DEFAULT_WEATHER_DURATION;
+    settings.weatherDuration = constrain(storedWeatherDuration,
+                                         (uint32_t)MIN_WEATHER_DURATION,
+                                         (uint32_t)MAX_WEATHER_DURATION);
 
     // Clock app settings
     settings.clockEnabled = doc["apps"]["clock"]["enabled"] | true;
@@ -5107,6 +5696,9 @@ bool saveSettings() {
     // NTP settings
     doc["ntp"]["server"] = settings.ntpServer;
     doc["ntp"]["tz_posix"] = settings.tzPosix;
+
+    // WeatherClock app settings
+    doc["apps"]["weatherclock"]["duration"] = settings.weatherDuration;
 
     // Clock app settings
     doc["apps"]["clock"]["enabled"] = settings.clockEnabled;
@@ -5351,7 +5943,7 @@ void setupApps() {
 
     // WeatherClock system app (replaces clock+date when weather data is available)
     appAdd("weatherclock", "WeatherClock", "", settings.clockColor,
-           settings.defaultDuration, 0, 1, true);
+           settings.weatherDuration, 0, 1, true);
     Serial.println("[APPS] WeatherClock app added");
 
     // Load persisted custom apps
@@ -5520,6 +6112,15 @@ bool appUpdate(const char* id, const char* text, const char* icon,
 
     Serial.printf("[APPS] Updated app: %s\n", id);
     return true;
+}
+
+void weatherClockApplyDuration(uint16_t durationMs)
+{
+    int8_t weatherClockIndex = appFind("weatherclock");
+    if (weatherClockIndex < 0) return;
+
+    apps[weatherClockIndex].duration = durationMs;
+    Serial.printf("[APPS] WeatherClock duration set to %u ms\n", durationMs);
 }
 
 int8_t appFind(const char* id) {

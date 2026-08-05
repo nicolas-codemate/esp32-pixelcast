@@ -341,9 +341,6 @@ unsigned long lastForecastPageSwitch = 0;
 int weatherLastDrawnMinute = -1;
 unsigned long weatherLastUpdateDrawn = 0;
 
-// Indexed by tm_wday, so Sunday first
-const char* dayNamesFr[] = {"DIM", "LUN", "MAR", "MER", "JEU", "VEN", "SAM"};
-
 // Tracker display cache (global so they can be reset on app switch)
 unsigned long trackerLastUpdateDrawn = 0;
 bool trackerStaleDrawn = false;
@@ -1121,7 +1118,9 @@ void weatherParseTodayBlock(JsonObjectConst todayBlock)
             JsonObjectConst hourObject = hoursArray[i];
             TodayHour* hourSlot = &weatherData.today.hours[i];
             hourSlot->hour = constrain((int)(hourObject["h"] | 0), 0, 23);
-            hourSlot->temp = hourObject["temp"] | 0;
+            // No reading on Earth comes near +/-100 C, and a wider span would
+            // overflow the int16_t arithmetic behind the curve
+            hourSlot->temp = constrain((int)(hourObject["temp"] | 0), -100, 100);
             hourSlot->precipProbability = constrain((int)(hourObject["pop"] | 0), 0, 100);
             hourSlot->precipTenthsOfMm = constrain((int)(hourObject["precip"] | 0), 0, 255);
         }
@@ -2108,13 +2107,17 @@ void displayShowWeatherClock(uint16_t appDuration) {
     uint8_t totalPageWeight = forecastPageCount + (hasHourlyPage ? HOURLY_PAGE_WEIGHT - 1 : 0);
     unsigned long dayPageInterval = (unsigned long)appDuration / totalPageWeight;
 
+    // The API handler runs on another task and can reset forecastPage mid-frame,
+    // so the whole frame is drawn from one snapshot of it
+    uint8_t currentPage = forecastPage;
+
     // A payload with fewer days, or with the hourly window dropped, can leave the
     // carousel parked on a page that no longer exists
-    if (forecastPage >= forecastPageCount) {
-        forecastPage = 0;
+    if (currentPage >= forecastPageCount) {
+        currentPage = 0;
     }
 
-    bool showingHourlyPage = (hasHourlyPage && forecastPage == 0);
+    bool showingHourlyPage = (hasHourlyPage && currentPage == 0);
     unsigned long pageInterval = showingHourlyPage
         ? dayPageInterval * HOURLY_PAGE_WEIGHT
         : dayPageInterval;
@@ -2123,11 +2126,13 @@ void displayShowWeatherClock(uint16_t appDuration) {
     if (forecastPageCount > 1) {
         unsigned long now = millis();
         if (now - lastForecastPageSwitch >= pageInterval) {
-            forecastPage = (forecastPage + 1) % forecastPageCount;
+            currentPage = (currentPage + 1) % forecastPageCount;
             lastForecastPageSwitch = now;
             pageChanged = true;
         }
     }
+
+    forecastPage = currentPage;
 
     bool needsForecastRedraw = needsFullRedraw || pageChanged;
 
@@ -2234,6 +2239,10 @@ void displayShowWeatherClock(uint16_t appDuration) {
         static const char* monthNamesFr[] = {"JAN", "FEV", "MAR", "AVR", "MAI", "JUN",
                                              "JUL", "AOU", "SEP", "OCT", "NOV", "DEC"};
 
+        // Indexed by tm_wday, so Sunday first
+        static const char* const dayNamesFr[] = {"DIM", "LUN", "MAR", "MER",
+                                                 "JEU", "VEN", "SAM"};
+
         char dateStr[16];
         snprintf(dateStr, sizeof(dateStr), "%s %02d %s",
                  dayNamesFr[localTm.tm_wday],
@@ -2260,14 +2269,16 @@ void displayShowWeatherClock(uint16_t appDuration) {
     if (needsForecastRedraw) {
         dma_display->fillRect(0, 32, DISPLAY_WIDTH, 32, black);
 
-        if (hasHourlyPage && forecastPage == 0) {
+        if (hasHourlyPage && currentPage == 0) {
             displayShowTodayChart(&weatherData.today);
         } else {
             // Compute which forecast days to display on the current page
-            uint8_t dayPage = hasHourlyPage ? (forecastPage - 1) : forecastPage;
+            uint8_t dayPage = hasHourlyPage ? (currentPage - 1) : currentPage;
             uint8_t pageStart = dayPage * FORECAST_COLUMNS;
-            uint8_t displayCount = min((uint8_t)FORECAST_COLUMNS,
-                (uint8_t)(weatherData.forecastCount - pageStart));
+            uint8_t displayCount = (pageStart < weatherData.forecastCount)
+                ? min((uint8_t)FORECAST_COLUMNS,
+                      (uint8_t)(weatherData.forecastCount - pageStart))
+                : 0;
 
             for (int col = 0; col < displayCount; col++) {
                 int forecastIndex = pageStart + col;
@@ -2319,7 +2330,7 @@ void displayShowWeatherClock(uint16_t appDuration) {
             int dotX = 61;               // 2px margin from right edge (x=63)
             int dotStartY = 33;          // Just below separator at y=31
             for (int d = 0; d < forecastPageCount; d++) {
-                uint16_t dotColor = (d == forecastPage) ? activeDot : dimGray;
+                uint16_t dotColor = (d == currentPage) ? activeDot : dimGray;
                 dma_display->fillRect(dotX, dotStartY + d * step, squareSize, squareSize, dotColor);
             }
         }
@@ -3979,7 +3990,38 @@ void setupWebServer() {
                 return;
             }
 
-            // Update settings from JSON
+            // Everything is validated before anything is applied: a payload that
+            // gets a 400 must leave the panel and the stored settings untouched
+            JsonObject ntpUpdate;
+            if (doc["ntp"].is<JsonObject>()) {
+                ntpUpdate = doc["ntp"].as<JsonObject>();
+            }
+
+            bool hasWeatherDuration = !doc["weatherDuration"].isNull();
+            uint32_t requestedWeatherDuration = 0;
+            if (hasWeatherDuration) {
+                requestedWeatherDuration = doc["weatherDuration"].as<uint32_t>();
+                if (requestedWeatherDuration < (uint32_t)MIN_WEATHER_DURATION ||
+                    requestedWeatherDuration > (uint32_t)MAX_WEATHER_DURATION) {
+                    char errorMessage[96];
+                    snprintf(errorMessage, sizeof(errorMessage),
+                             "{\"error\":\"weatherDuration must be between %d and %d ms\"}",
+                             MIN_WEATHER_DURATION, MAX_WEATHER_DURATION);
+                    request->send(400, "application/json", errorMessage);
+                    return;
+                }
+            }
+
+            const char* requestedTzPosix = nullptr;
+            if (!ntpUpdate.isNull() && ntpUpdate["tz_posix"].is<const char*>()) {
+                requestedTzPosix = ntpUpdate["tz_posix"].as<const char*>();
+                size_t tzLen = strlen(requestedTzPosix);
+                if (tzLen == 0 || tzLen >= sizeof(settings.tzPosix)) {
+                    request->send(400, "application/json", "{\"error\":\"tz_posix length invalid\"}");
+                    return;
+                }
+            }
+
             if (!doc["brightness"].isNull()) {
                 settings.brightness = doc["brightness"].as<uint8_t>();
                 displaySetBrightness(settings.brightness);
@@ -3991,35 +4033,18 @@ void setupWebServer() {
             if (!doc["defaultDuration"].isNull()) {
                 settings.defaultDuration = doc["defaultDuration"].as<uint16_t>();
             }
-            if (!doc["weatherDuration"].isNull()) {
-                uint32_t requestedWeatherDuration = doc["weatherDuration"].as<uint32_t>();
-                if (requestedWeatherDuration < (uint32_t)MIN_WEATHER_DURATION ||
-                    requestedWeatherDuration > (uint32_t)MAX_WEATHER_DURATION) {
-                    char errorMessage[96];
-                    snprintf(errorMessage, sizeof(errorMessage),
-                             "{\"error\":\"weatherDuration must be between %d and %d ms\"}",
-                             MIN_WEATHER_DURATION, MAX_WEATHER_DURATION);
-                    request->send(400, "application/json", errorMessage);
-                    return;
-                }
+            if (hasWeatherDuration) {
                 settings.weatherDuration = (uint16_t)requestedWeatherDuration;
                 weatherClockApplyDuration(settings.weatherDuration);
             }
 
             bool ntpChanged = false;
-            if (doc["ntp"].is<JsonObject>()) {
-                JsonObject ntpUpdate = doc["ntp"].as<JsonObject>();
+            if (!ntpUpdate.isNull()) {
                 if (!ntpUpdate["offset"].isNull() || !ntpUpdate["daylight_offset"].isNull()) {
                     Serial.println("[NTP] Legacy ntp.offset/daylight_offset ignored, use ntp.tz_posix");
                 }
-                if (ntpUpdate["tz_posix"].is<const char*>()) {
-                    const char* tz = ntpUpdate["tz_posix"].as<const char*>();
-                    size_t tzLen = strlen(tz);
-                    if (tzLen == 0 || tzLen >= sizeof(settings.tzPosix)) {
-                        request->send(400, "application/json", "{\"error\":\"tz_posix length invalid\"}");
-                        return;
-                    }
-                    strlcpy(settings.tzPosix, tz, sizeof(settings.tzPosix));
+                if (requestedTzPosix) {
+                    strlcpy(settings.tzPosix, requestedTzPosix, sizeof(settings.tzPosix));
                     Serial.printf("[NTP] tz_posix updated to %s\n", settings.tzPosix);
                     ntpChanged = true;
                 }

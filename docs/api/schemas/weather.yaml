@@ -80,7 +80,11 @@ TodayHour:
         - 15
     temp:
       type: integer
-      description: Temperature for that hour, same unit as the current conditions.
+      minimum: -100
+      maximum: 100
+      description: >
+        Temperature for that hour, same unit as the current conditions. Values
+        outside the range are clamped to it.
     pop:
       type: integer
       minimum: 0
@@ -108,10 +112,12 @@ TodaySegment:
       description: Last local hour of the segment (inclusive).
     icon:
       type: string
+      maxLength: 31
       description: >
         Weather icon name for the whole segment. Built-in PROGMEM icons:
         w_clear_day, w_clear_night, w_partly_day, w_partly_night, w_cloudy,
-        w_rain, w_heavy_rain, w_thunder, w_snow, w_fog.
+        w_rain, w_heavy_rain, w_thunder, w_snow, w_fog. Longer names are
+        truncated to 31 characters.
       examples:
         - "w_partly_day"
 
@@ -137,8 +143,9 @@ WeatherToday:
         $ref: "#/TodaySegment"
       maxItems: 4
       description: >
-        Sky segments covering the window (up to 4). Segments are computed by
-        the sender; the device only renders their icon over the hour span.
+        Sky segments covering the window (up to 4). Extra entries are ignored.
+        Segments are computed by the sender; they are stored and echoed back
+        but are not currently drawn.
 
 WeatherUpdateRequest:
   type: object

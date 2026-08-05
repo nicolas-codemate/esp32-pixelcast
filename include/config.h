@@ -170,6 +170,9 @@
 #define MIN_WEATHER_DURATION        3000    // 3 seconds
 #define MAX_WEATHER_DURATION        60000   // 60 seconds
 
+static_assert(MAX_WEATHER_DURATION <= UINT16_MAX,
+              "MAX_WEATHER_DURATION must fit settings.weatherDuration, a uint16_t");
+
 // Text scrolling
 #define SCROLL_SPEED 50  // ms per pixel
 #define SCROLL_PAUSE 2000  // Pause at start/end

@@ -56,17 +56,18 @@ body:json {
 }
 
 docs {
-  Updates the WeatherClock with current conditions and forecast, and the
-  WeatherToday app with the hourly window.
+  Updates the WeatherClock with current conditions, forecast and the
+  hourly window.
 
   The WeatherClock is a system app that displays current weather, time,
-  date, and a paginated forecast (pages of 3 columns, auto-scrolling).
+  date, and a paginated carousel below them (auto-scrolling).
 
-  The WeatherToday app displays the hourly window sent in "today": a
-  temperature curve, precipitation bars and sky segments. It joins the
-  rotation on the first payload carrying a non-empty "today.hours" array.
-  Hours are absolute local hours and are displayed as received, so the
-  sender decides where the window starts.
+  The hourly window sent in "today" is charted on the first page of that
+  carousel: a temperature curve over the precipitation bars. The forecast
+  days follow on the next pages (3 columns each). Hours are absolute local
+  hours and are displayed as received, so the sender decides where the
+  window starts. The page appears on the first payload carrying a
+  non-empty "today.hours" array.
 
   Data older than 1 hour is considered stale and the display falls back
   to a simple clock.
@@ -84,11 +85,12 @@ docs {
   - forecast[].temp_max: Max temperature
   - today.hours[]: Up to 12 hourly entries, extra ones are ignored
   - today.hours[].h: Local hour, 0-23
-  - today.hours[].temp: Temperature for that hour (integer)
+  - today.hours[].temp: Temperature for that hour, -100 to 100
   - today.hours[].pop: Precipitation probability, 0-100
   - today.hours[].precip: Quantity in tenths of mm (2 = 0.2 mm)
-  - today.segments[]: Up to 4 sky segments, extra ones are ignored
+  - today.segments[]: Up to 4 sky segments, extra ones are ignored.
+    Stored and echoed back by GET /api/weather, but not drawn.
   - today.segments[].from: First hour of the segment, inclusive
   - today.segments[].to: Last hour of the segment, inclusive
-  - today.segments[].icon: Icon name for the whole segment
+  - today.segments[].icon: Icon name for the whole segment (31 chars max)
 }

@@ -96,7 +96,8 @@ paths:
               schema:
                 $ref: "schemas/common.yaml#/SuccessResponse"
         "400":
-          description: Invalid JSON.
+          description: >
+            Invalid JSON, or `weatherDuration` outside the 3000-60000 ms range.
           content:
             application/json:
               schema:
@@ -294,10 +295,10 @@ paths:
       summary: Update weather data
       description: >
         Push current conditions, an optional 7-day forecast and an optional
-        hourly window. The WeatherClock system app displays the current
-        conditions and the forecast; the WeatherToday app displays the hourly
-        window and joins the rotation on the first payload carrying one. Both
-        fall back to a simple clock when data is stale (>1 hour).
+        hourly window. The WeatherClock system app displays all three: the
+        current conditions on top, then a carousel whose first page is the
+        hourly chart, when a payload carries one, followed by the forecast days.
+        It falls back to a simple clock when data is stale (>1 hour).
       tags: [Weather]
       requestBody:
         required: true

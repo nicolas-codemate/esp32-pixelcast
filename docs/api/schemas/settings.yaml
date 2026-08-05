@@ -17,6 +17,19 @@ SettingsUpdateRequest:
     defaultDuration:
       type: integer
       description: Default app display duration in milliseconds.
+    weatherDuration:
+      type: integer
+      minimum: 3000
+      maximum: 60000
+      default: 12000
+      description: >
+        Display duration of the `weatherclock` app in milliseconds. It has its
+        own duration because it runs an internal carousel — an hourly chart page
+        plus the forecast day pages — and splits this time between them, so it
+        needs more of it than a plain app. Applied to the running app
+        immediately, no reboot needed, and persisted across reboots. Bounded to
+        3000-60000: below 3000 the carousel pages flip faster than they can be
+        read, above 60000 the rotation parks on weather for a full minute.
     ntp:
       type: object
       description: >
@@ -52,6 +65,11 @@ SettingsResponse:
     defaultDuration:
       type: integer
       description: Default duration in milliseconds.
+    weatherDuration:
+      type: integer
+      description: >
+        Display duration of the `weatherclock` app in milliseconds
+        (3000-60000, default 12000).
     display:
       type: object
       properties:

@@ -141,7 +141,10 @@ channels:
 
   settings:
     address: "{prefix}/settings"
-    description: Update device settings (partial update).
+    description: >
+      Update device settings (partial update). Same payload as
+      `POST /api/settings`, except that out-of-range values are clamped to their
+      bounds instead of rejected, since MQTT has no response channel.
     parameters:
       prefix:
         default: pixelcast
@@ -152,7 +155,7 @@ channels:
   weather:
     address: "{prefix}/weather"
     description: >
-      Update weather data for the WeatherClock and WeatherToday system apps.
+      Update weather data for the WeatherClock system app.
     parameters:
       prefix:
         default: pixelcast
@@ -404,6 +407,7 @@ components:
             brightness: 100
             autoRotate: true
             defaultDuration: 15000
+            weatherDuration: 12000
 
     Weather:
       payload:

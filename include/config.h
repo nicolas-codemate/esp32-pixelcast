@@ -20,13 +20,13 @@
     #define VERSION_MAJOR 1
 #endif
 #ifndef VERSION_MINOR
-    #define VERSION_MINOR 1
+    #define VERSION_MINOR 2
 #endif
 #ifndef VERSION_PATCH
     #define VERSION_PATCH 0
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.1.0"
+    #define VERSION_STRING "1.2.0"
 #endif
 
 // ============================================================================
@@ -163,6 +163,12 @@
 #define DEFAULT_APP_DURATION    10000   // 10 seconds
 #define DEFAULT_APP_LIFETIME    300000  // 5 minutes (0 = permanent)
 #define DEFAULT_NOTIF_DURATION  5000    // 5 seconds
+
+// WeatherClock has its own duration: it splits its time between an hourly chart
+// page and the forecast day pages, so it needs more of it than a plain app.
+#define DEFAULT_WEATHER_DURATION    12000   // 12 seconds
+#define MIN_WEATHER_DURATION        3000    // 3 seconds
+#define MAX_WEATHER_DURATION        60000   // 60 seconds
 
 // Text scrolling
 #define SCROLL_SPEED 50  // ms per pixel

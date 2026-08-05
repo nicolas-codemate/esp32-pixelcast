@@ -537,7 +537,7 @@ void displayShowIP();
 void displayShowTime();
 void displayShowDate();
 void displayShowApp(AppItem* app);
-void displayShowWeatherClock(uint16_t appDuration = 10000);
+void displayShowWeatherClock(uint16_t appDuration);
 void drawDropIcon(int16_t x, int16_t y, uint16_t color);
 void drawSeparatorLine(int16_t y, uint16_t color);
 void drawIconAtScale(CachedIcon* icon, int16_t x, int16_t y, uint8_t scale);
@@ -1677,10 +1677,7 @@ void displayShowTracker(TrackerData* tracker) {
     #endif
 }
 
-// Above 1.0 mm within the hour the precipitation bars switch to the saturated blue
 #define TODAY_HEAVY_PRECIP_TENTHS 10
-
-// Below this probability the hour gets no bar at all
 #define TODAY_MIN_PRECIP_PROBABILITY 15
 
 // Hourly chart geometry, all of it inside the y=32-63 block of weatherclock.
@@ -1691,8 +1688,8 @@ void displayShowTracker(TrackerData* tracker) {
 #define TODAY_BAR_MAX_HEIGHT    13
 #define TODAY_CHART_RIGHT_X     59
 #define TODAY_EXTREMES_TOP_Y    33
+#define TODAY_EXTREMES_LEFT_X   1
 #define TODAY_EXTREMES_RIGHT_X  59
-#define HOURLY_PAGE_WEIGHT      2
 #define TODAY_CURVE_TOP_Y       40
 #define TODAY_CURVE_BOTTOM_Y    54
 #define TODAY_AREA_FLOOR_Y      55
@@ -1700,51 +1697,73 @@ void displayShowTracker(TrackerData* tracker) {
 #define TODAY_HOUR_LABEL_TOP_Y  58
 #define TODAY_HOUR_LABEL_STEP   4    // one hour label and one tick every four hours
 
-// TomThumb has no degree sign. topY is the top row of the 3x3 diamond, which is
-// the same shape after the current temperature and after the two chart extremes.
+// TomThumb carries neither a degree sign, nor an hour mark short enough to read
+// as a unit, nor an mm ligature narrow enough to fit, so the three are painted
+// pixel by pixel. Each row below is a bitmask drawn left to right from x, and
+// topY is the top of the glyph box: a leading empty row means the glyph hangs
+// lower than the digits it follows.
 #define DEGREE_GLYPH_WIDTH 3
-
-void drawDegreeGlyph(int16_t x, int16_t topY, uint16_t color)
-{
-    dma_display->drawPixel(x + 1, topY, color);
-    dma_display->drawPixel(x, topY + 1, color);
-    dma_display->drawPixel(x + 2, topY + 1, color);
-    dma_display->drawPixel(x + 1, topY + 2, color);
-}
-
-// 3x4 lowercase h, one row shorter than a TomThumb digit so "14h" reads as a
-// value with a unit rather than as three characters of equal weight.
-void drawHourUnitGlyph(int16_t x, int16_t topY, uint16_t color)
-{
-    dma_display->drawFastVLine(x, topY + 1, 4, color);
-    dma_display->drawPixel(x + 1, topY + 3, color);
-    dma_display->drawPixel(x + 2, topY + 3, color);
-    dma_display->drawPixel(x + 2, topY + 4, color);
-}
-
-// 7x3 mm ligature: the two m share one top bar, which is the only way to fit
-// both letters in seven columns.
+#define HOUR_UNIT_GLYPH_WIDTH 3
 #define MILLIMETRE_GLYPH_WIDTH 7
 
-void drawMillimetreGlyph(int16_t x, int16_t topY, uint16_t color)
+void drawGlyphRows(int16_t x, int16_t topY, uint8_t width,
+                   const uint8_t* rowBits, uint8_t rowCount, uint16_t color)
 {
-    dma_display->drawFastHLine(x, topY + 2, 7, color);
-    for (int16_t legX = 0; legX <= 6; legX += 2)
+    for (uint8_t row = 0; row < rowCount; row++)
     {
-        dma_display->drawPixel(x + legX, topY + 3, color);
-        dma_display->drawPixel(x + legX, topY + 4, color);
+        for (uint8_t column = 0; column < width; column++)
+        {
+            if (rowBits[row] & (1 << (width - 1 - column)))
+            {
+                dma_display->drawPixel(x + column, topY + row, color);
+            }
+        }
     }
 }
 
-// The temperature ramp is anchored on absolute Celsius, not on the min and max of
-// the twelve hour window. Anchored on the window, a -6 degree hour would be painted
-// with the warm end of the ramp simply for being the mildest hour of a freezing day.
-// Outside these two bounds the ramp saturates.
+void drawDegreeGlyph(int16_t x, int16_t topY, uint16_t color)
+{
+    static const uint8_t degreeRows[] = {
+        0b010,
+        0b101,
+        0b010
+    };
+    drawGlyphRows(x, topY, DEGREE_GLYPH_WIDTH, degreeRows, sizeof(degreeRows), color);
+}
+
+void drawHourUnitGlyph(int16_t x, int16_t topY, uint16_t color)
+{
+    static const uint8_t hourUnitRows[] = {
+        0b000,
+        0b100,
+        0b100,
+        0b111,
+        0b101
+    };
+    drawGlyphRows(x, topY, HOUR_UNIT_GLYPH_WIDTH, hourUnitRows, sizeof(hourUnitRows), color);
+}
+
+void drawMillimetreGlyph(int16_t x, int16_t topY, uint16_t color)
+{
+    static const uint8_t millimetreRows[] = {
+        0b0000000,
+        0b0000000,
+        0b1111111,
+        0b1010101,
+        0b1010101
+    };
+    drawGlyphRows(x, topY, MILLIMETRE_GLYPH_WIDTH, millimetreRows, sizeof(millimetreRows), color);
+}
+
+// The ramp is anchored on absolute Celsius, not on the extremes of the window:
+// anchored on the window, a -6 degree hour would take the warm end of the ramp
+// simply for being the mildest hour of a freezing day. Outside these two bounds
+// the ramp saturates.
 #define TODAY_RAMP_COLD_CELSIUS (-10)
 #define TODAY_RAMP_WARM_CELSIUS 35
 
 // Tenths of a degree: the ramp is sampled once per pixel column, and whole degrees
-// would break a smooth gradient into five-pixel steps between two hours.
+// would break the gradient into five-pixel steps between two hours.
 uint8_t weatherTemperatureWarmth(int16_t temperatureTenths)
 {
     const int16_t coldTenths = TODAY_RAMP_COLD_CELSIUS * 10;
@@ -1753,11 +1772,9 @@ uint8_t weatherTemperatureWarmth(int16_t temperatureTenths)
     return (uint8_t)((int32_t)(clampedTenths - coldTenths) * 255 / (warmTenths - coldTenths));
 }
 
-// Violet through pale blue and yellow green to orange, so the hue of a column
-// states its temperature on its own. Two constraints shape the stops: this panel
-// bleeds on saturated red, so the warm end stops at orange; and the rain bars are
-// pure blues with no red at all, so every stop here keeps its red channel above
-// 110 and stays a pastel, which the rain never is.
+// The panel bleeds on saturated red, so the warm end stops at orange. Every stop
+// keeps its red channel above 110, which is what separates the ramp from the rain
+// bars: those are pure blues with no red at all.
 uint16_t weatherTemperatureRampColor(uint8_t warmth)
 {
     // { ramp position, red, green, blue }, one stop per named temperature:
@@ -1804,11 +1821,8 @@ int16_t todayColumnCenterX(uint8_t hourIndex)
     return TODAY_FIRST_COLUMN_X + TODAY_HOUR_PITCH_X * (int16_t)hourIndex;
 }
 
-// Drawn column by column rather than segment by segment: the crest takes the
-// colour of the temperature interpolated at that very column, so the hue slides
-// across the day instead of stepping at each hour. Called twice, once filled
-// before the rain bars and once bare after them, so the crest stays readable
-// where a bar crosses it.
+// Called twice: once with fillArea before the rain bars, once without after them,
+// so the crest stays readable where a bar crosses it.
 void displayDrawTodayCurve(const TodayWindow* today, const int16_t* pointY,
                            int16_t lastColumnX, bool fillArea)
 {
@@ -1875,9 +1889,7 @@ void displayDrawTodayCurve(const TodayWindow* today, const int16_t* pointY,
     }
 }
 
-// Floats above the wettest hour, high enough to clear its bar. It is the only
-// figure on the page that is not a temperature, so it keeps the rain blue.
-void displayDrawTodayRainTotal(const TodayWindow* today)
+void displayDrawTodayRainTotal(const TodayWindow* today, uint16_t rainColor)
 {
     uint16_t totalTenthsOfMm = 0;
     for (uint8_t i = 0; i < today->hourCount; i++)
@@ -1902,19 +1914,15 @@ void displayDrawTodayRainTotal(const TodayWindow* today)
                  totalTenthsOfMm / 10, totalTenthsOfMm % 10);
     }
 
-    // The value is the sum over the whole window, not the tallest bar's own
-    // depth, so it sits centred on the summary row with the two extremes rather
-    // than labelling any one bar
     int16_t numberWidth = calculateTomThumbTextWidth(totalLabel);
     int16_t labelWidth = numberWidth + 1 + MILLIMETRE_GLYPH_WIDTH;
     int16_t labelX = (DISPLAY_WIDTH - labelWidth) / 2;
 
-    uint16_t rainBlue = dma_display->color565(0, 170, 255);
     dma_display->setFont(&TomThumb);
-    dma_display->setTextColor(rainBlue);
+    dma_display->setTextColor(rainColor);
     dma_display->setCursor(labelX, TODAY_EXTREMES_TOP_Y + 5);
     dma_display->print(totalLabel);
-    drawMillimetreGlyph(labelX + numberWidth + 1, TODAY_EXTREMES_TOP_Y, rainBlue);
+    drawMillimetreGlyph(labelX + numberWidth + 1, TODAY_EXTREMES_TOP_Y, rainColor);
     dma_display->setFont(NULL);
 }
 
@@ -1954,14 +1962,16 @@ void displayShowTodayChart(const TodayWindow* today)
     snprintf(maxLabel, sizeof(maxLabel), "%d", temperatureMax);
     uint16_t maxColor = weatherTemperatureRampColor(weatherTemperatureWarmth(temperatureMax * 10));
     dma_display->setTextColor(maxColor);
-    dma_display->setCursor(1, TODAY_EXTREMES_TOP_Y + 5);
+    dma_display->setCursor(TODAY_EXTREMES_LEFT_X, TODAY_EXTREMES_TOP_Y + 5);
     dma_display->print(maxLabel);
-    drawDegreeGlyph(1 + calculateTomThumbTextWidth(maxLabel), TODAY_EXTREMES_TOP_Y, maxColor);
+    drawDegreeGlyph(TODAY_EXTREMES_LEFT_X + calculateTomThumbTextWidth(maxLabel),
+                    TODAY_EXTREMES_TOP_Y, maxColor);
 
     char minLabel[8];
     snprintf(minLabel, sizeof(minLabel), "%d", temperatureMin);
     uint16_t minColor = weatherTemperatureRampColor(weatherTemperatureWarmth(temperatureMin * 10));
-    int16_t minDegreeX = TODAY_EXTREMES_RIGHT_X - 2;
+    // The diamond ends on the right edge of the chart, the number sits before it
+    int16_t minDegreeX = TODAY_EXTREMES_RIGHT_X - (DEGREE_GLYPH_WIDTH - 1);
     dma_display->setTextColor(minColor);
     dma_display->setCursor(minDegreeX - calculateTomThumbTextWidth(minLabel), TODAY_EXTREMES_TOP_Y + 5);
     dma_display->print(minLabel);
@@ -1997,23 +2007,21 @@ void displayShowTodayChart(const TodayWindow* today)
     displayDrawTodayCurve(today, pointY, lastColumnX, true);
 
     // ---- Rain bars (y=43-55) ----
-    uint8_t barHeight[MAX_TODAY_HOURS];
     for (uint8_t i = 0; i < today->hourCount; i++)
     {
         uint8_t probability = today->hours[i].precipProbability;
         if (probability < TODAY_MIN_PRECIP_PROBABILITY)
         {
-            barHeight[i] = 0;
             continue;
         }
-        barHeight[i] = (uint8_t)max(1, (probability * TODAY_BAR_MAX_HEIGHT + 50) / 100);
+        uint8_t barHeight = (uint8_t)max(1, (probability * TODAY_BAR_MAX_HEIGHT + 50) / 100);
 
         uint16_t barColor = (today->hours[i].precipTenthsOfMm >= TODAY_HEAVY_PRECIP_TENTHS)
             ? heavyRainBlue
             : lightRainBlue;
         dma_display->fillRect(todayColumnCenterX(i) - TODAY_BAR_WIDTH / 2,
-                              TODAY_BASELINE_Y - barHeight[i],
-                              TODAY_BAR_WIDTH, barHeight[i], barColor);
+                              TODAY_BASELINE_Y - barHeight,
+                              TODAY_BAR_WIDTH, barHeight, barColor);
     }
 
     // ---- Curve, bare pass over the bars ----
@@ -2021,25 +2029,46 @@ void displayShowTodayChart(const TodayWindow* today)
 
     // ---- Axis (y=56) and hour labels (y=58-62) ----
     dma_display->drawFastHLine(0, TODAY_BASELINE_Y, TODAY_CHART_RIGHT_X + 1, axisGray);
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(labelGray);
     for (uint8_t i = 0; i < today->hourCount; i += TODAY_HOUR_LABEL_STEP)
     {
-        dma_display->drawPixel(todayColumnCenterX(i), TODAY_BASELINE_Y, labelGray);
+        int16_t columnCenterX = todayColumnCenterX(i);
+        dma_display->drawPixel(columnCenterX, TODAY_BASELINE_Y, labelGray);
 
         char hourLabel[4];
         snprintf(hourLabel, sizeof(hourLabel), "%d", today->hours[i].hour);
         int16_t hourNumberWidth = calculateTomThumbTextWidth(hourLabel);
-        int16_t hourLabelX = max(0, todayColumnCenterX(i) - (hourNumberWidth + 4) / 2);
+        int16_t hourLabelWidth = hourNumberWidth + 1 + HOUR_UNIT_GLYPH_WIDTH;
+        int16_t hourLabelX = max(0, columnCenterX - hourLabelWidth / 2);
 
-        dma_display->setFont(&TomThumb);
-        dma_display->setTextColor(labelGray);
         dma_display->setCursor(hourLabelX, TODAY_HOUR_LABEL_TOP_Y + 5);
         dma_display->print(hourLabel);
-        dma_display->setFont(NULL);
         drawHourUnitGlyph(hourLabelX + hourNumberWidth + 1, TODAY_HOUR_LABEL_TOP_Y, labelGray);
     }
+    dma_display->setFont(NULL);
 
-    displayDrawTodayRainTotal(today);
+    displayDrawTodayRainTotal(today, heavyRainBlue);
 }
+
+// Number plus degree diamond, the pair centred as a whole on centerX. baselineY is
+// the TomThumb baseline, so the diamond hangs from baselineY - 5.
+void drawCenteredTemperature(int16_t centerX, int16_t baselineY, int16_t temperature, uint16_t color)
+{
+    char label[8];
+    snprintf(label, sizeof(label), "%d", temperature);
+    int16_t labelWidth = calculateTomThumbTextWidth(label);
+    int16_t labelX = centerX - (labelWidth + DEGREE_GLYPH_WIDTH) / 2;
+
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(color);
+    dma_display->setCursor(labelX, baselineY);
+    dma_display->print(label);
+    drawDegreeGlyph(labelX + labelWidth, baselineY - 5, color);
+}
+
+// Dwell of the hourly carousel page, in day pages
+#define HOURLY_PAGE_WEIGHT 2
 
 void displayShowWeatherClock(uint16_t appDuration) {
     // Fallback to time display if weather data is stale or missing
@@ -2073,9 +2102,9 @@ void displayShowWeatherClock(uint16_t appDuration) {
         (weatherData.forecastCount + FORECAST_COLUMNS - 1) / FORECAST_COLUMNS;
     uint8_t forecastPageCount = max((uint8_t)1, (uint8_t)(dayPageCount + (hasHourlyPage ? 1 : 0)));
 
-    // The hourly page carries a chart to read, not three columns to glance at, so it
-    // holds the screen HOURLY_PAGE_WEIGHT times longer than a day page. The app's
-    // total time is unchanged: the day pages give up what the chart takes.
+    // The hourly page holds the screen HOURLY_PAGE_WEIGHT times longer than a day
+    // page, and the app's total time is unchanged: the day pages give up what the
+    // chart takes.
     uint8_t totalPageWeight = forecastPageCount + (hasHourlyPage ? HOURLY_PAGE_WEIGHT - 1 : 0);
     unsigned long dayPageInterval = (unsigned long)appDuration / totalPageWeight;
 
@@ -2085,8 +2114,10 @@ void displayShowWeatherClock(uint16_t appDuration) {
         forecastPage = 0;
     }
 
-    bool isHourlyPage = (hasHourlyPage && forecastPage == 0);
-    unsigned long pageInterval = isHourlyPage ? dayPageInterval * HOURLY_PAGE_WEIGHT : dayPageInterval;
+    bool showingHourlyPage = (hasHourlyPage && forecastPage == 0);
+    unsigned long pageInterval = showingHourlyPage
+        ? dayPageInterval * HOURLY_PAGE_WEIGHT
+        : dayPageInterval;
 
     bool pageChanged = false;
     if (forecastPageCount > 1) {
@@ -2151,9 +2182,8 @@ void displayShowWeatherClock(uint16_t appDuration) {
         dma_display->setTextSize(1);
         dma_display->setTextColor(white);
 
-        // Today's min/max on the right, each followed by the same degree diamond as
-        // the current temperature. Positions are chained from the measured widths so
-        // a one- or three-digit value keeps its diamond attached.
+        // Today's min/max on the right, chained left to right from the measured
+        // widths so a one- or three-digit value keeps its diamond attached
         char todayMinStr[8], todayMaxStr[8];
         snprintf(todayMinStr, sizeof(todayMinStr), "%d", weatherData.currentTempMin);
         snprintf(todayMaxStr, sizeof(todayMaxStr), "%d", weatherData.currentTempMax);
@@ -2170,8 +2200,8 @@ void displayShowWeatherClock(uint16_t appDuration) {
         dma_display->setCursor(weatherTextX, 2);
         dma_display->print(tempStr);
 
-        // Sub-zero on all three values would run the current temperature into the
-        // pair, and the diamond is the first thing worth giving up
+        // Sub-zero on all three values runs the current temperature into the pair,
+        // and the diamond is the first thing worth giving up
         int16_t degreeX = weatherTextX + strlen(tempStr) * 6;
         if (degreeX + DEGREE_GLYPH_WIDTH <= minX) {
             drawDegreeGlyph(degreeX, 1, white);
@@ -2271,25 +2301,12 @@ void displayShowWeatherClock(uint16_t appDuration) {
                 }
 
                 // Min temp in blue (TomThumb baseline=56, glyphs y=51-55)
-                char minStr[8];
-                snprintf(minStr, sizeof(minStr), "%d", weatherData.forecast[forecastIndex].tempMin);
-                dma_display->setFont(&TomThumb);
-                dma_display->setTextColor(coldBlue);
-                int16_t minAdvance = calculateTomThumbTextWidth(minStr);
-                int16_t minX = colCenter - (minAdvance + DEGREE_GLYPH_WIDTH) / 2;
-                dma_display->setCursor(minX, 56);
-                dma_display->print(minStr);
-                drawDegreeGlyph(minX + minAdvance, 51, coldBlue);
+                drawCenteredTemperature(colCenter, 56,
+                                        weatherData.forecast[forecastIndex].tempMin, coldBlue);
 
                 // Max temp in red (TomThumb baseline=63, glyphs y=58-62)
-                char maxStr[8];
-                snprintf(maxStr, sizeof(maxStr), "%d", weatherData.forecast[forecastIndex].tempMax);
-                dma_display->setTextColor(warmRed);
-                int16_t maxAdvance = calculateTomThumbTextWidth(maxStr);
-                int16_t maxX = colCenter - (maxAdvance + DEGREE_GLYPH_WIDTH) / 2;
-                dma_display->setCursor(maxX, 63);
-                dma_display->print(maxStr);
-                drawDegreeGlyph(maxX + maxAdvance, 58, warmRed);
+                drawCenteredTemperature(colCenter, 63,
+                                        weatherData.forecast[forecastIndex].tempMax, warmRed);
             }
         }
 

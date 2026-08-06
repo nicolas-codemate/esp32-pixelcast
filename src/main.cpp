@@ -1684,13 +1684,14 @@ void displayShowTracker(TrackerData* tracker) {
 // Hourly chart geometry, all of it inside the y=32-63 block of weatherclock.
 // x=61-62 belong to the page indicator, so nothing here goes past x=59.
 #define TODAY_HOUR_PITCH_X      5
-#define TODAY_FIRST_COLUMN_X    2
 #define TODAY_BAR_WIDTH         4
 #define TODAY_BAR_MAX_HEIGHT    13
+#define TODAY_CHART_LEFT_X      1
 #define TODAY_CHART_RIGHT_X     59
-#define TODAY_EXTREMES_TOP_Y    33
-#define TODAY_EXTREMES_LEFT_X   1
-#define TODAY_EXTREMES_RIGHT_X  59
+// Centring the first bar on the margin plus half a bar is what keeps the whole
+// chart, bars included, inside TODAY_CHART_LEFT_X without clamping anything
+#define TODAY_FIRST_COLUMN_X    (TODAY_CHART_LEFT_X + TODAY_BAR_WIDTH / 2)
+#define TODAY_SUMMARY_ROW_TOP_Y 33
 #define TODAY_CURVE_TOP_Y       40
 #define TODAY_CURVE_BOTTOM_Y    54
 #define TODAY_AREA_FLOOR_Y      55
@@ -1831,7 +1832,7 @@ void displayDrawTodayCurve(const TodayWindow* today, const int16_t* pointY,
     uint8_t lastHourIndex = today->hourCount - 1;
     int16_t previousColumnY = -1;
 
-    for (int16_t columnX = 0; columnX <= lastColumnX; columnX++)
+    for (int16_t columnX = TODAY_CHART_LEFT_X; columnX <= lastColumnX; columnX++)
     {
         // Flat lead-in and lead-out: the first and last hours own the columns
         // outside their centres, so the crest spans the whole axis
@@ -1921,10 +1922,32 @@ void displayDrawTodayRainTotal(const TodayWindow* today, uint16_t rainColor)
 
     dma_display->setFont(&TomThumb);
     dma_display->setTextColor(rainColor);
-    dma_display->setCursor(labelX, TODAY_EXTREMES_TOP_Y + 5);
+    dma_display->setCursor(labelX, TODAY_SUMMARY_ROW_TOP_Y + 5);
     dma_display->print(totalLabel);
-    drawMillimetreGlyph(labelX + numberWidth + 1, TODAY_EXTREMES_TOP_Y, rainColor);
+    drawMillimetreGlyph(labelX + numberWidth + 1, TODAY_SUMMARY_ROW_TOP_Y, rainColor);
     dma_display->setFont(NULL);
+}
+
+// Number plus degree diamond, tinted by the temperature ramp. topY is the top of
+// the glyph box, not the TomThumb baseline. The caller restores the font.
+void drawRampTemperature(int16_t labelX, int16_t topY, int16_t temperature)
+{
+    char label[8];
+    snprintf(label, sizeof(label), "%d", temperature);
+    uint16_t rampColor = weatherTemperatureRampColor(weatherTemperatureWarmth(temperature * 10));
+
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(rampColor);
+    dma_display->setCursor(labelX, topY + 5);
+    dma_display->print(label);
+    drawDegreeGlyph(labelX + calculateTomThumbTextWidth(label), topY, rampColor);
+}
+
+int16_t calculateRampTemperatureWidth(int16_t temperature)
+{
+    char label[8];
+    snprintf(label, sizeof(label), "%d", temperature);
+    return calculateTomThumbTextWidth(label) + DEGREE_GLYPH_WIDTH;
 }
 
 void displayShowTodayChart(const TodayWindow* today)
@@ -1934,8 +1957,8 @@ void displayShowTodayChart(const TodayWindow* today)
     // A TomThumb glyph paints from baseline-5 to baseline-1, so a band whose
     // top row is Y is written with setCursor(_, Y + 5).
     // ============================================================
-    // y=33-37:  summary row - window maximum, rain total, window minimum,
-    //           the two temperatures each in its own ramp hue
+    // y=33-37:  summary row - temperature of the first charted hour, rain total,
+    //           temperature of the last one, each in its own ramp hue
     // y=40-54:  temperature crest, one pixel per column
     // y=43-55:  rain bars, hanging from the top of their height onto the axis
     // y=41-55:  area under the crest
@@ -1948,6 +1971,18 @@ void displayShowTodayChart(const TodayWindow* today)
     uint16_t lightRainBlue = dma_display->color565(0, 90, 180);
     uint16_t heavyRainBlue = dma_display->color565(0, 170, 255);
 
+    // ---- Both ends of the window (y=33-37) ----
+    int16_t firstHourTemperature = today->hours[0].temp;
+    int16_t lastHourTemperature = today->hours[today->hourCount - 1].temp;
+
+    drawRampTemperature(TODAY_CHART_LEFT_X, TODAY_SUMMARY_ROW_TOP_Y, firstHourTemperature);
+    drawRampTemperature(
+        TODAY_CHART_RIGHT_X + 1 - calculateRampTemperatureWidth(lastHourTemperature),
+        TODAY_SUMMARY_ROW_TOP_Y, lastHourTemperature);
+    dma_display->setFont(NULL);
+
+    // ---- Curve, filled pass (y=40-55) ----
+    // Scaled on the extremes so the crest uses the full height whatever the span
     int16_t temperatureMin = today->hours[0].temp;
     int16_t temperatureMax = today->hours[0].temp;
     for (uint8_t i = 1; i < today->hourCount; i++)
@@ -1956,30 +1991,6 @@ void displayShowTodayChart(const TodayWindow* today)
         temperatureMax = max(temperatureMax, today->hours[i].temp);
     }
 
-    // ---- Window extremes (y=33-37) ----
-    dma_display->setFont(&TomThumb);
-
-    char maxLabel[8];
-    snprintf(maxLabel, sizeof(maxLabel), "%d", temperatureMax);
-    uint16_t maxColor = weatherTemperatureRampColor(weatherTemperatureWarmth(temperatureMax * 10));
-    dma_display->setTextColor(maxColor);
-    dma_display->setCursor(TODAY_EXTREMES_LEFT_X, TODAY_EXTREMES_TOP_Y + 5);
-    dma_display->print(maxLabel);
-    drawDegreeGlyph(TODAY_EXTREMES_LEFT_X + calculateTomThumbTextWidth(maxLabel),
-                    TODAY_EXTREMES_TOP_Y, maxColor);
-
-    char minLabel[8];
-    snprintf(minLabel, sizeof(minLabel), "%d", temperatureMin);
-    uint16_t minColor = weatherTemperatureRampColor(weatherTemperatureWarmth(temperatureMin * 10));
-    // The diamond ends on the right edge of the chart, the number sits before it
-    int16_t minDegreeX = TODAY_EXTREMES_RIGHT_X - (DEGREE_GLYPH_WIDTH - 1);
-    dma_display->setTextColor(minColor);
-    dma_display->setCursor(minDegreeX - calculateTomThumbTextWidth(minLabel), TODAY_EXTREMES_TOP_Y + 5);
-    dma_display->print(minLabel);
-    drawDegreeGlyph(minDegreeX, TODAY_EXTREMES_TOP_Y, minColor);
-    dma_display->setFont(NULL);
-
-    // ---- Curve, filled pass (y=40-55) ----
     const int16_t curveHeight = TODAY_CURVE_BOTTOM_Y - TODAY_CURVE_TOP_Y;
     int16_t temperatureRange = temperatureMax - temperatureMin;
 
@@ -2029,7 +2040,8 @@ void displayShowTodayChart(const TodayWindow* today)
     displayDrawTodayCurve(today, pointY, lastColumnX, false);
 
     // ---- Axis (y=56) and hour labels (y=58-62) ----
-    dma_display->drawFastHLine(0, TODAY_BASELINE_Y, TODAY_CHART_RIGHT_X + 1, axisGray);
+    dma_display->drawFastHLine(TODAY_CHART_LEFT_X, TODAY_BASELINE_Y,
+                               TODAY_CHART_RIGHT_X - TODAY_CHART_LEFT_X + 1, axisGray);
     dma_display->setFont(&TomThumb);
     dma_display->setTextColor(labelGray);
     for (uint8_t i = 0; i < today->hourCount; i += TODAY_HOUR_LABEL_STEP)
@@ -2041,7 +2053,7 @@ void displayShowTodayChart(const TodayWindow* today)
         snprintf(hourLabel, sizeof(hourLabel), "%d", today->hours[i].hour);
         int16_t hourNumberWidth = calculateTomThumbTextWidth(hourLabel);
         int16_t hourLabelWidth = hourNumberWidth + 1 + HOUR_UNIT_GLYPH_WIDTH;
-        int16_t hourLabelX = max(0, columnCenterX - hourLabelWidth / 2);
+        int16_t hourLabelX = max(TODAY_CHART_LEFT_X, columnCenterX - hourLabelWidth / 2);
 
         dma_display->setCursor(hourLabelX, TODAY_HOUR_LABEL_TOP_Y + 5);
         dma_display->print(hourLabel);

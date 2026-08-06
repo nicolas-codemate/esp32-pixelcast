@@ -134,6 +134,10 @@ paths:
                   defaultDuration:
                     type: integer
                     description: Default duration in milliseconds.
+                  weatherDuration:
+                    type: integer
+                    description: |
+                      Display duration of the `weatherclock` app in milliseconds (3000-60000, default 12000).
                   display:
                     type: object
                     properties:
@@ -194,6 +198,13 @@ paths:
                 defaultDuration:
                   type: integer
                   description: Default app display duration in milliseconds.
+                weatherDuration:
+                  type: integer
+                  minimum: 3000
+                  maximum: 60000
+                  default: 12000
+                  description: |
+                    Display duration of the `weatherclock` app in milliseconds. It has its own duration because it runs an internal carousel — an hourly chart page plus the forecast day pages — and splits this time between them, so it needs more of it than a plain app. Applied to the running app immediately, no reboot needed, and persisted across reboots. Bounded to 3000-60000: below 3000 the carousel pages flip faster than they can be read, above 60000 the rotation parks on weather for a full minute.
                 ntp:
                   type: object
                   description: |
@@ -220,7 +231,8 @@ paths:
               schema:
                 $ref: '#/paths/~1sleep/post/responses/200/content/application~1json/schema'
         '400':
-          description: Invalid JSON.
+          description: |
+            Invalid JSON, or `weatherDuration` outside the 3000-60000 ms range.
           content:
             application/json:
               schema:
@@ -594,11 +606,13 @@ paths:
                     type: array
                     items:
                       $ref: '#/paths/~1weather/post/requestBody/content/application~1json/schema/properties/forecast/items'
+                  today:
+                    $ref: '#/paths/~1weather/post/requestBody/content/application~1json/schema/properties/today'
     post:
       operationId: updateWeather
       summary: Update weather data
       description: |
-        Push current conditions and optional 7-day forecast. The WeatherClock system app displays this data and falls back to a simple clock when data is stale (>1 hour).
+        Push current conditions, an optional 7-day forecast and an optional hourly window. The WeatherClock system app displays all three: the current conditions on top, then a carousel whose first page is the hourly chart, when a payload carries one, followed by the forecast days. It falls back to a simple clock when data is stale (>1 hour).
       tags:
         - Weather
       requestBody:
@@ -669,10 +683,81 @@ paths:
                         description: Maximum temperature.
                   maxItems: 7
                   description: |
-                    Forecast days (up to 7). Displayed in pages of 3 columns with automatic scrolling. Page timing is proportional to app duration.
+                    Forecast days, displayed in pages of 3 columns with automatic scrolling. Page timing is proportional to app duration.
+
+                    Start at tomorrow, not today: today's minimum and maximum are already on screen at all times as `current.temp_min` and `current.temp_max`, so a column for today would repeat them.
+
+                    The carousel is capped at 3 pages, which bounds how many days are actually shown. Sending `today` spends the first page on the hourly chart, leaving 6 days; without it, 9 days would fit but `maxItems` caps the array at 7. Days beyond what the carousel can show are stored and echoed back, but never displayed.
+                today:
+                  type: object
+                  description: |
+                    Hourly window charted on the first carousel page of the WeatherClock app: a temperature curve over the precipitation bars. Hours are absolute local hours and are displayed as received, so the sender decides where the window starts. The numbers framing the curve are the temperatures of the first and last charted hours. The page appears on the first payload carrying a non-empty hours array. The segments array is stored and echoed back but is not currently drawn.
+                  properties:
+                    hours:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - h
+                          - temp
+                        properties:
+                          h:
+                            type: integer
+                            minimum: 0
+                            maximum: 23
+                            description: Local hour of the day.
+                            examples:
+                              - 15
+                          temp:
+                            type: integer
+                            minimum: -100
+                            maximum: 100
+                            description: |
+                              Temperature for that hour, same unit as the current conditions. Values outside the range are clamped to it.
+                          pop:
+                            type: integer
+                            minimum: 0
+                            maximum: 100
+                            description: 'Precipitation probability, in percent.'
+                          precip:
+                            type: integer
+                            minimum: 0
+                            maximum: 255
+                            description: Precipitation quantity in tenths of a millimetre (2 means 0.2 mm).
+                      maxItems: 12
+                      description: Hourly values (up to 12). Extra entries are ignored.
+                    segments:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - from
+                          - to
+                          - icon
+                        properties:
+                          from:
+                            type: integer
+                            minimum: 0
+                            maximum: 23
+                            description: First local hour of the segment (inclusive).
+                          to:
+                            type: integer
+                            minimum: 0
+                            maximum: 23
+                            description: Last local hour of the segment (inclusive).
+                          icon:
+                            type: string
+                            maxLength: 31
+                            description: |
+                              Weather icon name for the whole segment. Built-in PROGMEM icons: w_clear_day, w_clear_night, w_partly_day, w_partly_night, w_cloudy, w_rain, w_heavy_rain, w_thunder, w_snow, w_fog. Longer names are truncated to 31 characters.
+                            examples:
+                              - w_partly_day
+                      maxItems: 4
+                      description: |
+                        Sky segments covering the window (up to 4). Extra entries are ignored. Segments are computed by the sender; they are stored and echoed back but are not currently drawn.
             examples:
               threeDayForecast:
-                summary: Current + 3-day forecast
+                summary: Current + 3-day forecast + hourly window
                 value:
                   current:
                     icon: w_clear_day
@@ -693,6 +778,42 @@ paths:
                       icon: w_snow
                       temp_min: -2
                       temp_max: 3
+                  today:
+                    hours:
+                      - h: 15
+                        temp: 22
+                        pop: 0
+                        precip: 0
+                      - h: 16
+                        temp: 23
+                        pop: 10
+                        precip: 2
+                      - h: 17
+                        temp: 23
+                        pop: 40
+                        precip: 8
+                      - h: 18
+                        temp: 21
+                        pop: 80
+                        precip: 25
+                      - h: 19
+                        temp: 19
+                        pop: 30
+                        precip: 4
+                      - h: 20
+                        temp: 18
+                        pop: 10
+                        precip: 0
+                    segments:
+                      - from: 15
+                        to: 16
+                        icon: w_partly_day
+                      - from: 17
+                        to: 19
+                        icon: w_rain
+                      - from: 20
+                        to: 20
+                        icon: w_clear_night
       responses:
         '200':
           description: Weather data updated.
@@ -790,7 +911,10 @@ paths:
                     examples:
                       - '#00D4FF'
                   bottomText:
-                    type: string
+                    allOf:
+                      - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                    description: |
+                      Echoed in the form it was stored: a plain string unless the value was written with color segments, in which case it comes back as the segment array. A client that only ever sends plain strings only ever reads plain strings - but a tracker fed by several producers can come back as an array to a client that did not send one.
                   sparklinePeriod:
                     type: string
                   age:
@@ -843,10 +967,12 @@ paths:
                     Tracker identifier. Can also be passed as `?name=` query parameter.
                 symbol:
                   type: string
-                  maxLength: 7
-                  description: 'Display symbol (e.g. "BTC", "ETH").'
+                  maxLength: 31
+                  description: |
+                    Headline shown on the top row (e.g. "BTC", "Amundi PEA Monde"). Longer than the row is wide is fine: the display scrolls it, pausing at each end. The panel has no accented glyphs, so Latin-1 accents are shown as their closest ASCII letter - "Santé" reads "Sante". Anything else outside ASCII is dropped: "Cœur" reads "Cur", and a typographic apostrophe disappears.
                   examples:
                     - BTC
+                    - Amundi PEA Monde
                 icon:
                   type: string
                   description: Icon name from filesystem.
@@ -893,11 +1019,17 @@ paths:
                 sparklineColor:
                   $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
                 bottomText:
-                  type: string
+                  allOf:
+                    - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
                   maxLength: 31
-                  description: Optional footer text displayed at the bottom.
+                  description: |
+                    Optional footer text on the bottom row. Scrolls when it is wider than the panel. Accepts the same three forms as a custom app's text: plain string, single colored string, or colored segments - `maxLength` bounds the plain form, and the other two are cut at the same 31 characters, a segment that no longer fits being dropped whole. Accents are transliterated as they are in `symbol`, and the degree sign is dropped, the footer font carrying no glyph for it. A stale tracker dims these colors along with the rest of the screen.
                   examples:
                     - 'Vol 24h: 42B'
+                    - - t: 'Vol '
+                        c: '#888888'
+                      - t: 42B
+                        c: '#00D4FF'
                 sparklinePeriod:
                   type: string
                   maxLength: 4
@@ -933,6 +1065,28 @@ paths:
                   sparklineColor: '#00D4FF'
                   bottomText: 'Vol 24h: 42B'
                   sparklinePeriod: 7d
+              fundTracker:
+                summary: Fund with a scrolling name and a colored footer
+                value:
+                  symbol: Amundi PEA Monde
+                  icon: world
+                  currency: EUR
+                  value: 34.82
+                  change: 0.63
+                  sparkline:
+                    - 34100
+                    - 34300
+                    - 34200
+                    - 34500
+                    - 34700
+                    - 34600
+                    - 34820
+                  symbolColor: '#4CAF50'
+                  bottomText:
+                    - t: 'MSCI '
+                      c: '#888888'
+                    - t: World
+                      c: '#00D4FF'
       responses:
         '200':
           description: Tracker created or updated.

@@ -58,7 +58,9 @@
 #define MAX_ZONES 4
 #define MAX_TEXT_SEGMENTS 8
 
-struct TextSegment {
+// Packed: aligning the colour behind the offset would waste 3 bytes on each of the 64
+// segments an app carries, and static RAM is the scarce resource on this board.
+struct __attribute__((packed)) TextSegment {
     uint8_t offset;   // Visual char index where this color starts
     uint32_t color;   // 0xRRGGBB
 };
@@ -129,12 +131,12 @@ bool appRotationEnabled = true;
 
 // Scroll State
 struct ScrollState {
-    int16_t scrollOffset;
     unsigned long lastScrollTime;
-    uint8_t scrollPhase;  // 0=pause_start, 1=scrolling, 2=pause_end
-    bool needsScroll;
+    int16_t scrollOffset;
     int16_t textWidth;
     int16_t availableWidth;
+    uint8_t scrollPhase;  // 0=pause_start, 1=scrolling, 2=pause_end
+    bool needsScroll;
 };
 ScrollState appScrollState;
 
@@ -267,7 +269,9 @@ WeatherData weatherData;
 // Tracker Data (populated by POST /api/tracker)
 struct TrackerData {
     char name[16];            // Key: "btc", "eth", "aapl"
-    char symbol[8];           // Display: "BTC", "ETH"
+    // Scrolls when it overflows, so the cap is storage rather than screen width: 64 bytes
+    // hold 31 characters whatever their encoding, an accented one taking two.
+    char symbol[64];
     char icon[32];            // Icon name (LittleFS)
     char currencySymbol[8];   // "USD", "EUR"
     float currentValue;       // Price/value
@@ -276,7 +280,10 @@ struct TrackerData {
     uint8_t sparklineCount;
     uint32_t symbolColor;     // Header color (0xRRGGBB)
     uint32_t sparklineColor;  // Chart color
-    char bottomText[32];      // Optional footer
+    // Same reasoning as symbol: 64 bytes hold 31 characters whatever their encoding
+    char bottomText[64];      // Optional footer - scrolls when it overflows
+    TextSegment bottomTextSegments[MAX_TEXT_SEGMENTS];
+    uint8_t bottomTextSegmentCount;
     char sparklinePeriod[8];  // Chart period label, e.g. "24h", "7d"
     unsigned long lastUpdate;
     bool valid;
@@ -326,14 +333,12 @@ uint8_t notificationCount = 0;
 int8_t currentNotifIndex = -1;
 int8_t savedAppIndex = -1;          // App to restore after notifications end
 ScrollState notifScrollState;
-unsigned long lastNotifScrollUpdate = 0;
 
 // Timing
 unsigned long lastMqttReconnectAttempt = 0;
 unsigned long lastStatsPublish = 0;
 unsigned long lastDisplayUpdate = 0;
 unsigned long lastTimeUpdate = 0;
-unsigned long lastScrollUpdate = 0;
 
 // Forecast pagination
 uint8_t forecastPage = 0;
@@ -346,6 +351,13 @@ unsigned long weatherLastUpdateDrawn = 0;
 // Tracker display cache (global so they can be reset on app switch)
 unsigned long trackerLastUpdateDrawn = 0;
 bool trackerStaleDrawn = false;
+
+// The symbol and the bottom text scroll independently, so they each carry their own state.
+// Both are written by the render pass and read by loopDisplay; the REST handler can rewrite
+// the underlying text from the web server task mid-frame, which costs at worst one torn
+// frame, repaired 50 ms later.
+ScrollState trackerSymbolScrollState;
+ScrollState trackerBottomScrollState;
 
 // Icon Upload State
 File uploadFile;
@@ -543,14 +555,20 @@ void drawIconAtScale(CachedIcon* icon, int16_t x, int16_t y, uint8_t scale);
 void displayClear();
 void displaySetBrightness(uint8_t brightness);
 
+uint32_t dimColorQuarter(uint32_t color);
+char utf8FrenchToAscii(uint8_t leadByte, uint8_t continuationByte);
 int16_t calculateTextWidth(const char* text);
 int16_t calculateTomThumbTextWidth(const char* text);
-bool textNeedsScroll(const char* text, int16_t availableWidth);
 void resetScrollState();
+void resetTrackerScrollStates();
+bool scrollStateAdvance(ScrollState& state, unsigned long now);
+void scrollStateArm(ScrollState& state, int16_t textWidth, int16_t availableWidth);
+void scrollStateReset(ScrollState& state);
 
 int pngDrawCallback(PNGDRAW *pDraw);
 CachedIcon* loadIcon(const char* name);
 CachedIcon* getIcon(const char* name);
+CachedIcon* getCachedIcon(const char* name);
 int8_t findLRUSlot();
 void drawIcon(CachedIcon* icon, int16_t x, int16_t y);
 void initIconCache();
@@ -1532,6 +1550,99 @@ void formatTrackerValue(float value, char* buffer, size_t bufSize) {
     }
 }
 
+// Tracker header and footer geometry, shared by the full redraw and the scroll repaints.
+// The symbol sits in a 5x8 cell, so its rows run to TRACKER_SYMBOL_Y + 7 - descenders reach
+// that last row and a shorter mask leaves a trail behind a scrolling name.
+#define TRACKER_HEADER_HEIGHT   12
+#define TRACKER_SYMBOL_X        13
+#define TRACKER_SYMBOL_Y        4
+#define TRACKER_SYMBOL_HEIGHT   8
+#define TRACKER_STALE_BADGE_X   42
+#define TRACKER_BOTTOM_Y        56
+#define TRACKER_BOTTOM_COLOR        0x969696
+#define TRACKER_BOTTOM_COLOR_STALE  0x3C3C3C
+
+// --- Row 1: icon + symbol (y=0..11) ---
+// Repainted on its own every scroll step, so it clears and redraws the whole band including
+// the indicator corners: drawIndicators skips a blinking indicator in its off phase instead
+// of erasing it, and a band starting below y=0 would leave its top two rows lit for good.
+void displayDrawTrackerHeader(TrackerData* tracker, bool isStale, CachedIcon* icon) {
+    uint16_t black = dma_display->color565(0, 0, 0);
+
+    uint32_t symbolColor = isStale ? dimColorQuarter(tracker->symbolColor) : tracker->symbolColor;
+
+    dma_display->fillRect(0, 0, DISPLAY_WIDTH, TRACKER_HEADER_HEIGHT, black);
+
+    int16_t symbolAreaWidth = (isStale ? TRACKER_STALE_BADGE_X - 1 : DISPLAY_WIDTH) - TRACKER_SYMBOL_X;
+    scrollStateArm(trackerSymbolScrollState, calculateTextWidth(tracker->symbol), symbolAreaWidth);
+
+    int16_t symbolX = TRACKER_SYMBOL_X;
+    if (trackerSymbolScrollState.needsScroll) {
+        symbolX -= trackerSymbolScrollState.scrollOffset;
+    }
+
+    dma_display->setFont(NULL);  // Default 5x7 font
+    dma_display->setTextSize(1);
+    printTextWithSegments(tracker->symbol, symbolX, TRACKER_SYMBOL_Y, symbolColor, nullptr, 0);
+
+    // The panel has no clipping, so the scrolled text is wiped back out of the icon and badge
+    // areas and they are drawn on top of it
+    dma_display->fillRect(0, TRACKER_SYMBOL_Y, TRACKER_SYMBOL_X, TRACKER_SYMBOL_HEIGHT, black);
+    if (icon && icon->valid) {
+        drawIconAtScale(icon, 2, 2, 1);
+    }
+
+    if (isStale) {
+        dma_display->fillRect(TRACKER_STALE_BADGE_X - 1, TRACKER_SYMBOL_Y,
+                              DISPLAY_WIDTH - TRACKER_STALE_BADGE_X + 1, TRACKER_SYMBOL_HEIGHT, black);
+        dma_display->setFont(&TomThumb);
+        dma_display->setTextColor(dma_display->color565(200, 0, 0));
+        dma_display->setCursor(TRACKER_STALE_BADGE_X, 6);
+        dma_display->print("STALE");
+    }
+
+    // Contract for the rows drawn after this one: default font, size 1
+    dma_display->setFont(NULL);
+    dma_display->setTextSize(1);
+}
+
+// --- Bottom text (y=56..63) ---
+void displayDrawTrackerBottom(TrackerData* tracker, bool isStale) {
+    dma_display->fillRect(0, TRACKER_BOTTOM_Y, DISPLAY_WIDTH,
+                          DISPLAY_HEIGHT - TRACKER_BOTTOM_Y, dma_display->color565(0, 0, 0));
+
+    if (strlen(tracker->bottomText) == 0) {
+        return;
+    }
+
+    int16_t textWidth = calculateTomThumbTextWidth(tracker->bottomText);
+    scrollStateArm(trackerBottomScrollState, textWidth, DISPLAY_WIDTH - 4);
+
+    int16_t textX;
+    if (trackerBottomScrollState.needsScroll) {
+        textX = 2 - trackerBottomScrollState.scrollOffset;
+    } else {
+        textX = (DISPLAY_WIDTH - textWidth) / 2;
+    }
+
+    // A stale screen dims every colour it shows, segments included
+    TextSegment dimmedSegments[MAX_TEXT_SEGMENTS];
+    const TextSegment* segments = tracker->bottomTextSegments;
+    if (isStale && tracker->bottomTextSegmentCount > 0) {
+        for (uint8_t i = 0; i < tracker->bottomTextSegmentCount; i++) {
+            dimmedSegments[i] = tracker->bottomTextSegments[i];
+            dimmedSegments[i].color = dimColorQuarter(dimmedSegments[i].color);
+        }
+        segments = dimmedSegments;
+    }
+
+    // dimDefault would apply a 3/4 factor that no input colour turns back into the grey this
+    // row has always used, so the grey is passed in directly
+    printLabelWithSegments(tracker->bottomText, textX, 62,
+                           isStale ? TRACKER_BOTTOM_COLOR_STALE : TRACKER_BOTTOM_COLOR,
+                           segments, tracker->bottomTextSegmentCount, false);
+}
+
 // Display tracker layout on 64x64 matrix
 void displayShowTracker(TrackerData* tracker) {
     if (!tracker) return;
@@ -1541,11 +1652,20 @@ void displayShowTracker(TrackerData* tracker) {
 
     // A tracker screen shows a fixed snapshot, so it only has to be painted when the data
     // arrives or when it goes stale. Repainting it every second would blank the framebuffer
-    // the DMA is reading, which shows up as flicker on single-buffered builds.
+    // the DMA is reading, which shows up as flicker on single-buffered builds. A scrolling
+    // symbol or footer does need a frame every 50 ms, so those two rows - and only those -
+    // are repainted on their own.
     bool needsFullRedraw = (trackerLastUpdateDrawn != tracker->lastUpdate) ||
                            (trackerStaleDrawn != isStale);
 
     if (!needsFullRedraw) {
+        if (trackerSymbolScrollState.needsScroll) {
+            // Cache-only lookup: getIcon would fall back to a filesystem read, 20 times a second
+            displayDrawTrackerHeader(tracker, isStale, getCachedIcon(tracker->icon));
+        }
+        if (trackerBottomScrollState.needsScroll) {
+            displayDrawTrackerBottom(tracker, isStale);
+        }
         drawIndicators();
         #if DOUBLE_BUFFER
             dma_display->flipDMABuffer();
@@ -1565,13 +1685,6 @@ void displayShowTracker(TrackerData* tracker) {
     uint16_t green = isStale ? dma_display->color565(0, 60, 0) : dma_display->color565(0, 200, 0);
     uint16_t red = isStale ? dma_display->color565(60, 0, 0) : dma_display->color565(200, 0, 0);
 
-    uint8_t symR = (tracker->symbolColor >> 16) & 0xFF;
-    uint8_t symG = (tracker->symbolColor >> 8) & 0xFF;
-    uint8_t symB = tracker->symbolColor & 0xFF;
-    uint16_t symbolColor565 = isStale
-        ? dma_display->color565(symR / 4, symG / 4, symB / 4)
-        : dma_display->color565(symR, symG, symB);
-
     uint8_t spkR = (tracker->sparklineColor >> 16) & 0xFF;
     uint8_t spkG = (tracker->sparklineColor >> 8) & 0xFF;
     uint8_t spkB = tracker->sparklineColor & 0xFF;
@@ -1581,22 +1694,7 @@ void displayShowTracker(TrackerData* tracker) {
 
     uint16_t valueColor = isStale ? dma_display->color565(60, 60, 60) : white;
 
-    // --- Row 1: Icon + Symbol (y=0..11) ---
-    CachedIcon* icon = nullptr;
-    if (strlen(tracker->icon) > 0) {
-        icon = getIcon(tracker->icon);
-    }
-    if (icon && icon->valid) {
-        // Draw icon at native 8x8 at (2, 2)
-        drawIconAtScale(icon, 2, 2, 1);
-    }
-
-    // Symbol text at (13, 4) in symbolColor
-    dma_display->setFont(NULL);  // Default 5x7 font
-    dma_display->setTextSize(1);
-    dma_display->setTextColor(symbolColor565);
-    dma_display->setCursor(13, 4);
-    dma_display->print(tracker->symbol);
+    displayDrawTrackerHeader(tracker, isStale, getIcon(tracker->icon));
 
     // --- Row 2: Price value (y=14..22) ---
     char valueBuf[20];
@@ -1650,26 +1748,7 @@ void displayShowTracker(TrackerData* tracker) {
     // --- Separator line (y=55) ---
     drawSeparatorLine(55, dimGray);
 
-    // --- Bottom text centered (y=57..63) ---
-    if (strlen(tracker->bottomText) > 0) {
-        dma_display->setFont(&TomThumb);
-        dma_display->setTextColor(dimWhite);
-        int16_t textWidth = strlen(tracker->bottomText) * 4;
-        int16_t textX = (DISPLAY_WIDTH - textWidth) / 2;
-        dma_display->setCursor(textX, 62);
-        dma_display->print(tracker->bottomText);
-        dma_display->setFont(NULL);
-    }
-
-    // --- Stale badge ---
-    if (isStale) {
-        uint16_t staleRed = dma_display->color565(200, 0, 0);
-        dma_display->setFont(&TomThumb);
-        dma_display->setTextColor(staleRed);
-        dma_display->setCursor(42, 6);
-        dma_display->print("STALE");
-        dma_display->setFont(NULL);
-    }
+    displayDrawTrackerBottom(tracker, isStale);
 
     drawIndicators();
 
@@ -2401,6 +2480,7 @@ void displayShowApp(AppItem* app) {
         weatherLastUpdateDrawn = 0;
         // Reset tracker display cache to force full redraw
         trackerLastUpdateDrawn = 0;
+        resetTrackerScrollStates();
         // Reset forecast pagination to first page
         forecastPage = 0;
         lastForecastPageSwitch = millis();
@@ -2427,6 +2507,13 @@ void displayShowApp(AppItem* app) {
         const char* trackerName = app->id + strlen(TRACKER_ID_PREFIX);
         TrackerData* tracker = trackerFind(trackerName);
         if (tracker && tracker->valid) {
+            // The same app can have rendered as a custom one moments ago, when apps.json was
+            // reloaded before the tracker data arrived. That fallback arms appScrollState with
+            // the symbol it printed as plain text, and nothing else disarms it: without this
+            // the loop would keep asking for 20 redraws a second for a string no longer drawn.
+            if (appScrollState.needsScroll) {
+                resetScrollState();
+            }
             displayShowTracker(tracker);
             return;
         }
@@ -2479,23 +2566,11 @@ void displayShowApp(AppItem* app) {
     dma_display->setTextSize(1);
 
     // Calculate text width and check if scrolling needed
-    int16_t textWidth = calculateTextWidth(app->text);
-    bool needsScroll = textWidth > textAreaWidth;
-
-    // Update scroll state if this is new text or scroll requirements changed
-    if (appScrollState.textWidth != textWidth || appScrollState.availableWidth != textAreaWidth) {
-        appScrollState.textWidth = textWidth;
-        appScrollState.availableWidth = textAreaWidth;
-        appScrollState.needsScroll = needsScroll;
-        if (!needsScroll) {
-            appScrollState.scrollOffset = 0;
-            appScrollState.scrollPhase = 0;
-        }
-    }
+    scrollStateArm(appScrollState, calculateTextWidth(app->text), textAreaWidth);
 
     // Calculate x position with scroll offset
     int16_t xPos = textAreaX;
-    if (needsScroll) {
+    if (appScrollState.needsScroll) {
         xPos = textAreaX - appScrollState.scrollOffset;
     }
 
@@ -2720,9 +2795,75 @@ void displaySetBrightness(uint8_t brightness) {
     Serial.printf("[DISPLAY] Brightness set to %d\n", currentBrightness);
 }
 
+// A stale screen shows everything at a quarter brightness. Masking after the shift keeps
+// each component's bits from bleeding into the one below it.
+uint32_t dimColorQuarter(uint32_t color)
+{
+    return (color >> 2) & 0x3F3F3F;
+}
+
+// The panel has no accented glyphs in either font, so an accented name is drawn as its
+// closest ASCII letter. Callers must pass both UTF-8 bytes: 'e' acute is C3 A9 and the
+// copyright sign is C2 A9, so the continuation byte alone does not identify the character.
+// An unknown C3 sequence becomes '?' and anything else is dropped, which is what the panel
+// already did before this was a shared table.
+char utf8FrenchToAscii(uint8_t leadByte, uint8_t continuationByte)
+{
+    if (leadByte != 0xC3)
+    {
+        return 0;
+    }
+
+    switch (continuationByte)
+    {
+        case 0x80: case 0x81: case 0x82: case 0x83: case 0x84: case 0x85: return 'A';
+        case 0x87: return 'C';
+        case 0x88: case 0x89: case 0x8A: case 0x8B: return 'E';
+        case 0x8C: case 0x8D: case 0x8E: case 0x8F: return 'I';
+        case 0x91: return 'N';
+        case 0x92: case 0x93: case 0x94: case 0x95: case 0x96: return 'O';
+        case 0x99: case 0x9A: case 0x9B: case 0x9C: return 'U';
+        case 0xA0: case 0xA1: case 0xA2: case 0xA3: case 0xA4: case 0xA5: return 'a';
+        case 0xA7: return 'c';
+        case 0xA8: case 0xA9: case 0xAA: case 0xAB: return 'e';
+        case 0xAC: case 0xAD: case 0xAE: case 0xAF: return 'i';
+        case 0xB1: return 'n';
+        case 0xB2: case 0xB3: case 0xB4: case 0xB5: case 0xB6: return 'o';
+        case 0xB9: case 0xBA: case 0xBB: case 0xBC: return 'u';
+        default: return '?';
+    }
+}
+
+// Must advance exactly like printTextWithSpecialChars, or a scrolling string is measured
+// against a width it never occupies: 6 px per drawn character, 4 px for the degree glyph,
+// nothing for bytes the panel drops.
 int16_t calculateTextWidth(const char* text) {
-    // Default 5x7 font with 1px spacing = 6 pixels per character
-    return strlen(text) * 6;
+    const uint8_t charWidth = 6;
+    int16_t totalWidth = 0;
+
+    const uint8_t* ptr = (const uint8_t*)text;
+    while (*ptr) {
+        uint8_t c = *ptr;
+
+        if ((c == 0xC2 && *(ptr + 1) == 0xB0) || c == 0xB0) {
+            totalWidth += 4;
+            ptr += (c == 0xB0) ? 1 : 2;
+            continue;
+        }
+
+        if (c == 0xC3 && *(ptr + 1)) {
+            totalWidth += charWidth;
+            ptr += 2;
+            continue;
+        }
+
+        if (c >= 32 && c <= 126) {
+            totalWidth += charWidth;
+        }
+        ptr++;
+    }
+
+    return totalWidth;
 }
 
 // TomThumb is not monospaced: '1' advances 3 px and space 2 px where most
@@ -2731,38 +2872,95 @@ int16_t calculateTextWidth(const char* text) {
 int16_t calculateTomThumbTextWidth(const char* text)
 {
     int16_t totalWidth = 0;
-    for (const char* character = text; *character; character++)
+    const uint8_t* character = (const uint8_t*)text;
+
+    while (*character)
     {
-        uint8_t characterCode = (uint8_t)*character;
-        if (characterCode < 0x20 || characterCode > 0x7E)
+        uint8_t characterCode = *character;
+
+        if (characterCode == 0xC3 && *(character + 1))
         {
-            continue;
+            characterCode = (uint8_t)utf8FrenchToAscii(characterCode, *(character + 1));
+            character++;
         }
-        totalWidth += (int16_t)pgm_read_byte(&TomThumbGlyphs[characterCode - 0x20].xAdvance);
+
+        if (characterCode >= 0x20 && characterCode <= 0x7E)
+        {
+            totalWidth += (int16_t)pgm_read_byte(&TomThumbGlyphs[characterCode - 0x20].xAdvance);
+        }
+        character++;
     }
+
     return totalWidth;
 }
 
-bool textNeedsScroll(const char* text, int16_t availableWidth) {
-    return calculateTextWidth(text) > availableWidth;
+// One three-phase run for every scrolling text on screen: pause at the start, step one pixel
+// per SCROLL_SPEED, pause at the end, rewind. Returns whether the caller has to repaint.
+bool scrollStateAdvance(ScrollState& state, unsigned long now) {
+    if (!state.needsScroll) return false;
+
+    switch (state.scrollPhase) {
+        case 0:  // pause_start
+            if (now - state.lastScrollTime >= SCROLL_PAUSE) {
+                state.scrollPhase = 1;
+                state.lastScrollTime = now;
+            }
+            return false;
+
+        case 1:  // scrolling
+            if (now - state.lastScrollTime < SCROLL_SPEED) return false;
+            state.lastScrollTime = now;
+            state.scrollOffset++;
+            if (state.scrollOffset >= state.textWidth - state.availableWidth + 10) {
+                state.scrollPhase = 2;
+            }
+            return true;
+
+        case 2:  // pause_end
+            if (now - state.lastScrollTime >= SCROLL_PAUSE) {
+                state.scrollOffset = 0;
+                state.scrollPhase = 0;
+                state.lastScrollTime = now;
+            }
+            return false;
+    }
+
+    return false;
+}
+
+// Feed a state from the text it has to show, and rewind it when the text no longer overflows.
+void scrollStateArm(ScrollState& state, int16_t textWidth, int16_t availableWidth) {
+    if (state.textWidth == textWidth && state.availableWidth == availableWidth) return;
+
+    state.textWidth = textWidth;
+    state.availableWidth = availableWidth;
+    state.needsScroll = (textWidth > availableWidth);
+    if (!state.needsScroll) {
+        state.scrollOffset = 0;
+        state.scrollPhase = 0;
+    }
+}
+
+void scrollStateReset(ScrollState& state) {
+    state.scrollOffset = 0;
+    state.lastScrollTime = millis();
+    state.scrollPhase = 0;  // Start with pause
+    state.needsScroll = false;
+    state.textWidth = 0;
+    state.availableWidth = 0;
 }
 
 void resetScrollState() {
-    appScrollState.scrollOffset = 0;
-    appScrollState.lastScrollTime = millis();
-    appScrollState.scrollPhase = 0;  // Start with pause
-    appScrollState.needsScroll = false;
-    appScrollState.textWidth = 0;
-    appScrollState.availableWidth = DISPLAY_WIDTH - 4;  // 2px margin each side
+    scrollStateReset(appScrollState);
 }
 
 void resetNotifScrollState() {
-    notifScrollState.scrollOffset = 0;
-    notifScrollState.lastScrollTime = millis();
-    notifScrollState.scrollPhase = 0;
-    notifScrollState.needsScroll = false;
-    notifScrollState.textWidth = 0;
-    notifScrollState.availableWidth = DISPLAY_WIDTH - 4;  // Full width minus 2px padding each side
+    scrollStateReset(notifScrollState);
+}
+
+void resetTrackerScrollStates() {
+    scrollStateReset(trackerSymbolScrollState);
+    scrollStateReset(trackerBottomScrollState);
 }
 
 // ============================================================================
@@ -2855,20 +3053,10 @@ void displayShowNotification(NotificationItem* notif) {
     dma_display->setTextSize(1);
 
     int16_t textWidth = calculateTextWidth(notif->text);
-    bool needsScroll = textWidth > textAreaWidth;
-
-    if (notifScrollState.textWidth != textWidth || notifScrollState.availableWidth != textAreaWidth) {
-        notifScrollState.textWidth = textWidth;
-        notifScrollState.availableWidth = textAreaWidth;
-        notifScrollState.needsScroll = needsScroll;
-        if (!needsScroll) {
-            notifScrollState.scrollOffset = 0;
-            notifScrollState.scrollPhase = 0;
-        }
-    }
+    scrollStateArm(notifScrollState, textWidth, textAreaWidth);
 
     int16_t xPos;
-    if (!needsScroll) {
+    if (!notifScrollState.needsScroll) {
         xPos = textPadding + (textAreaWidth - textWidth) / 2;
     } else {
         xPos = textPadding - notifScrollState.scrollOffset;
@@ -3099,21 +3287,8 @@ void printTextWithSpecialChars(const char* text, int16_t x, int16_t y) {
         }
 
         // Handle UTF-8 accented characters (common French)
-        if (c == 0xC3) {
-            uint8_t next = *(ptr + 1);
-            char replacement = '?';
-            switch (next) {
-                case 0xA0: case 0xA2: case 0xA4: replacement = 'a'; break;  // a grave, circumflex, umlaut
-                case 0xA8: case 0xA9: case 0xAA: case 0xAB: replacement = 'e'; break;  // e variants
-                case 0xAC: case 0xAE: case 0xAF: replacement = 'i'; break;  // i variants
-                case 0xB2: case 0xB4: case 0xB6: replacement = 'o'; break;  // o variants
-                case 0xB9: case 0xBB: case 0xBC: replacement = 'u'; break;  // u variants
-                case 0xA7: replacement = 'c'; break;  // c cedilla
-                case 0xB1: replacement = 'n'; break;  // n tilde
-                case 0x80: case 0x89: replacement = 'E'; break;  // E accent
-                case 0x87: replacement = 'C'; break;  // C cedilla
-            }
-            dma_display->print(replacement);
+        if (c == 0xC3 && *(ptr + 1)) {
+            dma_display->print(utf8FrenchToAscii(c, *(ptr + 1)));
             cursorX += charWidth;
             ptr += 2;
             dma_display->setCursor(cursorX, y);
@@ -3207,21 +3382,8 @@ void printTextWithSegments(const char* text, int16_t x, int16_t y,
         }
 
         // Handle UTF-8 accented characters (common French)
-        if (c == 0xC3) {
-            uint8_t next = *(ptr + 1);
-            char replacement = '?';
-            switch (next) {
-                case 0xA0: case 0xA2: case 0xA4: replacement = 'a'; break;
-                case 0xA8: case 0xA9: case 0xAA: case 0xAB: replacement = 'e'; break;
-                case 0xAC: case 0xAE: case 0xAF: replacement = 'i'; break;
-                case 0xB2: case 0xB4: case 0xB6: replacement = 'o'; break;
-                case 0xB9: case 0xBB: case 0xBC: replacement = 'u'; break;
-                case 0xA7: replacement = 'c'; break;
-                case 0xB1: replacement = 'n'; break;
-                case 0x80: case 0x89: replacement = 'E'; break;
-                case 0x87: replacement = 'C'; break;
-            }
-            dma_display->print(replacement);
+        if (c == 0xC3 && *(ptr + 1)) {
+            dma_display->print(utf8FrenchToAscii(c, *(ptr + 1)));
             cursorX += charWidth;
             ptr += 2;
             charIndex++;
@@ -3249,39 +3411,26 @@ void printLabelWithSegments(const char* text, int16_t x, int16_t y,
                             uint32_t defaultColor, const TextSegment* segments, uint8_t segmentCount,
                             bool dimDefault) {
     dma_display->setFont(&TomThumb);
-
-    if (segmentCount == 0) {
-        uint8_t r = (defaultColor >> 16) & 0xFF;
-        uint8_t g = (defaultColor >> 8) & 0xFF;
-        uint8_t b = defaultColor & 0xFF;
-        if (dimDefault) {
-            r = r * 3 / 4;
-            g = g * 3 / 4;
-            b = b * 3 / 4;
-        }
-        dma_display->setTextColor(dma_display->color565(r, g, b));
-        dma_display->setCursor(x, y);
-        dma_display->print(text);
-        dma_display->setFont(NULL);
-        return;
-    }
-
-    // Per-segment coloring - let GFX library handle cursor advancement
     dma_display->setCursor(x, y);
 
-    uint8_t currentSegment = 0;
-    uint32_t currentColor = segments[0].color;
+    uint32_t currentColor = (segmentCount > 0) ? segments[0].color : defaultColor;
     uint8_t r = (currentColor >> 16) & 0xFF;
     uint8_t g = (currentColor >> 8) & 0xFF;
     uint8_t b = currentColor & 0xFF;
+    if (segmentCount == 0 && dimDefault) {
+        r = r * 3 / 4;
+        g = g * 3 / 4;
+        b = b * 3 / 4;
+    }
     dma_display->setTextColor(dma_display->color565(r, g, b));
 
-    uint8_t charIndex = 0;
-    const char* ptr = text;
+    // Segment offsets are byte positions, as parseTextFieldWithSegments records them
+    uint8_t byteIndex = 0;
+    uint8_t currentSegment = 0;
+    const uint8_t* ptr = (const uint8_t*)text;
 
     while (*ptr) {
-        // Check if we need to switch to next segment color
-        if (currentSegment + 1 < segmentCount && charIndex >= segments[currentSegment + 1].offset) {
+        if (currentSegment + 1 < segmentCount && byteIndex >= segments[currentSegment + 1].offset) {
             currentSegment++;
             currentColor = segments[currentSegment].color;
             r = (currentColor >> 16) & 0xFF;
@@ -3290,8 +3439,20 @@ void printLabelWithSegments(const char* text, int16_t x, int16_t y,
             dma_display->setTextColor(dma_display->color565(r, g, b));
         }
 
-        dma_display->print(*ptr);
-        charIndex++;
+        uint8_t c = *ptr;
+
+        // TomThumb covers printable ASCII only, so an accented name arrives transliterated
+        if (c == 0xC3 && *(ptr + 1)) {
+            dma_display->print(utf8FrenchToAscii(c, *(ptr + 1)));
+            byteIndex += 2;
+            ptr += 2;
+            continue;
+        }
+
+        if (c >= 0x20 && c <= 0x7E) {
+            dma_display->print((char)c);
+        }
+        byteIndex++;
         ptr++;
     }
 
@@ -3526,16 +3687,27 @@ void addFailedIconDownload(const char* name) {
     failedIconDownloads[oldestIndex].failedAt = millis();
 }
 
-CachedIcon* getIcon(const char* name) {
+// Cache-only lookup, for callers that run every frame: a miss must not cost a filesystem
+// read or a LaMetric download. Refreshes lastUsed so a displayed icon is not the first
+// candidate for eviction.
+CachedIcon* getCachedIcon(const char* name) {
     if (!name || strlen(name) == 0) return nullptr;
 
-    // Search cache first
     for (uint8_t i = 0; i < MAX_ICON_CACHE; i++) {
         if (iconCache[i].valid && strcmp(iconCache[i].name, name) == 0) {
             iconCache[i].lastUsed = millis();
             return &iconCache[i];
         }
     }
+
+    return nullptr;
+}
+
+CachedIcon* getIcon(const char* name) {
+    if (!name || strlen(name) == 0) return nullptr;
+
+    CachedIcon* cached = getCachedIcon(name);
+    if (cached) return cached;
 
     // Not in cache, try loading from filesystem
     CachedIcon* result = loadIcon(name);
@@ -4244,7 +4416,9 @@ void setupWebServer() {
         char sparklineColorHex[8];
         formatColorHex(tracker->sparklineColor, sparklineColorHex, sizeof(sparklineColorHex));
         doc["sparklineColor"] = sparklineColorHex;
-        doc["bottomText"] = tracker->bottomText;
+        JsonObject trackerObj = doc.as<JsonObject>();
+        serializeTextField(trackerObj, "bottomText", tracker->bottomText,
+                           tracker->bottomTextSegments, tracker->bottomTextSegmentCount);
         doc["sparklinePeriod"] = tracker->sparklinePeriod;
 
         unsigned long ageMs = millis() - tracker->lastUpdate;
@@ -4324,7 +4498,11 @@ void setupWebServer() {
                 tracker->changePercent = doc["change"].as<float>();
             }
             if (!doc["bottomText"].isNull()) {
-                strlcpy(tracker->bottomText, doc["bottomText"] | "", sizeof(tracker->bottomText));
+                parseTextFieldWithSegments(doc["bottomText"], tracker->bottomText,
+                                           sizeof(tracker->bottomText),
+                                           tracker->bottomTextSegments,
+                                           &tracker->bottomTextSegmentCount,
+                                           TRACKER_BOTTOM_COLOR);
             }
             if (!doc["sparklinePeriod"].isNull()) {
                 strlcpy(tracker->sparklinePeriod, doc["sparklinePeriod"] | "", sizeof(tracker->sparklinePeriod));
@@ -5362,7 +5540,11 @@ void mqttHandleTracker(const char* name, JsonObject& doc) {
         tracker->changePercent = doc["change"].as<float>();
     }
     if (!doc["bottomText"].isNull()) {
-        strlcpy(tracker->bottomText, doc["bottomText"] | "", sizeof(tracker->bottomText));
+        parseTextFieldWithSegments(doc["bottomText"], tracker->bottomText,
+                                   sizeof(tracker->bottomText),
+                                   tracker->bottomTextSegments,
+                                   &tracker->bottomTextSegmentCount,
+                                   TRACKER_BOTTOM_COLOR);
     }
     if (!doc["sparklinePeriod"].isNull()) {
         strlcpy(tracker->sparklinePeriod, doc["sparklinePeriod"] | "", sizeof(tracker->sparklinePeriod));
@@ -6243,6 +6425,7 @@ void loopApps() {
         weatherLastUpdateDrawn = 0;
         // Reset tracker cache too, otherwise the restored tracker screen stays blank
         trackerLastUpdateDrawn = 0;
+        resetTrackerScrollStates();
         Serial.println("[NOTIF] All dismissed, resuming app rotation");
         // Clear both DMA buffers to remove any notification pixel remnants,
         // then force immediate app redraw on both buffers
@@ -6389,6 +6572,7 @@ void loopSleepTransition()
         lastDisplayUpdate = 0;
         // The sleep clock overwrote the app frame, so a tracker screen has to repaint
         trackerLastUpdateDrawn = 0;
+        resetTrackerScrollStates();
     }
     wasSleeping = isSleeping;
 }
@@ -6593,38 +6777,7 @@ void loopDisplay() {
     // ---- Notification display (priority over apps) ----
     NotificationItem* currentNotif = notifGetCurrent();
     if (currentNotif) {
-        // Handle notification scroll animation
-        if (notifScrollState.needsScroll) {
-            if (now - lastNotifScrollUpdate >= SCROLL_SPEED) {
-                lastNotifScrollUpdate = now;
-
-                switch (notifScrollState.scrollPhase) {
-                    case 0:  // pause_start
-                        if (now - notifScrollState.lastScrollTime >= SCROLL_PAUSE) {
-                            notifScrollState.scrollPhase = 1;
-                            notifScrollState.lastScrollTime = now;
-                        }
-                        break;
-
-                    case 1:  // scrolling
-                        notifScrollState.scrollOffset++;
-                        if (notifScrollState.scrollOffset >= notifScrollState.textWidth - notifScrollState.availableWidth + 10) {
-                            notifScrollState.scrollPhase = 2;
-                            notifScrollState.lastScrollTime = now;
-                        }
-                        needsRedraw = true;
-                        break;
-
-                    case 2:  // pause_end
-                        if (now - notifScrollState.lastScrollTime >= SCROLL_PAUSE) {
-                            notifScrollState.scrollOffset = 0;
-                            notifScrollState.scrollPhase = 0;
-                            notifScrollState.lastScrollTime = now;
-                        }
-                        break;
-                }
-            }
-        }
+        needsRedraw = scrollStateAdvance(notifScrollState, now);
 
         // Redraw notification on scroll, periodic update, or indicator animation
         bool indicatorRedraw = indicatorNeedsRedraw() && (now - lastDisplayUpdate > 50);
@@ -6640,38 +6793,10 @@ void loopDisplay() {
     needsRedraw = false;
 
     // Handle scroll animation (50ms updates for smooth scrolling)
-    if (current && appScrollState.needsScroll) {
-        if (now - lastScrollUpdate >= SCROLL_SPEED) {
-            lastScrollUpdate = now;
-
-            switch (appScrollState.scrollPhase) {
-                case 0:  // pause_start
-                    if (now - appScrollState.lastScrollTime >= SCROLL_PAUSE) {
-                        appScrollState.scrollPhase = 1;
-                        appScrollState.lastScrollTime = now;
-                    }
-                    break;
-
-                case 1:  // scrolling
-                    appScrollState.scrollOffset++;
-                    // Check if text has scrolled completely
-                    if (appScrollState.scrollOffset >= appScrollState.textWidth - appScrollState.availableWidth + 10) {
-                        appScrollState.scrollPhase = 2;
-                        appScrollState.lastScrollTime = now;
-                    }
-                    needsRedraw = true;
-                    break;
-
-                case 2:  // pause_end
-                    if (now - appScrollState.lastScrollTime >= SCROLL_PAUSE) {
-                        // Reset to beginning
-                        appScrollState.scrollOffset = 0;
-                        appScrollState.scrollPhase = 0;
-                        appScrollState.lastScrollTime = now;
-                    }
-                    break;
-            }
-        }
+    if (current) {
+        needsRedraw = scrollStateAdvance(appScrollState, now);
+        needsRedraw |= scrollStateAdvance(trackerSymbolScrollState, now);
+        needsRedraw |= scrollStateAdvance(trackerBottomScrollState, now);
     }
 
     // Regular display update (1000ms for non-scrolling, 50ms for indicator animation)

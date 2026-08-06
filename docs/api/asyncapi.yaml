@@ -457,6 +457,20 @@ components:
             sparklineColor: "#00D4FF"
             bottomText: "Vol 24h: 42B"
             sparklinePeriod: "7d"
+        - name: fundTracker
+          summary: Fund with a scrolling name and a colored footer
+          payload:
+            symbol: "Amundi PEA Monde"
+            icon: "world"
+            currency: "EUR"
+            value: 34.82
+            change: 0.63
+            symbolColor: "#4CAF50"
+            bottomText:
+              - t: "MSCI "
+                c: "#888888"
+              - t: "World"
+                c: "#00D4FF"
         - name: deleteTracker
           summary: Delete a tracker
           payload:

@@ -436,6 +436,21 @@ paths:
                   sparklineColor: "#00D4FF"
                   bottomText: "Vol 24h: 42B"
                   sparklinePeriod: "7d"
+              fundTracker:
+                summary: Fund with a scrolling name and a colored footer
+                value:
+                  symbol: "Amundi PEA Monde"
+                  icon: "world"
+                  currency: "EUR"
+                  value: 34.82
+                  change: 0.63
+                  sparkline: [34100, 34300, 34200, 34500, 34700, 34600, 34820]
+                  symbolColor: "#4CAF50"
+                  bottomText:
+                    - t: "MSCI "
+                      c: "#888888"
+                    - t: "World"
+                      c: "#00D4FF"
       responses:
         "200":
           description: Tracker created or updated.

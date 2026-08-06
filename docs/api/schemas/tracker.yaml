@@ -9,10 +9,16 @@ TrackerUpdateRequest:
         Tracker identifier. Can also be passed as `?name=` query parameter.
     symbol:
       type: string
-      maxLength: 7
-      description: Display symbol (e.g. "BTC", "ETH").
+      maxLength: 31
+      description: >
+        Headline shown on the top row (e.g. "BTC", "Amundi PEA Monde"). Longer than the
+        row is wide is fine: the display scrolls it, pausing at each end. The panel has
+        no accented glyphs, so Latin-1 accents are shown as their closest ASCII letter -
+        "Santé" reads "Sante". Anything else outside ASCII is dropped: "Cœur" reads
+        "Cur", and a typographic apostrophe disappears.
       examples:
         - "BTC"
+        - "Amundi PEA Monde"
     icon:
       type: string
       description: Icon name from filesystem.
@@ -52,11 +58,20 @@ TrackerUpdateRequest:
     sparklineColor:
       $ref: "common.yaml#/Color"
     bottomText:
-      type: string
+      allOf:
+        - $ref: "common.yaml#/PolymorphicTextField"
       maxLength: 31
-      description: Optional footer text displayed at the bottom.
+      description: >
+        Optional footer text on the bottom row. Scrolls when it is wider than the panel.
+        Accepts the same three forms as a custom app's text: plain string, single colored
+        string, or colored segments - `maxLength` bounds the plain form, and the other two
+        are cut at the same 31 characters, a segment that no longer fits being dropped
+        whole. Accents are transliterated as they are in `symbol`, and the degree sign is
+        dropped, the footer font carrying no glyph for it. A stale tracker dims these
+        colors along with the rest of the screen.
       examples:
         - "Vol 24h: 42B"
+        - [{"t": "Vol ", "c": "#888888"}, {"t": "42B", "c": "#00D4FF"}]
     sparklinePeriod:
       type: string
       maxLength: 4
@@ -101,7 +116,13 @@ TrackerResponse:
       examples:
         - "#00D4FF"
     bottomText:
-      type: string
+      allOf:
+        - $ref: "common.yaml#/PolymorphicTextField"
+      description: >
+        Echoed in the form it was stored: a plain string unless the value was written with
+        color segments, in which case it comes back as the segment array. A client that only
+        ever sends plain strings only ever reads plain strings - but a tracker fed by several
+        producers can come back as an array to a client that did not send one.
     sparklinePeriod:
       type: string
     age:

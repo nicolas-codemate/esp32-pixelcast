@@ -20,7 +20,7 @@ params:query {
 
 body:json {
   {
-    "symbol": "BTC",
+    "symbol": "Amundi PEA Monde",
     "icon": "bitcoin",
     "currency": "USD",
     "value": 98452.30,
@@ -28,7 +28,10 @@ body:json {
     "sparkline": [92100, 89300, 93200, 91800, 95400, 94100, 97600, 96200, 98452],
     "symbolColor": "#FF8800",
     "sparklineColor": "#00D4FF",
-    "bottomText": "Vol 24h: 42B",
+    "bottomText": [
+      { "t": "Vol 24h: ", "c": "#888888" },
+      { "t": "42B", "c": "#00D4FF" }
+    ],
     "sparklinePeriod": "7d",
     "duration": 10000
   }
@@ -45,7 +48,9 @@ docs {
   App ID in rotation is prefixed with "tracker_" (e.g. "tracker_btc").
 
   Parameters:
-  - symbol: Display symbol, max 7 chars (e.g. "BTC", "ETH", "AAPL")
+  - symbol: Headline, max 31 chars (e.g. "BTC", "Amundi PEA Monde").
+    Scrolls when it is wider than the row. Latin-1 accents are shown as
+    their closest ASCII letter; anything else outside ASCII is dropped.
   - icon: Icon name from /icons folder (optional)
   - currency: Currency label, max 7 chars (e.g. "USD", "EUR")
   - value: Current price/value (float)
@@ -53,11 +58,15 @@ docs {
   - sparkline: Array of float values (up to 24 points, auto-scaled)
   - symbolColor: Header color - hex "#FF8800", RGB [255,136,0], or uint32
   - sparklineColor: Chart color - same formats as symbolColor
-  - bottomText: Optional footer text, max 31 chars
+  - bottomText: Optional footer text, max 31 chars. Scrolls when it is
+    wider than the panel. Accepts a plain string, a {"text","color"}
+    object, or an array of [{"t","c"}] colored segments
   - sparklinePeriod: Label above the chart, max 4 chars (default: "24h")
   - duration: Display duration in ms (default: 10000)
 
   Stale behavior:
-  - Data older than 1 hour dims all colors to 1/4 brightness
-  - A red "STALE" badge appears in the top-right corner
+  - Data older than 1 hour dims all colors to 1/4 brightness, bottomText
+    segment colors included
+  - A red "STALE" badge appears in the top-right corner, and the scrolling
+    headline stops short of it
 }

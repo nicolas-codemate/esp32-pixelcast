@@ -23,10 +23,10 @@
     #define VERSION_MINOR 2
 #endif
 #ifndef VERSION_PATCH
-    #define VERSION_PATCH 0
+    #define VERSION_PATCH 1
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.2.0"
+    #define VERSION_STRING "1.2.1"
 #endif
 
 // ============================================================================

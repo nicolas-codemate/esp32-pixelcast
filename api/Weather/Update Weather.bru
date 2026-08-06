@@ -66,8 +66,9 @@ docs {
   carousel: a temperature curve over the precipitation bars. The forecast
   days follow on the next pages (3 columns each). Hours are absolute local
   hours and are displayed as received, so the sender decides where the
-  window starts. The page appears on the first payload carrying a
-  non-empty "today.hours" array.
+  window starts. The numbers framing the curve are the temperatures of the
+  first and last charted hours. The page appears on the first payload
+  carrying a non-empty "today.hours" array.
 
   Start "forecast" at tomorrow: today's min and max are on screen at all
   times as current.temp_min and current.temp_max, so a column for today

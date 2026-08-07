@@ -12,7 +12,9 @@ TrackerUpdateRequest:
       maxLength: 31
       description: >
         Headline shown on the top row (e.g. "BTC", "Amundi PEA Monde"). Longer than the
-        row is wide is fine: the display scrolls it, pausing at each end. The panel has
+        row is wide is fine: the display scrolls it, pausing at each end. The row holds
+        eight characters beside an icon and ten without one, since a tracker with no
+        `icon` gives its headline the full width. The panel has
         no accented glyphs, so Latin-1 accents are shown as their closest ASCII letter -
         "Santé" reads "Sante". Anything else outside ASCII is dropped: "Cœur" reads
         "Cur", and a typographic apostrophe disappears.

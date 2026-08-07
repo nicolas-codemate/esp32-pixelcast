@@ -72,16 +72,16 @@ This document details the development phases of the ESP32-PixelCast project, fro
 ## Phase 2: Application System ✅
 
 ### 2.1 App Manager
-- [x] `AppItem` structure (id, text, icon, color, duration, lifetime, priority)
+- [x] `AppItem` structure (id, text, icon, color, duration, staleAfter, staleBehavior, priority)
 - [x] Circular application queue (max 16)
 - [x] Add/remove/update apps
-- [x] Lifetime management (automatic expiration)
+- [x] Client-declared stale policy: `staleAfter` seconds of silence, then `hide`/`dim`/`badge`/`none`
 
 ### 2.2 Automatic Rotation
 - [x] Rotation timer
 - [ ] Transitions between apps (cut only for now)
 - [x] Respect configured durations
-- [x] Skip expired apps
+- [x] Drop apps whose client went silent past `staleAfter` (when `staleBehavior` is `hide`)
 
 ### 2.3 Application Rendering
 - [x] Layout: vertical (icon top centered + text below)
@@ -95,8 +95,9 @@ This document details the development phases of the ESP32-PixelCast project, fro
 - [x] **IP**: IP display at startup
 
 ### 2.5 Persistence
-- [x] `saveApps()` / `loadApps()` for custom apps in LittleFS
-- [ ] Enable loadApps() at startup (currently disabled)
+- [x] Apps are deliberately not persisted: a reboot leaves the panel empty and each client
+      repushes its own app. Removing `saveApps()` also removed a LittleFS write on every
+      tracker price update.
 
 **Deliverables:**
 - [x] Working app rotation
@@ -116,7 +117,8 @@ This document details the development phases of the ESP32-PixelCast project, fro
 - [x] Forecast pagination with auto-scroll (3 columns per page)
 - [x] Dynamic centering based on column count (1/2/3 columns)
 - [x] Page indicator dots (right edge, vertical)
-- [x] Stale data detection (>1h fallback to clock)
+- [x] Stale rendering driven by the client: `hide` (default) falls back to the clock, `none`
+      keeps showing the last forecast, over a `staleAfter` window the client sets (default 1h)
 - [x] Registered as system app (always available)
 
 ### 2b.2 Tracker System App
@@ -129,9 +131,11 @@ This document details the development phases of the ESP32-PixelCast project, fro
 - [x] Layout: icon+symbol / price+currency / arrow+change% / separator / period+sparkline / separator / bottomText
 - [x] Symbol and bottomText scroll when they overflow their row, so a fund name fits
 - [x] Symbol row runs the full width when the tracker carries no icon
-- [x] bottomText accepts colored segments, dimmed with the rest of the screen when stale
+- [x] bottomText accepts colored segments, dimmed with the rest of the screen under `dim`
 - [x] Customizable colors (text, price, sparkline, change, bottomText)
-- [x] Stale data detection (>1h: dims colors to 1/4, shows "STALE" badge)
+- [x] Stale rendering driven by the client: `dim` (default) dims colors to 1/4 and shows a
+      "STALE" badge, `badge` keeps full colors, `none` shows nothing, over a `staleAfter`
+      window the client sets (default 1h)
 - [x] `parseColorValue()` extracted as reusable helper
 
 **Deliverables:**
@@ -417,7 +421,7 @@ pixelcast/
 ## Planned Tests
 
 ### Unit Tests
-- [ ] App Manager (add, remove, lifetime)
+- [ ] App Manager (add, remove, stale policy)
 - [ ] Notification queue
 - [ ] JSON parsing
 - [ ] Colors/gamma

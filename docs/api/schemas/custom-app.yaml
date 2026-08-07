@@ -27,10 +27,19 @@ CustomAppRequest:
       default: 10000
       examples:
         - 10000
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+      default: 0
+    staleBehavior:
+      $ref: "common.yaml#/StaleBehavior"
+      default: hide
     lifetime:
       type: integer
+      deprecated: true
       description: >
-        Auto-expiration in seconds if not updated. 0 = permanent.
+        Former name of `staleAfter`, still accepted. Up to 1.3.1 the firmware
+        compared this value against milliseconds while documenting seconds, so
+        `3600` expired the app after 3.6 seconds; it is now read as seconds.
       default: 0
     priority:
       type: integer
@@ -65,8 +74,16 @@ CustomAppMultiZoneRequest:
     duration:
       type: integer
       default: 10000
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+      default: 0
+    staleBehavior:
+      $ref: "common.yaml#/StaleBehavior"
+      default: hide
     lifetime:
       type: integer
+      deprecated: true
+      description: Former name of `staleAfter`, still accepted.
       default: 0
     priority:
       type: integer
@@ -92,8 +109,13 @@ AppResponse:
       description: Default text color as hex string.
     duration:
       type: integer
-    lifetime:
-      type: integer
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+    staleBehavior:
+      $ref: "common.yaml#/StaleBehavior"
+    stale:
+      type: boolean
+      description: Whether the app is currently past its staleAfter window.
     priority:
       type: integer
     isSystem:

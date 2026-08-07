@@ -351,6 +351,7 @@ unsigned long weatherLastUpdateDrawn = 0;
 // Tracker display cache (global so they can be reset on app switch)
 unsigned long trackerLastUpdateDrawn = 0;
 bool trackerStaleDrawn = false;
+bool trackerIconDrawn = false;
 
 // The symbol and the bottom text scroll independently, so they each carry their own state.
 // Both are written by the render pass and read by loopDisplay; the REST handler can rewrite
@@ -611,6 +612,7 @@ TrackerData* trackerAllocate(const char* name);
 bool trackerRemove(const char* name);
 void trackerInit();
 void displayShowTracker(TrackerData* tracker);
+void displayDrawTrackerSymbol(TrackerData* tracker, bool isStale);
 void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
 void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color);
 void formatTrackerValue(float value, char* buffer, size_t bufSize);
@@ -625,6 +627,10 @@ void printTextWithSegments(const char* text, int16_t x, int16_t y,
 void printLabelWithSegments(const char* text, int16_t x, int16_t y,
                             uint32_t defaultColor, const TextSegment* segments, uint8_t segmentCount,
                             bool dimDefault);
+void printTextWithinBounds(const char* text, int16_t x, int16_t y,
+                           int16_t boundLeft, int16_t boundRight, uint32_t color);
+void drawCharacterWithinBounds(char character, int16_t x, int16_t y,
+                               int16_t boundLeft, int16_t boundRight, uint16_t color);
 
 // Notification management
 void notifInit();
@@ -1551,55 +1557,77 @@ void formatTrackerValue(float value, char* buffer, size_t bufSize) {
 }
 
 // Tracker header and footer geometry, shared by the full redraw and the scroll repaints.
-// The symbol sits in a 5x8 cell, so its rows run to TRACKER_SYMBOL_Y + 7 - descenders reach
-// that last row and a shorter mask leaves a trail behind a scrolling name.
-#define TRACKER_HEADER_HEIGHT   12
-#define TRACKER_SYMBOL_X        13
-#define TRACKER_SYMBOL_Y        4
-#define TRACKER_SYMBOL_HEIGHT   8
-#define TRACKER_STALE_BADGE_X   42
-#define TRACKER_BOTTOM_Y        56
+#define TRACKER_HEADER_HEIGHT       12
+#define TRACKER_SYMBOL_X            13
+#define TRACKER_SYMBOL_X_NO_ICON    2
+#define TRACKER_SYMBOL_Y            4
+#define TRACKER_STALE_BADGE_X       42
+#define TRACKER_BOTTOM_Y            56
 #define TRACKER_BOTTOM_COLOR        0x969696
 #define TRACKER_BOTTOM_COLOR_STALE  0x3C3C3C
 
-// --- Row 1: icon + symbol (y=0..11) ---
-// Repainted on its own every scroll step, so it clears and redraws the whole band including
-// the indicator corners: drawIndicators skips a blinking indicator in its off phase instead
-// of erasing it, and a band starting below y=0 would leave its top two rows lit for good.
-void displayDrawTrackerHeader(TrackerData* tracker, bool isStale, CachedIcon* icon) {
+// --- Row 1, the symbol alone (y=0..11) ---
+// Runs every scroll step, and the DMA reads this framebuffer while it is being written, so it
+// touches nothing outside the strip the name moves in: clearing the icon to paint it back
+// identically twenty times a second is seen as flicker.
+void displayDrawTrackerSymbol(TrackerData* tracker, bool isStale) {
     uint16_t black = dma_display->color565(0, 0, 0);
 
-    uint32_t symbolColor = isStale ? dimColorQuarter(tracker->symbolColor) : tracker->symbolColor;
+    // Taken from the last full redraw rather than the cache, so an icon evicted mid-scroll
+    // cannot shift the name sideways
+    int16_t symbolAreaX = trackerIconDrawn ? TRACKER_SYMBOL_X : TRACKER_SYMBOL_X_NO_ICON;
+    int16_t symbolAreaEnd = isStale ? TRACKER_STALE_BADGE_X - 1 : DISPLAY_WIDTH;
 
-    dma_display->fillRect(0, 0, DISPLAY_WIDTH, TRACKER_HEADER_HEIGHT, black);
+    dma_display->fillRect(symbolAreaX, 0, symbolAreaEnd - symbolAreaX, TRACKER_HEADER_HEIGHT, black);
 
-    int16_t symbolAreaWidth = (isStale ? TRACKER_STALE_BADGE_X - 1 : DISPLAY_WIDTH) - TRACKER_SYMBOL_X;
-    scrollStateArm(trackerSymbolScrollState, calculateTextWidth(tracker->symbol), symbolAreaWidth);
+    // drawIndicators skips a blinking indicator in its off phase instead of erasing it, so the
+    // corners it owns are cleared here for it to blink at all - and only while it is in use,
+    // since the top-left one sits over the icon
+    for (uint8_t corner = 0; corner < 2; corner++) {
+        if (indicators[corner].mode == INDICATOR_OFF) continue;
+        int16_t cornerX = (corner == 0) ? 0 : DISPLAY_WIDTH - INDICATOR_FOOTPRINT;
+        dma_display->fillRect(cornerX, 0, INDICATOR_FOOTPRINT, INDICATOR_FOOTPRINT, black);
 
-    int16_t symbolX = TRACKER_SYMBOL_X;
+        if (corner == 0 && trackerIconDrawn) {
+            // Cache-only lookup: getIcon would fall back to a filesystem read, 20 times a second
+            drawIconAtScale(getCachedIcon(tracker->icon), 2, 2, 1);
+        }
+    }
+
+    scrollStateArm(trackerSymbolScrollState, calculateTextWidth(tracker->symbol),
+                   symbolAreaEnd - symbolAreaX);
+
+    int16_t symbolX = symbolAreaX;
     if (trackerSymbolScrollState.needsScroll) {
         symbolX -= trackerSymbolScrollState.scrollOffset;
     }
 
+    uint32_t symbolColor = isStale ? dimColorQuarter(tracker->symbolColor) : tracker->symbolColor;
+
     dma_display->setFont(NULL);  // Default 5x7 font
     dma_display->setTextSize(1);
-    printTextWithSegments(tracker->symbol, symbolX, TRACKER_SYMBOL_Y, symbolColor, nullptr, 0);
+    printTextWithinBounds(tracker->symbol, symbolX, TRACKER_SYMBOL_Y,
+                          symbolAreaX, symbolAreaEnd, symbolColor);
+}
 
-    // The panel has no clipping, so the scrolled text is wiped back out of the icon and badge
-    // areas and they are drawn on top of it
-    dma_display->fillRect(0, TRACKER_SYMBOL_Y, TRACKER_SYMBOL_X, TRACKER_SYMBOL_HEIGHT, black);
-    if (icon && icon->valid) {
+// --- Row 1: icon + symbol (y=0..11) ---
+// The band starts at y=0 so a blinking indicator that went dark does not stay lit.
+void displayDrawTrackerHeader(TrackerData* tracker, bool isStale, CachedIcon* icon) {
+    dma_display->fillRect(0, 0, DISPLAY_WIDTH, TRACKER_HEADER_HEIGHT, dma_display->color565(0, 0, 0));
+
+    trackerIconDrawn = (icon && icon->valid);
+    if (trackerIconDrawn) {
         drawIconAtScale(icon, 2, 2, 1);
     }
 
     if (isStale) {
-        dma_display->fillRect(TRACKER_STALE_BADGE_X - 1, TRACKER_SYMBOL_Y,
-                              DISPLAY_WIDTH - TRACKER_STALE_BADGE_X + 1, TRACKER_SYMBOL_HEIGHT, black);
         dma_display->setFont(&TomThumb);
         dma_display->setTextColor(dma_display->color565(200, 0, 0));
         dma_display->setCursor(TRACKER_STALE_BADGE_X, 6);
         dma_display->print("STALE");
     }
+
+    displayDrawTrackerSymbol(tracker, isStale);
 
     // Contract for the rows drawn after this one: default font, size 1
     dma_display->setFont(NULL);
@@ -1660,8 +1688,7 @@ void displayShowTracker(TrackerData* tracker) {
 
     if (!needsFullRedraw) {
         if (trackerSymbolScrollState.needsScroll) {
-            // Cache-only lookup: getIcon would fall back to a filesystem read, 20 times a second
-            displayDrawTrackerHeader(tracker, isStale, getCachedIcon(tracker->icon));
+            displayDrawTrackerSymbol(tracker, isStale);
         }
         if (trackerBottomScrollState.needsScroll) {
             displayDrawTrackerBottom(tracker, isStale);
@@ -3400,6 +3427,84 @@ void printTextWithSegments(const char* text, int16_t x, int16_t y,
 
         ptr++;
         dma_display->setCursor(cursorX, y);
+    }
+}
+
+// The default 5x7 font occupies a 6x8 cell: five columns of glyph plus one of spacing.
+#define TEXT_CELL_WIDTH  6
+#define TEXT_CELL_HEIGHT 8
+
+// Adafruit_GFX draws a character whole or not at all, so one that straddles a bound goes
+// through a stencil first.
+void drawCharacterWithinBounds(char character, int16_t x, int16_t y,
+                               int16_t boundLeft, int16_t boundRight, uint16_t color) {
+    static GFXcanvas1 glyphStencil(TEXT_CELL_WIDTH, TEXT_CELL_HEIGHT);
+
+    // Opaque draw, so every cell is written and nothing carries over from the last character
+    glyphStencil.drawChar(0, 0, character, 1, 0, 1);
+
+    for (int16_t column = 0; column < TEXT_CELL_WIDTH; column++) {
+        int16_t panelX = x + column;
+        if (panelX < boundLeft || panelX >= boundRight) continue;
+
+        for (int16_t row = 0; row < TEXT_CELL_HEIGHT; row++) {
+            if (glyphStencil.getPixel(column, row)) {
+                dma_display->drawPixel(panelX, y + row, color);
+            }
+        }
+    }
+}
+
+// Draws text the way printTextWithSpecialChars does, confined to [boundLeft, boundRight).
+// The panel has no clip rectangle, and the alternative - painting the row whole and wiping
+// what overflows - leaves those pixels lit for as long as the rest of the row takes to draw,
+// which the DMA scans out as an artefact over whatever the row slides behind.
+void printTextWithinBounds(const char* text, int16_t x, int16_t y,
+                           int16_t boundLeft, int16_t boundRight, uint32_t color) {
+    uint16_t color565 = dma_display->color565((color >> 16) & 0xFF,
+                                              (color >> 8) & 0xFF,
+                                              color & 0xFF);
+    dma_display->setTextColor(color565);
+
+    int16_t cursorX = x;
+    const uint8_t* ptr = (const uint8_t*)text;
+
+    // Advances exactly like printTextWithSpecialChars, so a scrolling string is drawn against
+    // the width calculateTextWidth measured for it
+    while (*ptr && cursorX < boundRight) {
+        if ((*ptr == 0xC2 && *(ptr + 1) == 0xB0) || *ptr == 0xB0) {
+            static const int8_t degreePixels[4][2] = {{1, 0}, {0, 1}, {2, 1}, {1, 2}};
+            for (uint8_t i = 0; i < 4; i++) {
+                int16_t pixelX = cursorX + degreePixels[i][0];
+                if (pixelX >= boundLeft && pixelX < boundRight) {
+                    dma_display->drawPixel(pixelX, y - 6 + degreePixels[i][1], color565);
+                }
+            }
+            ptr += (*ptr == 0xB0) ? 1 : 2;
+            cursorX += 4;
+            continue;
+        }
+
+        char character;
+        if (*ptr == 0xC3 && *(ptr + 1)) {
+            character = utf8FrenchToAscii(*ptr, *(ptr + 1));
+            ptr += 2;
+        } else if (*ptr >= 32 && *ptr <= 126) {
+            character = (char)*ptr;
+            ptr++;
+        } else {
+            ptr++;  // Dropped, and measured as dropped
+            continue;
+        }
+
+        if (cursorX >= boundLeft && cursorX + TEXT_CELL_WIDTH <= boundRight) {
+            dma_display->setCursor(cursorX, y);
+            dma_display->print(character);
+        } else if (cursorX + TEXT_CELL_WIDTH > boundLeft) {
+            drawCharacterWithinBounds(character, cursorX, y, boundLeft, boundRight, color565);
+        }
+
+        cursorX += TEXT_CELL_WIDTH;
     }
 }
 

@@ -128,6 +128,7 @@ This document details the development phases of the ESP32-PixelCast project, fro
 - [x] Sparkline chart (24 points, float array scaled to uint16)
 - [x] Layout: icon+symbol / price+currency / arrow+change% / separator / period+sparkline / separator / bottomText
 - [x] Symbol and bottomText scroll when they overflow their row, so a fund name fits
+- [x] Symbol row runs the full width when the tracker carries no icon
 - [x] bottomText accepts colored segments, dimmed with the rest of the screen when stale
 - [x] Customizable colors (text, price, sparkline, change, bottomText)
 - [x] Stale data detection (>1h: dims colors to 1/4, shows "STALE" badge)

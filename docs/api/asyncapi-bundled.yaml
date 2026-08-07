@@ -296,10 +296,44 @@ channels:
               default: 10000
               examples:
                 - 10000
+            staleAfter:
+              default: 0
+              type: integer
+              minimum: 0
+              maximum: 604800
+              description: >
+                Silence tolerated before the app is considered stale, in
+                seconds. 0 = never. The firmware cannot know when your data is
+                due, so declare your own push interval plus a margin: a client
+                pushing every 30 minutes sets 5400. Values above 604800 (7 days)
+                are clamped.
+              examples:
+                - 5400
+            staleBehavior:
+              default: hide
+              type: string
+              enum:
+                - hide
+                - dim
+                - badge
+                - none
+              description: >
+                What the app does once stale. `hide` leaves the rotation until
+                the client pushes again, `dim` stays visible dimmed with a STALE
+                badge, `badge` stays visible at full colour with the badge,
+                `none` shows no sign at all. `dim` and `badge` are only rendered
+                by the tracker layout; sending them to another endpoint is
+                rejected with HTTP 400.
+              examples:
+                - badge
             lifetime:
               type: integer
-              description: |
-                Auto-expiration in seconds if not updated. 0 = permanent.
+              deprecated: true
+              description: >
+                Former name of `staleAfter`, still accepted. Up to 1.3.1 the
+                firmware compared this value against milliseconds while
+                documenting seconds, so `3600` expired the app after 3.6
+                seconds; it is now read as seconds.
               default: 0
             priority:
               type: integer
@@ -826,10 +860,44 @@ channels:
               default: 10000
               examples:
                 - 10000
+            staleAfter:
+              default: 0
+              type: integer
+              minimum: 0
+              maximum: 604800
+              description: >
+                Silence tolerated before the app is considered stale, in
+                seconds. 0 = never. The firmware cannot know when your data is
+                due, so declare your own push interval plus a margin: a client
+                pushing every 30 minutes sets 5400. Values above 604800 (7 days)
+                are clamped.
+              examples:
+                - 5400
+            staleBehavior:
+              default: hide
+              type: string
+              enum:
+                - hide
+                - dim
+                - badge
+                - none
+              description: >
+                What the app does once stale. `hide` leaves the rotation until
+                the client pushes again, `dim` stays visible dimmed with a STALE
+                badge, `badge` stays visible at full colour with the badge,
+                `none` shows no sign at all. `dim` and `badge` are only rendered
+                by the tracker layout; sending them to another endpoint is
+                rejected with HTTP 400.
+              examples:
+                - badge
             lifetime:
               type: integer
-              description: |
-                Auto-expiration in seconds if not updated. 0 = permanent.
+              deprecated: true
+              description: >
+                Former name of `staleAfter`, still accepted. Up to 1.3.1 the
+                firmware compared this value against milliseconds while
+                documenting seconds, so `3600` expired the app after 3.6
+                seconds; it is now read as seconds.
               default: 0
             priority:
               type: integer
@@ -1702,6 +1770,45 @@ channels:
                     Sky segments covering the window (up to 4). Extra entries
                     are ignored. Segments are computed by the sender; they are
                     stored and echoed back but are not currently drawn.
+            staleAfter:
+              default: 3600
+              type: integer
+              minimum: 0
+              maximum: 604800
+              description: >
+                Silence tolerated before the app is considered stale, in
+                seconds. 0 = never. The firmware cannot know when your data is
+                due, so declare your own push interval plus a margin: a client
+                pushing every 30 minutes sets 5400. Values above 604800 (7 days)
+                are clamped.
+              examples:
+                - 5400
+            staleBehavior:
+              allOf:
+                - type: string
+                  enum:
+                    - hide
+                    - dim
+                    - badge
+                    - none
+                  description: >
+                    What the app does once stale. `hide` leaves the rotation
+                    until the client pushes again, `dim` stays visible dimmed
+                    with a STALE badge, `badge` stays visible at full colour
+                    with the badge, `none` shows no sign at all. `dim` and
+                    `badge` are only rendered by the tracker layout; sending
+                    them to another endpoint is rejected with HTTP 400.
+                  examples:
+                    - badge
+              enum:
+                - hide
+                - none
+              default: hide
+              description: >
+                A forecast that stopped being refreshed turns wrong rather than
+                merely old, so `hide` falls back to the clock. `none` keeps
+                showing the last forecast. `dim` and `badge` belong to the
+                tracker layout and are rejected here with HTTP 400.
         examples:
           - name: currentAndForecast
             payload:
@@ -1984,8 +2091,9 @@ channels:
                 the same 31 characters, a segment that no longer fits being
                 dropped whole. Accents are transliterated as they are in
                 `symbol`, and the degree sign is dropped, the footer font
-                carrying no glyph for it. A stale tracker dims these colors
-                along with the rest of the screen.
+                carrying no glyph for it. A tracker left on the default
+                `staleBehavior` of `dim` dims these colors along with the rest
+                of the screen.
               examples:
                 - 'Vol 24h: 42B'
                 - - t: 'Vol '
@@ -2006,6 +2114,36 @@ channels:
               type: integer
               description: Display duration in milliseconds.
               default: 10000
+            staleAfter:
+              default: 3600
+              type: integer
+              minimum: 0
+              maximum: 604800
+              description: >
+                Silence tolerated before the app is considered stale, in
+                seconds. 0 = never. The firmware cannot know when your data is
+                due, so declare your own push interval plus a margin: a client
+                pushing every 30 minutes sets 5400. Values above 604800 (7 days)
+                are clamped.
+              examples:
+                - 5400
+            staleBehavior:
+              default: dim
+              type: string
+              enum:
+                - hide
+                - dim
+                - badge
+                - none
+              description: >
+                What the app does once stale. `hide` leaves the rotation until
+                the client pushes again, `dim` stays visible dimmed with a STALE
+                badge, `badge` stays visible at full colour with the badge,
+                `none` shows no sign at all. `dim` and `badge` are only rendered
+                by the tracker layout; sending them to another endpoint is
+                rejected with HTTP 400.
+              examples:
+                - badge
         examples:
           - name: btcTracker
             summary: BTC price update
@@ -2284,8 +2422,9 @@ channels:
                 the same 31 characters, a segment that no longer fits being
                 dropped whole. Accents are transliterated as they are in
                 `symbol`, and the degree sign is dropped, the footer font
-                carrying no glyph for it. A stale tracker dims these colors
-                along with the rest of the screen.
+                carrying no glyph for it. A tracker left on the default
+                `staleBehavior` of `dim` dims these colors along with the rest
+                of the screen.
               examples:
                 - 'Vol 24h: 42B'
                 - - t: 'Vol '
@@ -2306,6 +2445,36 @@ channels:
               type: integer
               description: Display duration in milliseconds.
               default: 10000
+            staleAfter:
+              default: 3600
+              type: integer
+              minimum: 0
+              maximum: 604800
+              description: >
+                Silence tolerated before the app is considered stale, in
+                seconds. 0 = never. The firmware cannot know when your data is
+                due, so declare your own push interval plus a margin: a client
+                pushing every 30 minutes sets 5400. Values above 604800 (7 days)
+                are clamped.
+              examples:
+                - 5400
+            staleBehavior:
+              default: dim
+              type: string
+              enum:
+                - hide
+                - dim
+                - badge
+                - none
+              description: >
+                What the app does once stale. `hide` leaves the rotation until
+                the client pushes again, `dim` stays visible dimmed with a STALE
+                badge, `badge` stays visible at full colour with the badge,
+                `none` shows no sign at all. `dim` and `badge` are only rendered
+                by the tracker layout; sending them to another endpoint is
+                rejected with HTTP 400.
+              examples:
+                - badge
         examples:
           - name: btcTracker
             summary: BTC price update
@@ -2771,10 +2940,44 @@ components:
             default: 10000
             examples:
               - 10000
+          staleAfter:
+            default: 0
+            type: integer
+            minimum: 0
+            maximum: 604800
+            description: >
+              Silence tolerated before the app is considered stale, in seconds.
+              0 = never. The firmware cannot know when your data is due, so
+              declare your own push interval plus a margin: a client pushing
+              every 30 minutes sets 5400. Values above 604800 (7 days) are
+              clamped.
+            examples:
+              - 5400
+          staleBehavior:
+            default: hide
+            type: string
+            enum:
+              - hide
+              - dim
+              - badge
+              - none
+            description: >
+              What the app does once stale. `hide` leaves the rotation until the
+              client pushes again, `dim` stays visible dimmed with a STALE
+              badge, `badge` stays visible at full colour with the badge, `none`
+              shows no sign at all. `dim` and `badge` are only rendered by the
+              tracker layout; sending them to another endpoint is rejected with
+              HTTP 400.
+            examples:
+              - badge
           lifetime:
             type: integer
-            description: |
-              Auto-expiration in seconds if not updated. 0 = permanent.
+            deprecated: true
+            description: >
+              Former name of `staleAfter`, still accepted. Up to 1.3.1 the
+              firmware compared this value against milliseconds while
+              documenting seconds, so `3600` expired the app after 3.6 seconds;
+              it is now read as seconds.
             default: 0
           priority:
             type: integer
@@ -3459,6 +3662,45 @@ components:
                   Sky segments covering the window (up to 4). Extra entries are
                   ignored. Segments are computed by the sender; they are stored
                   and echoed back but are not currently drawn.
+          staleAfter:
+            default: 3600
+            type: integer
+            minimum: 0
+            maximum: 604800
+            description: >
+              Silence tolerated before the app is considered stale, in seconds.
+              0 = never. The firmware cannot know when your data is due, so
+              declare your own push interval plus a margin: a client pushing
+              every 30 minutes sets 5400. Values above 604800 (7 days) are
+              clamped.
+            examples:
+              - 5400
+          staleBehavior:
+            allOf:
+              - type: string
+                enum:
+                  - hide
+                  - dim
+                  - badge
+                  - none
+                description: >
+                  What the app does once stale. `hide` leaves the rotation until
+                  the client pushes again, `dim` stays visible dimmed with a
+                  STALE badge, `badge` stays visible at full colour with the
+                  badge, `none` shows no sign at all. `dim` and `badge` are only
+                  rendered by the tracker layout; sending them to another
+                  endpoint is rejected with HTTP 400.
+                examples:
+                  - badge
+            enum:
+              - hide
+              - none
+            default: hide
+            description: >
+              A forecast that stopped being refreshed turns wrong rather than
+              merely old, so `hide` falls back to the clock. `none` keeps
+              showing the last forecast. `dim` and `badge` belong to the tracker
+              layout and are rejected here with HTTP 400.
       examples:
         - name: currentAndForecast
           payload:
@@ -3730,8 +3972,8 @@ components:
               the same 31 characters, a segment that no longer fits being
               dropped whole. Accents are transliterated as they are in `symbol`,
               and the degree sign is dropped, the footer font carrying no glyph
-              for it. A stale tracker dims these colors along with the rest of
-              the screen.
+              for it. A tracker left on the default `staleBehavior` of `dim`
+              dims these colors along with the rest of the screen.
             examples:
               - 'Vol 24h: 42B'
               - - t: 'Vol '
@@ -3752,6 +3994,36 @@ components:
             type: integer
             description: Display duration in milliseconds.
             default: 10000
+          staleAfter:
+            default: 3600
+            type: integer
+            minimum: 0
+            maximum: 604800
+            description: >
+              Silence tolerated before the app is considered stale, in seconds.
+              0 = never. The firmware cannot know when your data is due, so
+              declare your own push interval plus a margin: a client pushing
+              every 30 minutes sets 5400. Values above 604800 (7 days) are
+              clamped.
+            examples:
+              - 5400
+          staleBehavior:
+            default: dim
+            type: string
+            enum:
+              - hide
+              - dim
+              - badge
+              - none
+            description: >
+              What the app does once stale. `hide` leaves the rotation until the
+              client pushes again, `dim` stays visible dimmed with a STALE
+              badge, `badge` stays visible at full colour with the badge, `none`
+              shows no sign at all. `dim` and `badge` are only rendered by the
+              tracker layout; sending them to another endpoint is rejected with
+              HTTP 400.
+            examples:
+              - badge
       examples:
         - name: btcTracker
           summary: BTC price update

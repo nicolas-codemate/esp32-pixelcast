@@ -176,6 +176,19 @@ WeatherUpdateRequest:
         stored and echoed back, but never displayed.
     today:
       $ref: "#/WeatherToday"
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+      default: 3600
+    staleBehavior:
+      allOf:
+        - $ref: "common.yaml#/StaleBehavior"
+      enum: [hide, none]
+      default: hide
+      description: >
+        A forecast that stopped being refreshed turns wrong rather than merely old,
+        so `hide` falls back to the clock. `none` keeps showing the last forecast.
+        `dim` and `badge` belong to the tracker layout and are rejected here with
+        HTTP 400.
 
 WeatherResponse:
   type: object
@@ -189,7 +202,12 @@ WeatherResponse:
     stale:
       type: boolean
       description: >
-        True if data is older than 1 hour. Display falls back to simple clock.
+        True once the silence exceeds `staleAfter`. Unless `staleBehavior` is
+        `none`, the display falls back to the simple clock.
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+    staleBehavior:
+      $ref: "common.yaml#/StaleBehavior"
     current:
       $ref: "#/WeatherCurrent"
     forecast:

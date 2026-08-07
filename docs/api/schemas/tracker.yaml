@@ -69,8 +69,8 @@ TrackerUpdateRequest:
         string, or colored segments - `maxLength` bounds the plain form, and the other two
         are cut at the same 31 characters, a segment that no longer fits being dropped
         whole. Accents are transliterated as they are in `symbol`, and the degree sign is
-        dropped, the footer font carrying no glyph for it. A stale tracker dims these
-        colors along with the rest of the screen.
+        dropped, the footer font carrying no glyph for it. A tracker left on the default
+        `staleBehavior` of `dim` dims these colors along with the rest of the screen.
       examples:
         - "Vol 24h: 42B"
         - [{"t": "Vol ", "c": "#888888"}, {"t": "42B", "c": "#00D4FF"}]
@@ -87,6 +87,12 @@ TrackerUpdateRequest:
       type: integer
       description: Display duration in milliseconds.
       default: 10000
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+      default: 3600
+    staleBehavior:
+      $ref: "common.yaml#/StaleBehavior"
+      default: dim
 
 TrackerResponse:
   type: object
@@ -133,8 +139,12 @@ TrackerResponse:
     stale:
       type: boolean
       description: >
-        True if data is older than 1 hour. Display dims colors and shows
-        a "STALE" badge.
+        True once the silence exceeds `staleAfter`. What the panel then does is
+        set by `staleBehavior`.
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+    staleBehavior:
+      $ref: "common.yaml#/StaleBehavior"
     sparkline:
       type: array
       items:
@@ -158,6 +168,10 @@ TrackerSummary:
       type: integer
     stale:
       type: boolean
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+    staleBehavior:
+      $ref: "common.yaml#/StaleBehavior"
 
 TrackerListResponse:
   type: object

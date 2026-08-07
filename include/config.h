@@ -20,13 +20,13 @@
     #define VERSION_MAJOR 1
 #endif
 #ifndef VERSION_MINOR
-    #define VERSION_MINOR 3
+    #define VERSION_MINOR 4
 #endif
 #ifndef VERSION_PATCH
-    #define VERSION_PATCH 1
+    #define VERSION_PATCH 0
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.3.1"
+    #define VERSION_STRING "1.4.0"
 #endif
 
 // ============================================================================
@@ -144,10 +144,18 @@
 #ifndef MAX_SPARKLINE_POINTS
     #define MAX_SPARKLINE_POINTS 24
 #endif
-#define TRACKER_STALE_TIMEOUT 3600000   // 1 hour in ms
 #define TRACKER_ID_PREFIX "tracker_"
 #define LAMETRIC_API_HOST "developer.lametric.com"
 #define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"
+
+// ============================================================================
+// Stale Policy
+// ============================================================================
+// An app goes stale when its client stops pushing. Only the client knows how long a
+// silence is normal for it, so it declares staleAfter; these values apply until it does.
+#define MAX_STALE_AFTER_SECONDS 604800       // 7 days, keeps the ms conversion clear of the millis() wrap
+#define TRACKER_DEFAULT_STALE_AFTER 3600000  // 1 hour in ms
+#define WEATHER_DEFAULT_STALE_AFTER 3600000  // 1 hour in ms
 
 // ============================================================================
 // Sleep Configuration
@@ -245,7 +253,6 @@ static_assert(MAX_WEATHER_DURATION <= UINT16_MAX,
 #define FS_CONFIG_PATH "/config"
 #define FS_WWW_PATH "/www"
 #define FS_CONFIG_FILE "/config/settings.json"
-#define FS_APPS_FILE "/config/apps.json"
 
 // ============================================================================
 // Indicator Configuration

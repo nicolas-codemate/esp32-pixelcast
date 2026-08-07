@@ -76,6 +76,13 @@ struct AppZone {
     uint8_t labelSegmentCount;
 };
 
+enum StaleBehavior : uint8_t {
+    STALE_HIDE = 0,             // Leave the rotation until the client speaks again
+    STALE_DIM = 1,              // Stay visible, dimmed, with a STALE badge
+    STALE_BADGE = 2,            // Stay visible at full colour, with a STALE badge
+    STALE_NONE = 3              // Stay visible, unchanged
+};
+
 struct AppItem {
     char id[24];
     char text[64];
@@ -83,8 +90,9 @@ struct AppItem {
     char label[32];
     uint32_t textColor;
     uint16_t duration;          // Display duration in ms
-    uint32_t lifetime;          // Expiration time (0 = permanent)
-    uint32_t createdAt;         // Creation timestamp
+    uint32_t staleAfter;        // Silence tolerated before the app is stale, in ms (0 = never)
+    StaleBehavior staleBehavior;
+    uint32_t lastUpdate;        // Refreshed by every push, so it dates the last client contact
     int8_t priority;            // -10 to 10 (higher = more important)
     uint8_t zoneCount;          // 0 or 1 = single layout, 2/3/4 = multi-zone
     bool active;
@@ -350,7 +358,8 @@ unsigned long weatherLastUpdateDrawn = 0;
 
 // Tracker display cache (global so they can be reset on app switch)
 unsigned long trackerLastUpdateDrawn = 0;
-bool trackerStaleDrawn = false;
+bool trackerBadgeDrawn = false;
+bool trackerDimDrawn = false;
 bool trackerIconDrawn = false;
 
 // The symbol and the bottom text scroll independently, so they each carry their own state.
@@ -549,7 +558,7 @@ void displayShowIP();
 void displayShowTime();
 void displayShowDate();
 void displayShowApp(AppItem* app);
-void displayShowWeatherClock(uint16_t appDuration);
+void displayShowWeatherClock(const AppItem* app);
 void drawDropIcon(int16_t x, int16_t y, uint16_t color);
 void drawSeparatorLine(int16_t y, uint16_t color);
 void drawIconAtScale(CachedIcon* icon, int16_t x, int16_t y, uint8_t scale);
@@ -586,20 +595,19 @@ bool saveSettings();
 void initDefaultSettings();
 void printTextWithSpecialChars(const char* text, int16_t x, int16_t y);
 bool ensureDirectories();
-bool loadApps();
-bool saveApps();
 
 void weatherParseTodayBlock(JsonObjectConst todayBlock);
 void weatherClockApplyDuration(uint16_t durationMs);
+void weatherClockApplyStalePolicy(uint32_t staleAfter, StaleBehavior staleBehavior);
 
 int8_t appAdd(const char* id, const char* text, const char* icon,
               uint32_t textColor, uint16_t duration,
-              uint32_t lifetime, int8_t priority, bool isSystem);
+              uint32_t staleAfter, int8_t priority, bool isSystem);
 bool appRemove(const char* id);
 bool appUpdate(const char* id, const char* text, const char* icon,
                uint32_t textColor);
 int8_t appFind(const char* id);
-void appCleanExpired();
+void appHideStale();
 AppItem* appGetNext();
 AppItem* appGetCurrent();
 void appSetZones(int8_t appIndex, JsonArray zonesArray);
@@ -608,11 +616,12 @@ void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h);
 
 // Tracker management
 TrackerData* trackerFind(const char* name);
+const AppItem* trackerFindApp(const char* name);
 TrackerData* trackerAllocate(const char* name);
 bool trackerRemove(const char* name);
 void trackerInit();
-void displayShowTracker(TrackerData* tracker);
-void displayDrawTrackerSymbol(TrackerData* tracker, bool isStale);
+void displayShowTracker(TrackerData* tracker, const AppItem* app);
+void displayDrawTrackerSymbol(TrackerData* tracker, bool showBadge, bool dimColors);
 void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
 void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color);
 void formatTrackerValue(float value, char* buffer, size_t bufSize);
@@ -854,6 +863,7 @@ void setup() {
         weatherData.forecastCount = 6;
         weatherData.lastUpdate = millis();
         weatherData.valid = true;
+        weatherClockApplyStalePolicy(WEATHER_DEFAULT_STALE_AFTER, STALE_HIDE);
     }
 
     logMemory();
@@ -1225,6 +1235,14 @@ void trackerInit() {
     Serial.println("[TRACKER] Initialized");
 }
 
+// A tracker's stale policy is stored on its rotation app, alongside every other app's.
+const AppItem* trackerFindApp(const char* name) {
+    char appId[32];
+    snprintf(appId, sizeof(appId), "%s%s", TRACKER_ID_PREFIX, name);
+    int8_t index = appFind(appId);
+    return index >= 0 ? &apps[index] : nullptr;
+}
+
 // ============================================================================
 // Notification Queue Management
 // ============================================================================
@@ -1380,6 +1398,40 @@ void formatColorHex(uint32_t color, char* buffer, size_t bufSize) {
              (uint8_t)((color >> 16) & 0xFF),
              (uint8_t)((color >> 8) & 0xFF),
              (uint8_t)(color & 0xFF));
+}
+
+// Read a "hide" | "dim" | "badge" | "none" name. Returns false when the field is missing or
+// holds an unknown name, leaving it to the caller to tell an absent field from a bad one.
+bool parseStaleBehavior(JsonVariant value, StaleBehavior* behavior) {
+    if (!value.is<const char*>()) return false;
+
+    const char* name = value.as<const char*>();
+    if (strcmp(name, "hide") == 0)  { *behavior = STALE_HIDE;  return true; }
+    if (strcmp(name, "dim") == 0)   { *behavior = STALE_DIM;   return true; }
+    if (strcmp(name, "badge") == 0) { *behavior = STALE_BADGE; return true; }
+    if (strcmp(name, "none") == 0)  { *behavior = STALE_NONE;  return true; }
+    return false;
+}
+
+const char* staleBehaviorName(StaleBehavior behavior) {
+    switch (behavior) {
+        case STALE_DIM:   return "dim";
+        case STALE_BADGE: return "badge";
+        case STALE_NONE:  return "none";
+        default:          return "hide";
+    }
+}
+
+// Clients express the tolerated silence in seconds; everything downstream compares against
+// millis(). The cap keeps the conversion inside uint32 and well clear of the millis() wrap.
+uint32_t staleAfterSecondsToMillis(uint32_t seconds) {
+    if (seconds > MAX_STALE_AFTER_SECONDS) seconds = MAX_STALE_AFTER_SECONDS;
+    return seconds * 1000UL;
+}
+
+bool appIsStale(const AppItem* app) {
+    if (!app || app->staleAfter == 0) return false;
+    return (millis() - app->lastUpdate) > app->staleAfter;
 }
 
 // Parse polymorphic text field: string, {text,color} object, or [{t,c},...] array
@@ -1570,13 +1622,13 @@ void formatTrackerValue(float value, char* buffer, size_t bufSize) {
 // Runs every scroll step, and the DMA reads this framebuffer while it is being written, so it
 // touches nothing outside the strip the name moves in: clearing the icon to paint it back
 // identically twenty times a second is seen as flicker.
-void displayDrawTrackerSymbol(TrackerData* tracker, bool isStale) {
+void displayDrawTrackerSymbol(TrackerData* tracker, bool showBadge, bool dimColors) {
     uint16_t black = dma_display->color565(0, 0, 0);
 
     // Taken from the last full redraw rather than the cache, so an icon evicted mid-scroll
     // cannot shift the name sideways
     int16_t symbolAreaX = trackerIconDrawn ? TRACKER_SYMBOL_X : TRACKER_SYMBOL_X_NO_ICON;
-    int16_t symbolAreaEnd = isStale ? TRACKER_STALE_BADGE_X - 1 : DISPLAY_WIDTH;
+    int16_t symbolAreaEnd = showBadge ? TRACKER_STALE_BADGE_X - 1 : DISPLAY_WIDTH;
 
     dma_display->fillRect(symbolAreaX, 0, symbolAreaEnd - symbolAreaX, TRACKER_HEADER_HEIGHT, black);
 
@@ -1602,7 +1654,7 @@ void displayDrawTrackerSymbol(TrackerData* tracker, bool isStale) {
         symbolX -= trackerSymbolScrollState.scrollOffset;
     }
 
-    uint32_t symbolColor = isStale ? dimColorQuarter(tracker->symbolColor) : tracker->symbolColor;
+    uint32_t symbolColor = dimColors ? dimColorQuarter(tracker->symbolColor) : tracker->symbolColor;
 
     dma_display->setFont(NULL);  // Default 5x7 font
     dma_display->setTextSize(1);
@@ -1612,7 +1664,7 @@ void displayDrawTrackerSymbol(TrackerData* tracker, bool isStale) {
 
 // --- Row 1: icon + symbol (y=0..11) ---
 // The band starts at y=0 so a blinking indicator that went dark does not stay lit.
-void displayDrawTrackerHeader(TrackerData* tracker, bool isStale, CachedIcon* icon) {
+void displayDrawTrackerHeader(TrackerData* tracker, bool showBadge, bool dimColors, CachedIcon* icon) {
     dma_display->fillRect(0, 0, DISPLAY_WIDTH, TRACKER_HEADER_HEIGHT, dma_display->color565(0, 0, 0));
 
     trackerIconDrawn = (icon && icon->valid);
@@ -1620,14 +1672,14 @@ void displayDrawTrackerHeader(TrackerData* tracker, bool isStale, CachedIcon* ic
         drawIconAtScale(icon, 2, 2, 1);
     }
 
-    if (isStale) {
+    if (showBadge) {
         dma_display->setFont(&TomThumb);
         dma_display->setTextColor(dma_display->color565(200, 0, 0));
         dma_display->setCursor(TRACKER_STALE_BADGE_X, 6);
         dma_display->print("STALE");
     }
 
-    displayDrawTrackerSymbol(tracker, isStale);
+    displayDrawTrackerSymbol(tracker, showBadge, dimColors);
 
     // Contract for the rows drawn after this one: default font, size 1
     dma_display->setFont(NULL);
@@ -1635,7 +1687,7 @@ void displayDrawTrackerHeader(TrackerData* tracker, bool isStale, CachedIcon* ic
 }
 
 // --- Bottom text (y=56..63) ---
-void displayDrawTrackerBottom(TrackerData* tracker, bool isStale) {
+void displayDrawTrackerBottom(TrackerData* tracker, bool dimColors) {
     dma_display->fillRect(0, TRACKER_BOTTOM_Y, DISPLAY_WIDTH,
                           DISPLAY_HEIGHT - TRACKER_BOTTOM_Y, dma_display->color565(0, 0, 0));
 
@@ -1653,10 +1705,10 @@ void displayDrawTrackerBottom(TrackerData* tracker, bool isStale) {
         textX = (DISPLAY_WIDTH - textWidth) / 2;
     }
 
-    // A stale screen dims every colour it shows, segments included
+    // A dimmed screen dims every colour it shows, segments included
     TextSegment dimmedSegments[MAX_TEXT_SEGMENTS];
     const TextSegment* segments = tracker->bottomTextSegments;
-    if (isStale && tracker->bottomTextSegmentCount > 0) {
+    if (dimColors && tracker->bottomTextSegmentCount > 0) {
         for (uint8_t i = 0; i < tracker->bottomTextSegmentCount; i++) {
             dimmedSegments[i] = tracker->bottomTextSegments[i];
             dimmedSegments[i].color = dimColorQuarter(dimmedSegments[i].color);
@@ -1667,16 +1719,18 @@ void displayDrawTrackerBottom(TrackerData* tracker, bool isStale) {
     // dimDefault would apply a 3/4 factor that no input colour turns back into the grey this
     // row has always used, so the grey is passed in directly
     printLabelWithSegments(tracker->bottomText, textX, 62,
-                           isStale ? TRACKER_BOTTOM_COLOR_STALE : TRACKER_BOTTOM_COLOR,
+                           dimColors ? TRACKER_BOTTOM_COLOR_STALE : TRACKER_BOTTOM_COLOR,
                            segments, tracker->bottomTextSegmentCount, false);
 }
 
 // Display tracker layout on 64x64 matrix
-void displayShowTracker(TrackerData* tracker) {
+void displayShowTracker(TrackerData* tracker, const AppItem* app) {
     if (!tracker) return;
 
-    unsigned long trackerAge = millis() - tracker->lastUpdate;
-    bool isStale = (trackerAge > TRACKER_STALE_TIMEOUT);
+    // Kept apart so "badge" can flag a closing price as frozen while leaving it readable
+    bool isStale = appIsStale(app);
+    bool showBadge = isStale && (app->staleBehavior == STALE_DIM || app->staleBehavior == STALE_BADGE);
+    bool dimColors = isStale && app->staleBehavior == STALE_DIM;
 
     // A tracker screen shows a fixed snapshot, so it only has to be painted when the data
     // arrives or when it goes stale. Repainting it every second would blank the framebuffer
@@ -1684,14 +1738,15 @@ void displayShowTracker(TrackerData* tracker) {
     // symbol or footer does need a frame every 50 ms, so those two rows - and only those -
     // are repainted on their own.
     bool needsFullRedraw = (trackerLastUpdateDrawn != tracker->lastUpdate) ||
-                           (trackerStaleDrawn != isStale);
+                           (trackerBadgeDrawn != showBadge) ||
+                           (trackerDimDrawn != dimColors);
 
     if (!needsFullRedraw) {
         if (trackerSymbolScrollState.needsScroll) {
-            displayDrawTrackerSymbol(tracker, isStale);
+            displayDrawTrackerSymbol(tracker, showBadge, dimColors);
         }
         if (trackerBottomScrollState.needsScroll) {
-            displayDrawTrackerBottom(tracker, isStale);
+            displayDrawTrackerBottom(tracker, dimColors);
         }
         drawIndicators();
         #if DOUBLE_BUFFER
@@ -1701,27 +1756,28 @@ void displayShowTracker(TrackerData* tracker) {
     }
 
     trackerLastUpdateDrawn = tracker->lastUpdate;
-    trackerStaleDrawn = isStale;
+    trackerBadgeDrawn = showBadge;
+    trackerDimDrawn = dimColors;
 
     dma_display->clearScreen();
 
     // Color helpers
     uint16_t white = dma_display->color565(255, 255, 255);
-    uint16_t dimWhite = isStale ? dma_display->color565(60, 60, 60) : dma_display->color565(150, 150, 150);
+    uint16_t dimWhite = dimColors ? dma_display->color565(60, 60, 60) : dma_display->color565(150, 150, 150);
     uint16_t dimGray = dma_display->color565(40, 40, 40);
-    uint16_t green = isStale ? dma_display->color565(0, 60, 0) : dma_display->color565(0, 200, 0);
-    uint16_t red = isStale ? dma_display->color565(60, 0, 0) : dma_display->color565(200, 0, 0);
+    uint16_t green = dimColors ? dma_display->color565(0, 60, 0) : dma_display->color565(0, 200, 0);
+    uint16_t red = dimColors ? dma_display->color565(60, 0, 0) : dma_display->color565(200, 0, 0);
 
     uint8_t spkR = (tracker->sparklineColor >> 16) & 0xFF;
     uint8_t spkG = (tracker->sparklineColor >> 8) & 0xFF;
     uint8_t spkB = tracker->sparklineColor & 0xFF;
-    uint16_t sparklineColor565 = isStale
+    uint16_t sparklineColor565 = dimColors
         ? dma_display->color565(spkR / 4, spkG / 4, spkB / 4)
         : dma_display->color565(spkR, spkG, spkB);
 
-    uint16_t valueColor = isStale ? dma_display->color565(60, 60, 60) : white;
+    uint16_t valueColor = dimColors ? dma_display->color565(60, 60, 60) : white;
 
-    displayDrawTrackerHeader(tracker, isStale, getIcon(tracker->icon));
+    displayDrawTrackerHeader(tracker, showBadge, dimColors, getIcon(tracker->icon));
 
     // --- Row 2: Price value (y=14..22) ---
     char valueBuf[20];
@@ -1775,7 +1831,7 @@ void displayShowTracker(TrackerData* tracker) {
     // --- Separator line (y=55) ---
     drawSeparatorLine(55, dimGray);
 
-    displayDrawTrackerBottom(tracker, isStale);
+    displayDrawTrackerBottom(tracker, dimColors);
 
     drawIndicators();
 
@@ -2189,10 +2245,14 @@ void drawCenteredTemperature(int16_t centerX, int16_t baselineY, int16_t tempera
 // Dwell of the hourly carousel page, in day pages
 #define HOURLY_PAGE_WEIGHT 2
 
-void displayShowWeatherClock(uint16_t appDuration) {
-    // Fallback to time display if weather data is stale or missing
-    unsigned long weatherAge = millis() - weatherData.lastUpdate;
-    if (!weatherData.valid || weatherAge > 3600000) {
+void displayShowWeatherClock(const AppItem* app) {
+    uint16_t appDuration = app ? app->duration : settings.weatherDuration;
+
+    // A forecast that stopped being refreshed turns wrong rather than merely old, so it gives
+    // way to the clock. The app itself stays in the rotation: it is the only system app left,
+    // and dropping it would leave nothing to draw.
+    bool hideWhenStale = !app || app->staleBehavior != STALE_NONE;
+    if (!weatherData.valid || (hideWhenStale && appIsStale(app))) {
         displayShowTime();
         return;
     }
@@ -2525,7 +2585,7 @@ void displayShowApp(AppItem* app) {
     }
 
     if (strcmp(app->id, "weatherclock") == 0) {
-        displayShowWeatherClock(app->duration);
+        displayShowWeatherClock(app);
         return;
     }
 
@@ -2534,14 +2594,14 @@ void displayShowApp(AppItem* app) {
         const char* trackerName = app->id + strlen(TRACKER_ID_PREFIX);
         TrackerData* tracker = trackerFind(trackerName);
         if (tracker && tracker->valid) {
-            // The same app can have rendered as a custom one moments ago, when apps.json was
-            // reloaded before the tracker data arrived. That fallback arms appScrollState with
-            // the symbol it printed as plain text, and nothing else disarms it: without this
-            // the loop would keep asking for 20 redraws a second for a string no longer drawn.
+            // The same app can have rendered through the custom layout below moments ago, while
+            // its tracker data was still missing. That fallback arms appScrollState with the
+            // symbol it printed as plain text, and nothing else disarms it: without this the
+            // loop would keep asking for 20 redraws a second for a string no longer drawn.
             if (appScrollState.needsScroll) {
                 resetScrollState();
             }
-            displayShowTracker(tracker);
+            displayShowTracker(tracker, app);
             return;
         }
         // Fallback to default custom app layout if no data
@@ -4227,13 +4287,32 @@ void setupWebServer() {
             }
 
             uint16_t duration = doc["duration"] | settings.defaultDuration;
-            uint32_t lifetime = doc["lifetime"] | 0;
             int8_t priority = doc["priority"] | 0;
 
-            int8_t result = appAdd(name.c_str(), parsedText, icon, textColor,
-                                   duration, lifetime, priority, false);
+            // Former name of staleAfter, still accepted
+            uint32_t staleAfterSeconds = doc["lifetime"] | 0;
+            if (!doc["staleAfter"].isNull()) {
+                staleAfterSeconds = doc["staleAfter"].as<uint32_t>();
+            }
+
+            StaleBehavior staleBehavior = STALE_HIDE;
+            if (!doc["staleBehavior"].isNull() &&
+                !parseStaleBehavior(doc["staleBehavior"], &staleBehavior)) {
+                request->send(400, "application/json",
+                    "{\"error\":\"staleBehavior must be hide, dim, badge or none\"}");
+                return;
+            }
+            if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
+                request->send(400, "application/json",
+                    "{\"error\":\"staleBehavior dim and badge are only supported on tracker apps\"}");
+                return;
+            }
+
+            int8_t result = appAdd(name.c_str(), parsedText, icon, textColor, duration,
+                                   staleAfterSecondsToMillis(staleAfterSeconds), priority, false);
 
             if (result >= 0) {
+                apps[result].staleBehavior = staleBehavior;
                 if (!isMultiZone) {
                     // Copy text segments
                     memcpy(apps[result].textSegments, textSegs, sizeof(textSegs));
@@ -4364,8 +4443,14 @@ void setupWebServer() {
 
         if (weatherData.valid) {
             unsigned long ageMs = millis() - weatherData.lastUpdate;
+            int8_t weatherClockIndex = appFind("weatherclock");
+            const AppItem* weatherApp = weatherClockIndex >= 0 ? &apps[weatherClockIndex] : nullptr;
             doc["age"] = ageMs / 1000;
-            doc["stale"] = (ageMs > 3600000);
+            doc["stale"] = appIsStale(weatherApp);
+            if (weatherApp) {
+                doc["staleAfter"] = weatherApp->staleAfter / 1000;
+                doc["staleBehavior"] = staleBehaviorName(weatherApp->staleBehavior);
+            }
 
             JsonObject current = doc["current"].to<JsonObject>();
             current["icon"] = weatherData.currentIcon;
@@ -4452,6 +4537,25 @@ void setupWebServer() {
 
             weatherParseTodayBlock(doc["today"].as<JsonObjectConst>());
 
+            uint32_t staleAfter = WEATHER_DEFAULT_STALE_AFTER;
+            if (!doc["staleAfter"].isNull()) {
+                staleAfter = staleAfterSecondsToMillis(doc["staleAfter"].as<uint32_t>());
+            }
+
+            StaleBehavior staleBehavior = STALE_HIDE;
+            if (!doc["staleBehavior"].isNull() &&
+                !parseStaleBehavior(doc["staleBehavior"], &staleBehavior)) {
+                request->send(400, "application/json",
+                    "{\"error\":\"staleBehavior must be hide or none\"}");
+                return;
+            }
+            if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
+                request->send(400, "application/json",
+                    "{\"error\":\"staleBehavior dim and badge are only supported on tracker apps\"}");
+                return;
+            }
+            weatherClockApplyStalePolicy(staleAfter, staleBehavior);
+
             // Reset forecast pagination on new data
             forecastPage = 0;
             lastForecastPageSwitch = millis();
@@ -4482,8 +4586,13 @@ void setupWebServer() {
                 t["value"] = trackers[i].currentValue;
                 t["change"] = trackers[i].changePercent;
                 unsigned long ageMs = millis() - trackers[i].lastUpdate;
+                const AppItem* trackerApp = trackerFindApp(trackers[i].name);
                 t["age"] = ageMs / 1000;
-                t["stale"] = (ageMs > TRACKER_STALE_TIMEOUT);
+                t["stale"] = appIsStale(trackerApp);
+                if (trackerApp) {
+                    t["staleAfter"] = trackerApp->staleAfter / 1000;
+                    t["staleBehavior"] = staleBehaviorName(trackerApp->staleBehavior);
+                }
             }
         }
         doc["count"] = trackerCount;
@@ -4527,8 +4636,13 @@ void setupWebServer() {
         doc["sparklinePeriod"] = tracker->sparklinePeriod;
 
         unsigned long ageMs = millis() - tracker->lastUpdate;
+        const AppItem* trackerApp = trackerFindApp(tracker->name);
         doc["age"] = ageMs / 1000;
-        doc["stale"] = (ageMs > TRACKER_STALE_TIMEOUT);
+        doc["stale"] = appIsStale(trackerApp);
+        if (trackerApp) {
+            doc["staleAfter"] = trackerApp->staleAfter / 1000;
+            doc["staleBehavior"] = staleBehaviorName(trackerApp->staleBehavior);
+        }
 
         if (tracker->sparklineCount > 0) {
             JsonArray sparkArr = doc["sparkline"].to<JsonArray>();
@@ -4645,12 +4759,28 @@ void setupWebServer() {
 
             tracker->lastUpdate = millis();
 
+            uint32_t staleAfter = TRACKER_DEFAULT_STALE_AFTER;
+            if (!doc["staleAfter"].isNull()) {
+                staleAfter = staleAfterSecondsToMillis(doc["staleAfter"].as<uint32_t>());
+            }
+
+            StaleBehavior staleBehavior = STALE_DIM;
+            if (!doc["staleBehavior"].isNull() &&
+                !parseStaleBehavior(doc["staleBehavior"], &staleBehavior)) {
+                request->send(400, "application/json",
+                    "{\"error\":\"staleBehavior must be hide, dim, badge or none\"}");
+                return;
+            }
+
             // Register/update app in rotation
             char appId[32];
             snprintf(appId, sizeof(appId), "%s%s", TRACKER_ID_PREFIX, name.c_str());
             uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
-            appAdd(appId, tracker->symbol, tracker->icon, 0xFFFFFF,
-                   duration, 0, 0, false);
+            int8_t appIndex = appAdd(appId, tracker->symbol, tracker->icon, 0xFFFFFF,
+                                     duration, staleAfter, 0, false);
+            if (appIndex >= 0) {
+                apps[appIndex].staleBehavior = staleBehavior;
+            }
 
             Serial.printf("[TRACKER] Updated: %s (%s = %.2f)\n",
                          name.c_str(), tracker->symbol, tracker->currentValue);
@@ -5129,7 +5259,9 @@ void handleApiApps(AsyncWebServerRequest *request) {
             appObj["id"] = apps[i].id;
             appObj["icon"] = apps[i].icon;
             appObj["duration"] = apps[i].duration;
-            appObj["lifetime"] = apps[i].lifetime;
+            appObj["staleAfter"] = apps[i].staleAfter / 1000;
+            appObj["staleBehavior"] = staleBehaviorName(apps[i].staleBehavior);
+            appObj["stale"] = appIsStale(&apps[i]);
             appObj["priority"] = apps[i].priority;
             appObj["isSystem"] = apps[i].isSystem;
             appObj["isCurrent"] = (currentAppIndex == i);
@@ -5468,13 +5600,29 @@ void mqttHandleCustom(const char* name, JsonObject& doc) {
     }
 
     uint16_t duration = doc["duration"] | settings.defaultDuration;
-    uint32_t lifetime = doc["lifetime"] | 0;
     int8_t priority = doc["priority"] | 0;
 
-    int8_t result = appAdd(name, parsedText, icon, textColor,
-                           duration, lifetime, priority, false);
+    // Former name of staleAfter, still accepted
+    uint32_t staleAfterSeconds = doc["lifetime"] | 0;
+    if (!doc["staleAfter"].isNull()) {
+        staleAfterSeconds = doc["staleAfter"].as<uint32_t>();
+    }
+
+    StaleBehavior staleBehavior = STALE_HIDE;
+    if (!doc["staleBehavior"].isNull() &&
+        !parseStaleBehavior(doc["staleBehavior"], &staleBehavior)) {
+        Serial.println("[MQTT] Unknown staleBehavior, keeping hide");
+    }
+    if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
+        Serial.println("[MQTT] staleBehavior dim and badge need a tracker app, keeping hide");
+        staleBehavior = STALE_HIDE;
+    }
+
+    int8_t result = appAdd(name, parsedText, icon, textColor, duration,
+                           staleAfterSecondsToMillis(staleAfterSeconds), priority, false);
 
     if (result >= 0) {
+        apps[result].staleBehavior = staleBehavior;
         if (!isMultiZone) {
             // Copy text segments
             memcpy(apps[result].textSegments, textSegs, sizeof(textSegs));
@@ -5609,6 +5757,22 @@ void mqttHandleWeather(JsonObject& doc) {
 
     weatherParseTodayBlock(doc["today"].as<JsonObjectConst>());
 
+    uint32_t staleAfter = WEATHER_DEFAULT_STALE_AFTER;
+    if (!doc["staleAfter"].isNull()) {
+        staleAfter = staleAfterSecondsToMillis(doc["staleAfter"].as<uint32_t>());
+    }
+
+    StaleBehavior staleBehavior = STALE_HIDE;
+    if (!doc["staleBehavior"].isNull() &&
+        !parseStaleBehavior(doc["staleBehavior"], &staleBehavior)) {
+        Serial.println("[MQTT] Unknown staleBehavior, keeping hide");
+    }
+    if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
+        Serial.println("[MQTT] staleBehavior dim and badge need a tracker app, keeping hide");
+        staleBehavior = STALE_HIDE;
+    }
+    weatherClockApplyStalePolicy(staleAfter, staleBehavior);
+
     // Reset forecast pagination on new data
     forecastPage = 0;
     lastForecastPageSwitch = millis();
@@ -5685,12 +5849,26 @@ void mqttHandleTracker(const char* name, JsonObject& doc) {
 
     tracker->lastUpdate = millis();
 
+    uint32_t staleAfter = TRACKER_DEFAULT_STALE_AFTER;
+    if (!doc["staleAfter"].isNull()) {
+        staleAfter = staleAfterSecondsToMillis(doc["staleAfter"].as<uint32_t>());
+    }
+
+    StaleBehavior staleBehavior = STALE_DIM;
+    if (!doc["staleBehavior"].isNull() &&
+        !parseStaleBehavior(doc["staleBehavior"], &staleBehavior)) {
+        Serial.println("[MQTT] Unknown staleBehavior, keeping dim");
+    }
+
     // Register/update app in rotation
     char appId[32];
     snprintf(appId, sizeof(appId), "%s%s", TRACKER_ID_PREFIX, name);
     uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
-    appAdd(appId, tracker->symbol, tracker->icon, 0xFFFFFF,
-           duration, 0, 0, false);
+    int8_t appIndex = appAdd(appId, tracker->symbol, tracker->icon, 0xFFFFFF,
+                             duration, staleAfter, 0, false);
+    if (appIndex >= 0) {
+        apps[appIndex].staleBehavior = staleBehavior;
+    }
 
     Serial.printf("[MQTT] Tracker updated: %s (%s = %.2f)\n",
                   name, tracker->symbol, tracker->currentValue);
@@ -6073,149 +6251,6 @@ bool saveSettings() {
     return true;
 }
 
-bool loadApps() {
-    if (!filesystemReady) {
-        Serial.println("[APPS] Filesystem not ready, cannot load apps");
-        return false;
-    }
-
-    File file = LittleFS.open(FS_APPS_FILE, "r");
-    if (!file) {
-        Serial.println("[APPS] Apps file not found, starting fresh");
-        return false;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, file);
-    file.close();
-
-    if (error) {
-        Serial.printf("[APPS] JSON parse error: %s\n", error.c_str());
-        return false;
-    }
-
-    int loadedCount = 0;
-    JsonArray appsArray = doc["apps"];
-    for (JsonObject appObj : appsArray) {
-        const char* id = appObj["id"] | "";
-        const char* icon = appObj["icon"] | "";
-        uint32_t textColor = appObj["textColor"] | 0xFFFFFF;
-        uint16_t duration = appObj["duration"] | settings.defaultDuration;
-        uint32_t lifetime = appObj["lifetime"] | 0;
-        int8_t priority = appObj["priority"] | 0;
-
-        // Parse text field (handles string and [{t,c},...] array from persistence)
-        char parsedText[64] = "";
-        TextSegment textSegs[MAX_TEXT_SEGMENTS];
-        uint8_t textSegCount = 0;
-        parseTextFieldWithSegments(appObj["text"], parsedText, sizeof(parsedText),
-                                   textSegs, &textSegCount, textColor);
-
-        if (strlen(id) > 0) {
-            int8_t result = appAdd(id, parsedText, icon, textColor,
-                                   duration, lifetime, priority, false);
-            if (result >= 0) {
-                // Restore text segments
-                memcpy(apps[result].textSegments, textSegs, sizeof(textSegs));
-                apps[result].textSegmentCount = textSegCount;
-                // Restore label with segments
-                parseTextFieldWithSegments(appObj["label"], apps[result].label,
-                                           sizeof(apps[result].label),
-                                           apps[result].labelSegments,
-                                           &apps[result].labelSegmentCount, textColor);
-                // Restore multi-zone data if present
-                JsonArray zonesArr = appObj["zones"].as<JsonArray>();
-                if (!zonesArr.isNull() && zonesArr.size() >= 2) {
-                    appSetZones(result, zonesArr);
-                }
-                loadedCount++;
-            }
-        }
-    }
-
-    Serial.printf("[APPS] Loaded %d custom apps from storage\n", loadedCount);
-    return loadedCount > 0;
-}
-
-bool saveApps() {
-    if (!filesystemReady) {
-        Serial.println("[APPS] Filesystem not ready, cannot save apps");
-        return false;
-    }
-
-    JsonDocument doc;
-    doc["version"] = 1;
-    JsonArray appsArray = doc["apps"].to<JsonArray>();
-
-    int savedCount = 0;
-    for (uint8_t i = 0; i < MAX_APPS; i++) {
-        if (apps[i].active && !apps[i].isSystem) {
-            JsonObject appObj = appsArray.add<JsonObject>();
-            appObj["id"] = apps[i].id;
-            appObj["icon"] = apps[i].icon;
-            appObj["textColor"] = apps[i].textColor;
-            appObj["duration"] = apps[i].duration;
-            appObj["lifetime"] = apps[i].lifetime;
-            appObj["priority"] = apps[i].priority;
-            // Serialize text and label in polymorphic format
-            serializeTextField(appObj, "text", apps[i].text,
-                               apps[i].textSegments, apps[i].textSegmentCount);
-            if (apps[i].label[0] != '\0') {
-                serializeTextField(appObj, "label", apps[i].label,
-                                   apps[i].labelSegments, apps[i].labelSegmentCount);
-            }
-
-            // Serialize multi-zone data
-            if (apps[i].zoneCount >= 2) {
-                appObj["zoneCount"] = apps[i].zoneCount;
-                JsonArray zonesArr = appObj["zones"].to<JsonArray>();
-                // Zone 0 = main app fields (text/icon/textColor/label)
-                JsonObject z0 = zonesArr.add<JsonObject>();
-                serializeTextField(z0, "text", apps[i].text,
-                                   apps[i].textSegments, apps[i].textSegmentCount);
-                z0["icon"] = apps[i].icon;
-                if (apps[i].label[0] != '\0') {
-                    serializeTextField(z0, "label", apps[i].label,
-                                       apps[i].labelSegments, apps[i].labelSegmentCount);
-                }
-                char z0ColorHex[8];
-                formatColorHex(apps[i].textColor, z0ColorHex, sizeof(z0ColorHex));
-                z0["color"] = z0ColorHex;
-                // Zones 1..N stored in app->zones[0..N-1]
-                for (uint8_t z = 1; z < apps[i].zoneCount; z++) {
-                    JsonObject zObj = zonesArr.add<JsonObject>();
-                    serializeTextField(zObj, "text", apps[i].zones[z - 1].text,
-                                       apps[i].zones[z - 1].textSegments,
-                                       apps[i].zones[z - 1].textSegmentCount);
-                    zObj["icon"] = apps[i].zones[z - 1].icon;
-                    if (apps[i].zones[z - 1].label[0] != '\0') {
-                        serializeTextField(zObj, "label", apps[i].zones[z - 1].label,
-                                           apps[i].zones[z - 1].labelSegments,
-                                           apps[i].zones[z - 1].labelSegmentCount);
-                    }
-                    char zColorHex[8];
-                    formatColorHex(apps[i].zones[z - 1].textColor, zColorHex, sizeof(zColorHex));
-                    zObj["color"] = zColorHex;
-                }
-            }
-
-            savedCount++;
-        }
-    }
-
-    File file = LittleFS.open(FS_APPS_FILE, "w");
-    if (!file) {
-        Serial.println("[APPS] Failed to open apps file for writing");
-        return false;
-    }
-
-    serializeJsonPretty(doc, file);
-    file.close();
-
-    Serial.printf("[APPS] Saved %d custom apps to storage\n", savedCount);
-    return true;
-}
-
 // ============================================================================
 // Application Manager Functions
 // ============================================================================
@@ -6245,17 +6280,13 @@ void setupApps() {
            settings.weatherDuration, 0, 1, true);
     Serial.println("[APPS] WeatherClock app added");
 
-    // Load persisted custom apps
-    // NOTE: disabled during weatherclock development to avoid old "weather" app interference
-    // loadApps();
-
     Serial.printf("[APPS] Initialized with %d apps\n", appCount);
     appRotationEnabled = settings.autoRotate;
 }
 
 int8_t appAdd(const char* id, const char* text, const char* icon,
               uint32_t textColor, uint16_t duration,
-              uint32_t lifetime, int8_t priority, bool isSystem) {
+              uint32_t staleAfter, int8_t priority, bool isSystem) {
 
     // Check if app with same ID exists
     int8_t existingIndex = appFind(id);
@@ -6269,18 +6300,14 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
         app->textSegmentCount = 0;
         app->labelSegmentCount = 0;
         app->duration = duration;
-        app->lifetime = lifetime;
+        app->staleAfter = staleAfter;
         app->priority = priority;
-        app->createdAt = millis();
+        app->lastUpdate = millis();
         app->active = true;
         // Reset zone data (caller will set via appSetZones if needed)
         app->zoneCount = 0;
         memset(app->zones, 0, sizeof(app->zones));
         Serial.printf("[APPS] Updated app: %s\n", id);
-        // Persist non-system apps
-        if (!app->isSystem) {
-            saveApps();
-        }
         return existingIndex;
     }
 
@@ -6309,8 +6336,10 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
     app->textSegmentCount = 0;
     app->labelSegmentCount = 0;
     app->duration = duration > 0 ? duration : settings.defaultDuration;
-    app->lifetime = lifetime;
-    app->createdAt = millis();
+    app->staleAfter = staleAfter;
+    // Slots are reused, so this has to be set rather than inherited from the previous tenant.
+    app->staleBehavior = STALE_HIDE;
+    app->lastUpdate = millis();
     app->priority = constrain(priority, -10, 10);
     app->active = true;
     app->isSystem = isSystem;
@@ -6320,11 +6349,6 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
 
     appCount++;
     Serial.printf("[APPS] Added app: %s (slot %d, total %d)\n", id, emptySlot, appCount);
-
-    // Persist non-system apps
-    if (!isSystem) {
-        saveApps();
-    }
 
     return emptySlot;
 }
@@ -6365,11 +6389,6 @@ void appSetZones(int8_t appIndex, JsonArray zonesArray) {
     }
 
     Serial.printf("[APPS] Set %d zones for app: %s\n", count, app->id);
-
-    // Persist non-system apps
-    if (!app->isSystem) {
-        saveApps();
-    }
 }
 
 bool appRemove(const char* id) {
@@ -6392,9 +6411,6 @@ bool appRemove(const char* id) {
 
     Serial.printf("[APPS] Removed app: %s\n", id);
 
-    // Persist the removal
-    saveApps();
-
     return true;
 }
 
@@ -6407,7 +6423,7 @@ bool appUpdate(const char* id, const char* text, const char* icon,
     if (text) strlcpy(app->text, text, sizeof(app->text));
     if (icon) strlcpy(app->icon, icon, sizeof(app->icon));
     if (textColor != 0) app->textColor = textColor;
-    app->createdAt = millis();
+    app->lastUpdate = millis();
 
     Serial.printf("[APPS] Updated app: %s\n", id);
     return true;
@@ -6422,6 +6438,18 @@ void weatherClockApplyDuration(uint16_t durationMs)
     Serial.printf("[APPS] WeatherClock duration set to %u ms\n", durationMs);
 }
 
+// The weather client pushes to /api/weather, which never goes through appAdd, so the app
+// carrying its stale policy has to be refreshed here on every push.
+void weatherClockApplyStalePolicy(uint32_t staleAfter, StaleBehavior staleBehavior)
+{
+    int8_t weatherClockIndex = appFind("weatherclock");
+    if (weatherClockIndex < 0) return;
+
+    apps[weatherClockIndex].staleAfter = staleAfter;
+    apps[weatherClockIndex].staleBehavior = staleBehavior;
+    apps[weatherClockIndex].lastUpdate = millis();
+}
+
 int8_t appFind(const char* id) {
     for (uint8_t i = 0; i < MAX_APPS; i++) {
         if (apps[i].active && strcmp(apps[i].id, id) == 0) {
@@ -6431,18 +6459,20 @@ int8_t appFind(const char* id) {
     return -1;
 }
 
-void appCleanExpired() {
-    unsigned long now = millis();
+void appHideStale() {
     for (uint8_t i = 0; i < MAX_APPS; i++) {
-        if (apps[i].active && apps[i].lifetime > 0) {
-            if (now - apps[i].createdAt > apps[i].lifetime) {
-                Serial.printf("[APPS] App expired: %s\n", apps[i].id);
-                apps[i].active = false;
-                appCount--;
-                if (currentAppIndex == i) {
-                    currentAppIndex = -1;
-                }
-            }
+        AppItem* app = &apps[i];
+        // System apps have no client of their own to bring them back, and dropping the last
+        // one would leave the panel with nothing to draw, so they never leave the rotation.
+        if (!app->active || app->isSystem) continue;
+        if (app->staleBehavior != STALE_HIDE) continue;
+        if (!appIsStale(app)) continue;
+
+        Serial.printf("[APPS] App went stale, leaving rotation: %s\n", app->id);
+        app->active = false;
+        appCount--;
+        if (currentAppIndex == i) {
+            currentAppIndex = -1;
         }
     }
 }
@@ -6450,8 +6480,7 @@ void appCleanExpired() {
 AppItem* appGetNext() {
     if (appCount == 0) return nullptr;
 
-    // Clean expired apps first
-    appCleanExpired();
+    appHideStale();
     if (appCount == 0) return nullptr;
 
     // Simple round-robin: find next active app after current

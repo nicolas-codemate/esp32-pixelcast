@@ -55,6 +55,13 @@
 #ifndef DOUBLE_BUFFER
     #define DOUBLE_BUFFER 1
 #endif
+// How many buffers a change has to be painted into before every frame the panel can show
+// carries it. Screens that repaint only part of a frame count their full paints against this.
+#if DOUBLE_BUFFER
+    #define DISPLAY_BUFFER_COUNT 2
+#else
+    #define DISPLAY_BUFFER_COUNT 1
+#endif
 #ifndef DEFAULT_BRIGHTNESS
     #define DEFAULT_BRIGHTNESS 128  // 0-255
 #endif

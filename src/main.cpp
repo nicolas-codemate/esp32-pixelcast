@@ -354,12 +354,15 @@ unsigned long lastForecastPageSwitch = 0;
 // Weather display cache (global so they can be reset on app switch)
 int weatherLastDrawnMinute = -1;
 unsigned long weatherLastUpdateDrawn = 0;
+uint8_t weatherFullRepaintsPending = 0;
+uint8_t weatherForecastRepaintsPending = 0;
 
 // Tracker display cache (global so they can be reset on app switch)
 unsigned long trackerLastUpdateDrawn = 0;
 bool trackerBadgeDrawn = false;
 bool trackerDimDrawn = false;
 bool trackerIconDrawn = false;
+uint8_t trackerFullRepaintsPending = 0;
 
 // The symbol and the bottom text scroll independently, so they each carry their own state.
 // Both are written by the render pass and read by loopDisplay; the REST handler can rewrite
@@ -1861,16 +1864,22 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
     bool showBadge = isStale && (app->staleBehavior == STALE_DIM || app->staleBehavior == STALE_BADGE);
     bool dimColors = isStale && app->staleBehavior == STALE_DIM;
 
-    // A tracker screen shows a fixed snapshot, so it only has to be painted when the data
-    // arrives or when it goes stale. Repainting it every second would blank the framebuffer
-    // the DMA is reading, which shows up as flicker on single-buffered builds. A scrolling
-    // symbol or footer does need a frame every 50 ms, so those two rows - and only those -
-    // are repainted on their own.
-    bool needsFullRedraw = (trackerLastUpdateDrawn != tracker->lastUpdate) ||
-                           (trackerBadgeDrawn != showBadge) ||
-                           (trackerDimDrawn != dimColors);
+    // A tracker screen shows a fixed snapshot, and a full paint costs an icon lookup plus the
+    // whole layout, so it only runs when the data arrives or goes stale. The counter keeps it
+    // running until every buffer carries the change; only then are the scrolling symbol and
+    // footer - and only those two rows - repainted on their own, every 50 ms.
+    bool contentChanged = (trackerLastUpdateDrawn != tracker->lastUpdate) ||
+                          (trackerBadgeDrawn != showBadge) ||
+                          (trackerDimDrawn != dimColors);
 
-    if (!needsFullRedraw) {
+    if (contentChanged) {
+        trackerLastUpdateDrawn = tracker->lastUpdate;
+        trackerBadgeDrawn = showBadge;
+        trackerDimDrawn = dimColors;
+        trackerFullRepaintsPending = DISPLAY_BUFFER_COUNT;
+    }
+
+    if (trackerFullRepaintsPending == 0) {
         if (trackerSymbolScrollState.needsScroll) {
             displayDrawTrackerSymbol(tracker, showBadge, dimColors);
         }
@@ -1884,9 +1893,7 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
         return;
     }
 
-    trackerLastUpdateDrawn = tracker->lastUpdate;
-    trackerBadgeDrawn = showBadge;
-    trackerDimDrawn = dimColors;
+    trackerFullRepaintsPending--;
 
     dma_display->clearScreen();
 
@@ -2404,8 +2411,8 @@ void displayShowWeatherClock(const AppItem* app) {
         hours -= 12;
     }
 
-    bool needsFullRedraw = (weatherLastDrawnMinute != minutes) ||
-                           (weatherLastUpdateDrawn != weatherData.lastUpdate);
+    bool contentChanged = (weatherLastDrawnMinute != minutes) ||
+                          (weatherLastUpdateDrawn != weatherData.lastUpdate);
 
     // Forecast pagination. The hourly window, when there is one, takes the first
     // page of the same carousel and pushes the days one page to the right.
@@ -2448,7 +2455,24 @@ void displayShowWeatherClock(const AppItem* app) {
 
     forecastPage = currentPage;
 
-    bool needsForecastRedraw = needsFullRedraw || pageChanged;
+    // A change has to reach every buffer before the seconds-only path is allowed to run
+    if (contentChanged) {
+        weatherLastDrawnMinute = minutes;
+        weatherLastUpdateDrawn = weatherData.lastUpdate;
+        weatherFullRepaintsPending = DISPLAY_BUFFER_COUNT;
+    }
+    if (contentChanged || pageChanged) {
+        weatherForecastRepaintsPending = DISPLAY_BUFFER_COUNT;
+    }
+
+    bool needsFullRedraw = (weatherFullRepaintsPending > 0);
+    bool needsForecastRedraw = (weatherForecastRepaintsPending > 0);
+    if (needsFullRedraw) {
+        weatherFullRepaintsPending--;
+    }
+    if (needsForecastRedraw) {
+        weatherForecastRepaintsPending--;
+    }
 
     uint16_t white = dma_display->color565(255, 255, 255);
     uint16_t dimGray = dma_display->color565(40, 40, 40);
@@ -2574,9 +2598,6 @@ void displayShowWeatherClock(const AppItem* app) {
 
         // ---- Separator (y=31) ----
         drawSeparatorLine(31, dimGray);
-
-        weatherLastDrawnMinute = minutes;
-        weatherLastUpdateDrawn = weatherData.lastUpdate;
     }
 
     // ---- Forecast (y=33-63) - redrawn on full redraw or page change ----

@@ -1899,7 +1899,8 @@ channels:
             value:
               type: number
               format: float
-              description: Current price/value.
+              description: |
+                Current price/value. The panel shows as many decimals as fit the value row, which the currency label shortens when one is set. Two decimals are always shown when they fit, so 128.4 reads 128.40 and 6.232 keeps its third decimal. Digits beyond the seven a float can carry are dropped rather than printed as rounding noise.
               examples:
                 - 98452.3
             change:
@@ -2230,7 +2231,8 @@ channels:
             value:
               type: number
               format: float
-              description: Current price/value.
+              description: |
+                Current price/value. The panel shows as many decimals as fit the value row, which the currency label shortens when one is set. Two decimals are always shown when they fit, so 128.4 reads 128.40 and 6.232 keeps its third decimal. Digits beyond the seven a float can carry are dropped rather than printed as rounding noise.
               examples:
                 - 98452.3
             change:
@@ -3782,7 +3784,8 @@ components:
           value:
             type: number
             format: float
-            description: Current price/value.
+            description: |
+              Current price/value. The panel shows as many decimals as fit the value row, which the currency label shortens when one is set. Two decimals are always shown when they fit, so 128.4 reads 128.40 and 6.232 keeps its third decimal. Digits beyond the seven a float can carry are dropped rather than printed as rounding noise.
             examples:
               - 98452.3
           change:

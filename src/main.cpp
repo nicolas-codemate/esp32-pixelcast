@@ -785,8 +785,8 @@ void setup() {
             snprintf(buf, sizeof(buf), "%d%%", percent);
             dma_display->setFont(&TomThumb);
             dma_display->setTextColor(dma_display->color565(150, 150, 150));
-            int16_t textW = strlen(buf) * 4;
-            dma_display->setCursor((64 - textW) / 2, 60);
+            int16_t textWidth = calculateTomThumbTextWidth(buf);
+            dma_display->setCursor((64 - textWidth) / 2, 60);
             dma_display->print(buf);
             dma_display->setFont(NULL);
         });
@@ -1683,6 +1683,7 @@ void formatTrackerValue(float value, char* buffer, size_t bufSize, uint8_t maxCh
 // Without it the last digit sits one pixel from the currency, the same gap that separates two
 // digits, and the two read as one run: "1,234.57EUR".
 #define TRACKER_VALUE_GUTTER        2
+#define TRACKER_PERIOD_RIGHT_X      62
 #define TRACKER_BOTTOM_Y            56
 #define TRACKER_BOTTOM_COLOR        0x969696
 #define TRACKER_BOTTOM_COLOR_STALE  0x3C3C3C
@@ -1889,8 +1890,8 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
     if (strlen(tracker->sparklinePeriod) > 0) {
         dma_display->setFont(&TomThumb);
         dma_display->setTextColor(dimWhite);
-        int16_t periodWidth = strlen(tracker->sparklinePeriod) * 4;
-        dma_display->setCursor(62 - periodWidth, 43);
+        int16_t periodWidth = calculateTomThumbTextWidth(tracker->sparklinePeriod);
+        dma_display->setCursor(TRACKER_PERIOD_RIGHT_X - periodWidth, 43);
         dma_display->print(tracker->sparklinePeriod);
         dma_display->setFont(NULL);
     }
@@ -2550,7 +2551,7 @@ void displayShowWeatherClock(const AppItem* app) {
                 // Day name (TomThumb baseline=39, glyphs y=34-38)
                 dma_display->setFont(&TomThumb);
                 dma_display->setTextColor(coral);
-                int16_t dayNameWidth = strlen(weatherData.forecast[forecastIndex].dayName) * 4;
+                int16_t dayNameWidth = calculateTomThumbTextWidth(weatherData.forecast[forecastIndex].dayName);
                 dma_display->setCursor(colCenter - dayNameWidth / 2, 39);
                 dma_display->print(weatherData.forecast[forecastIndex].dayName);
 
@@ -2740,7 +2741,7 @@ void displayShowApp(AppItem* app) {
 
     // Draw label below text if present (TomThumb font, dimmed color)
     if (app->label[0] != '\0') {
-        int16_t labelWidth = strlen(app->label) * 4;
+        int16_t labelWidth = calculateTomThumbTextWidth(app->label);
         int16_t labelX = (DISPLAY_WIDTH - labelWidth) / 2;
         if (labelX < 2) labelX = 2;
         int16_t labelY = textYPos + 12;
@@ -2863,7 +2864,7 @@ void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h) 
 
         // Draw label at bottom of zone with good margin
         if (hasLabel) {
-            int16_t labelWidth = strlen(zone->label) * 4;
+            int16_t labelWidth = calculateTomThumbTextWidth(zone->label);
             int16_t labelX = x + (w - labelWidth) / 2;
             if (labelX < x) labelX = x;
             int16_t labelY = y + h - 6;

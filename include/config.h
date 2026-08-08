@@ -56,7 +56,7 @@
     #define DOUBLE_BUFFER 1
 #endif
 // How many buffers a change has to be painted into before every frame the panel can show
-// carries it. Screens that repaint only part of a frame count their full paints against this.
+// carries it. Derived from DOUBLE_BUFFER, not meant to be set from the build flags.
 #if DOUBLE_BUFFER
     #define DISPLAY_BUFFER_COUNT 2
 #else

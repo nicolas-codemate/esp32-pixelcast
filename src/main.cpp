@@ -364,6 +364,14 @@ bool trackerDimDrawn = false;
 bool trackerIconDrawn = false;
 uint8_t trackerFullRepaintsPending = 0;
 
+// A screen arms one of these counters when its content changes and spends one unit per full
+// paint, so the change reaches every buffer before a partial repaint is allowed to run.
+bool consumePendingRepaint(uint8_t& pendingRepaints) {
+    if (pendingRepaints == 0) return false;
+    pendingRepaints--;
+    return true;
+}
+
 // The symbol and the bottom text scroll independently, so they each carry their own state.
 // Both are written by the render pass and read by loopDisplay; the REST handler can rewrite
 // the underlying text from the web server task mid-frame, which costs at worst one torn
@@ -1840,9 +1848,7 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
     bool dimColors = isStale && app->staleBehavior == STALE_DIM;
 
     // A tracker screen shows a fixed snapshot, and a full paint costs an icon lookup plus the
-    // whole layout, so it only runs when the data arrives or goes stale. The counter keeps it
-    // running until every buffer carries the change; only then are the scrolling symbol and
-    // footer - and only those two rows - repainted on their own, every 50 ms.
+    // whole layout, so it only runs when the data arrives or goes stale.
     bool contentChanged = (trackerLastUpdateDrawn != tracker->lastUpdate) ||
                           (trackerBadgeDrawn != showBadge) ||
                           (trackerDimDrawn != dimColors);
@@ -1854,7 +1860,7 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
         trackerFullRepaintsPending = DISPLAY_BUFFER_COUNT;
     }
 
-    if (trackerFullRepaintsPending == 0) {
+    if (!consumePendingRepaint(trackerFullRepaintsPending)) {
         if (trackerSymbolScrollState.needsScroll) {
             displayDrawTrackerSymbol(tracker, showBadge, dimColors);
         }
@@ -1867,8 +1873,6 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
         #endif
         return;
     }
-
-    trackerFullRepaintsPending--;
 
     dma_display->clearScreen();
 
@@ -2440,14 +2444,8 @@ void displayShowWeatherClock(const AppItem* app) {
         weatherForecastRepaintsPending = DISPLAY_BUFFER_COUNT;
     }
 
-    bool needsFullRedraw = (weatherFullRepaintsPending > 0);
-    bool needsForecastRedraw = (weatherForecastRepaintsPending > 0);
-    if (needsFullRedraw) {
-        weatherFullRepaintsPending--;
-    }
-    if (needsForecastRedraw) {
-        weatherForecastRepaintsPending--;
-    }
+    bool needsFullRedraw = consumePendingRepaint(weatherFullRepaintsPending);
+    bool needsForecastRedraw = consumePendingRepaint(weatherForecastRepaintsPending);
 
     uint16_t white = dma_display->color565(255, 255, 255);
     uint16_t dimGray = dma_display->color565(40, 40, 40);
@@ -2685,11 +2683,7 @@ void displayShowApp(AppItem* app) {
     // Detect app switch and clear screen to prevent ghosting
     int8_t appIndex = appFind(app->id);
     if (appIndex != lastDisplayedAppIndex) {
-        dma_display->clearScreen();
-        #if DOUBLE_BUFFER
-            dma_display->flipDMABuffer();
-            dma_display->clearScreen();
-        #endif
+        displayClear();
         lastDisplayedAppIndex = appIndex;
         // Reset weather display cache to force full redraw
         weatherLastDrawnMinute = -1;
@@ -6570,9 +6564,9 @@ void loopApps() {
         currentNotif = notifGetNext();  // Try next in queue
         if (currentNotif) {
             resetNotifScrollState();
-            // Draw twice to flush both DMA buffers
-            displayShowNotification(currentNotif);
-            displayShowNotification(currentNotif);
+            for (uint8_t paint = DISPLAY_BUFFER_COUNT; paint > 0; paint--) {
+                displayShowNotification(currentNotif);
+            }
             lastDisplayUpdate = now;
         }
     }
@@ -6586,9 +6580,10 @@ void loopApps() {
                 savedAppIndex = currentAppIndex;
             }
             resetNotifScrollState();
-            // Draw twice to flush both DMA buffers (prevents weather ghosting)
-            displayShowNotification(currentNotif);
-            displayShowNotification(currentNotif);
+            // Every buffer, otherwise the app underneath shows through on the next flip
+            for (uint8_t paint = DISPLAY_BUFFER_COUNT; paint > 0; paint--) {
+                displayShowNotification(currentNotif);
+            }
             lastDisplayUpdate = now;
         }
     }
@@ -6611,20 +6606,13 @@ void loopApps() {
         trackerLastUpdateDrawn = 0;
         resetTrackerScrollStates();
         Serial.println("[NOTIF] All dismissed, resuming app rotation");
-        // Clear both DMA buffers to remove any notification pixel remnants,
-        // then force immediate app redraw on both buffers
-        dma_display->clearScreen();
-        #if DOUBLE_BUFFER
-            dma_display->flipDMABuffer();
-        #endif
-        dma_display->clearScreen();
-        #if DOUBLE_BUFFER
-            dma_display->flipDMABuffer();
-        #endif
+        // Wipe the notification pixels, then paint the app into every buffer
+        displayClear();
         AppItem* restored = appGetCurrent();
         if (restored) {
-            displayShowApp(restored);
-            displayShowApp(restored);
+            for (uint8_t paint = DISPLAY_BUFFER_COUNT; paint > 0; paint--) {
+                displayShowApp(restored);
+            }
             lastDisplayUpdate = now;
         }
     }
@@ -6744,10 +6732,10 @@ void loopSleepTransition()
             displaySetBrightness(0);
             displayClear();
         } else if (strcmp(settings.sleep.displayMode, "clock") == 0) {
-            // Render twice to flush both DMA buffers so the clock replaces
-            // any leftover app/notification frame immediately on entry.
-            displayShowTime();
-            displayShowTime();
+            // Every buffer, so the clock replaces any leftover frame immediately on entry
+            for (uint8_t paint = DISPLAY_BUFFER_COUNT; paint > 0; paint--) {
+                displayShowTime();
+            }
             lastDisplayUpdate = millis();
         }
     } else if (!isSleeping && wasSleeping) {

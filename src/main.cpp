@@ -565,6 +565,7 @@ void drawDropIcon(int16_t x, int16_t y, uint16_t color);
 void drawSeparatorLine(int16_t y, uint16_t color);
 void drawIconAtScale(CachedIcon* icon, int16_t x, int16_t y, uint8_t scale);
 void displayClear();
+void displayDrawOtaProgress(uint8_t percent);
 void displaySetBrightness(uint8_t brightness);
 
 uint32_t dimColorQuarter(uint32_t color);
@@ -758,20 +759,7 @@ void setup() {
         ArduinoOTA.setHostname(MDNS_NAME);
         ArduinoOTA.onStart([]() {
             Serial.println("[OTA] Update starting...");
-            dma_display->fillScreen(0);
-            dma_display->setTextSize(1);
-            dma_display->setTextColor(dma_display->color565(255, 165, 0));
-            // "OTA" default font, centered (3 chars x 6px = 18px)
-            dma_display->setCursor(23, 4);
-            dma_display->print("OTA");
-            // "UPDATE" same font, centered (6 chars x 6px = 36px)
-            dma_display->setCursor(14, 18);
-            dma_display->print("UPDATE");
-            // Progress bar frame near bottom
-            dma_display->drawRect(4, 46, 56, 7, dma_display->color565(80, 80, 80));
-            #if DOUBLE_BUFFER
-                dma_display->flipDMABuffer();
-            #endif
+            displayDrawOtaProgress(0);
         });
         ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
             static uint8_t lastPercent = 255;
@@ -779,20 +767,7 @@ void setup() {
             // Only redraw every 5% to avoid slowing down OTA transfer
             if (percent == lastPercent || (percent % 5 != 0 && percent != 100)) return;
             lastPercent = percent;
-            uint8_t barWidth = (uint8_t)((progress * 54) / total);
-            if (barWidth > 0) {
-                dma_display->fillRect(5, 47, barWidth, 5,
-                    dma_display->color565(255, 165, 0));
-            }
-            dma_display->fillRect(0, 56, 64, 8, 0);
-            char buf[8];
-            snprintf(buf, sizeof(buf), "%d%%", percent);
-            dma_display->setFont(&TomThumb);
-            dma_display->setTextColor(dma_display->color565(150, 150, 150));
-            int16_t textWidth = calculateTomThumbTextWidth(buf);
-            dma_display->setCursor((64 - textWidth) / 2, 60);
-            dma_display->print(buf);
-            dma_display->setFont(NULL);
+            displayDrawOtaProgress(percent);
         });
         ArduinoOTA.onEnd([]() {
             Serial.println("[OTA] Update complete!");
@@ -3024,7 +2999,45 @@ void displayShowMultiZone(AppItem* app) {
 }
 
 void displayClear() {
-    dma_display->clearScreen();
+    // Every buffer, so a later flip cannot bring back the frame that was on screen
+    for (uint8_t remainingBuffers = DISPLAY_BUFFER_COUNT; remainingBuffers > 0; remainingBuffers--) {
+        dma_display->clearScreen();
+        #if DOUBLE_BUFFER
+            dma_display->flipDMABuffer();
+        #endif
+    }
+}
+
+// Repainted whole on every step: with two buffers, a bar drawn on top of the previous frame
+// would land on the frame before it.
+void displayDrawOtaProgress(uint8_t percent) {
+    dma_display->fillScreen(0);
+    dma_display->setFont(NULL);
+    dma_display->setTextSize(1);
+    dma_display->setTextColor(dma_display->color565(255, 165, 0));
+    // "OTA" default font, centered (3 chars x 6px = 18px)
+    dma_display->setCursor(23, 4);
+    dma_display->print("OTA");
+    // "UPDATE" same font, centered (6 chars x 6px = 36px)
+    dma_display->setCursor(14, 18);
+    dma_display->print("UPDATE");
+    // Progress bar frame near bottom
+    dma_display->drawRect(4, 46, 56, 7, dma_display->color565(80, 80, 80));
+
+    uint8_t barWidth = (uint8_t)(((uint16_t)percent * 54) / 100);
+    if (barWidth > 0) {
+        dma_display->fillRect(5, 47, barWidth, 5, dma_display->color565(255, 165, 0));
+    }
+
+    char percentText[8];
+    snprintf(percentText, sizeof(percentText), "%d%%", percent);
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(dma_display->color565(150, 150, 150));
+    int16_t textWidth = calculateTomThumbTextWidth(percentText);
+    dma_display->setCursor((DISPLAY_WIDTH - textWidth) / 2, 60);
+    dma_display->print(percentText);
+    dma_display->setFont(NULL);
+
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
     #endif

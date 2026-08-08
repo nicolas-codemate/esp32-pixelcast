@@ -1683,6 +1683,7 @@ void formatTrackerValue(float value, char* buffer, size_t bufSize, uint8_t maxCh
 // Without it the last digit sits one pixel from the currency, the same gap that separates two
 // digits, and the two read as one run: "1,234.57EUR".
 #define TRACKER_VALUE_GUTTER        2
+#define TRACKER_SPARKLINE_PERIOD_RIGHT_X 62
 #define TRACKER_BOTTOM_Y            56
 #define TRACKER_BOTTOM_COLOR        0x969696
 #define TRACKER_BOTTOM_COLOR_STALE  0x3C3C3C
@@ -1889,8 +1890,8 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
     if (strlen(tracker->sparklinePeriod) > 0) {
         dma_display->setFont(&TomThumb);
         dma_display->setTextColor(dimWhite);
-        int16_t periodWidth = strlen(tracker->sparklinePeriod) * 4;
-        dma_display->setCursor(62 - periodWidth, 43);
+        int16_t periodWidth = calculateTomThumbTextWidth(tracker->sparklinePeriod);
+        dma_display->setCursor(TRACKER_SPARKLINE_PERIOD_RIGHT_X - periodWidth, 43);
         dma_display->print(tracker->sparklinePeriod);
         dma_display->setFont(NULL);
     }

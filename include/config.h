@@ -20,13 +20,13 @@
     #define VERSION_MAJOR 1
 #endif
 #ifndef VERSION_MINOR
-    #define VERSION_MINOR 5
+    #define VERSION_MINOR 6
 #endif
 #ifndef VERSION_PATCH
     #define VERSION_PATCH 0
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.5.0"
+    #define VERSION_STRING "1.6.0"
 #endif
 
 // ============================================================================

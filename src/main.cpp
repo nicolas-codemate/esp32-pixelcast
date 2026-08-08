@@ -93,7 +93,6 @@ struct AppItem {
     uint32_t staleAfter;        // Silence tolerated before the app is stale, in ms (0 = never)
     StaleBehavior staleBehavior;
     uint32_t lastUpdate;        // Refreshed by every push, so it dates the last client contact
-    int8_t priority;            // -10 to 10 (higher = more important)
     uint8_t zoneCount;          // 0 or 1 = single layout, 2/3/4 = multi-zone
     bool active;
     bool isSystem;              // System apps cannot be deleted
@@ -602,7 +601,7 @@ void weatherClockApplyStalePolicy(uint32_t staleAfter, StaleBehavior staleBehavi
 
 int8_t appAdd(const char* id, const char* text, const char* icon,
               uint32_t textColor, uint16_t duration,
-              uint32_t staleAfter, int8_t priority, bool isSystem);
+              uint32_t staleAfter, bool isSystem);
 bool appRemove(const char* id);
 bool appUpdate(const char* id, const char* text, const char* icon,
                uint32_t textColor);
@@ -4357,7 +4356,6 @@ void setupWebServer() {
             }
 
             uint16_t duration = doc["duration"] | settings.defaultDuration;
-            int8_t priority = doc["priority"] | 0;
 
             // Former name of staleAfter, still accepted
             uint32_t staleAfterSeconds = doc["lifetime"] | 0;
@@ -4379,7 +4377,7 @@ void setupWebServer() {
             }
 
             int8_t result = appAdd(name.c_str(), parsedText, icon, textColor, duration,
-                                   staleAfterSecondsToMillis(staleAfterSeconds), priority, false);
+                                   staleAfterSecondsToMillis(staleAfterSeconds), false);
 
             if (result >= 0) {
                 apps[result].staleBehavior = staleBehavior;
@@ -4847,7 +4845,7 @@ void setupWebServer() {
             snprintf(appId, sizeof(appId), "%s%s", TRACKER_ID_PREFIX, name.c_str());
             uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
             int8_t appIndex = appAdd(appId, tracker->symbol, tracker->icon, 0xFFFFFF,
-                                     duration, staleAfter, 0, false);
+                                     duration, staleAfter, false);
             if (appIndex >= 0) {
                 apps[appIndex].staleBehavior = staleBehavior;
             }
@@ -5332,7 +5330,6 @@ void handleApiApps(AsyncWebServerRequest *request) {
             appObj["staleAfter"] = apps[i].staleAfter / 1000;
             appObj["staleBehavior"] = staleBehaviorName(apps[i].staleBehavior);
             appObj["stale"] = appIsStale(&apps[i]);
-            appObj["priority"] = apps[i].priority;
             appObj["isSystem"] = apps[i].isSystem;
             appObj["isCurrent"] = (currentAppIndex == i);
 
@@ -5670,7 +5667,6 @@ void mqttHandleCustom(const char* name, JsonObject& doc) {
     }
 
     uint16_t duration = doc["duration"] | settings.defaultDuration;
-    int8_t priority = doc["priority"] | 0;
 
     // Former name of staleAfter, still accepted
     uint32_t staleAfterSeconds = doc["lifetime"] | 0;
@@ -5689,7 +5685,7 @@ void mqttHandleCustom(const char* name, JsonObject& doc) {
     }
 
     int8_t result = appAdd(name, parsedText, icon, textColor, duration,
-                           staleAfterSecondsToMillis(staleAfterSeconds), priority, false);
+                           staleAfterSecondsToMillis(staleAfterSeconds), false);
 
     if (result >= 0) {
         apps[result].staleBehavior = staleBehavior;
@@ -5935,7 +5931,7 @@ void mqttHandleTracker(const char* name, JsonObject& doc) {
     snprintf(appId, sizeof(appId), "%s%s", TRACKER_ID_PREFIX, name);
     uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
     int8_t appIndex = appAdd(appId, tracker->symbol, tracker->icon, 0xFFFFFF,
-                             duration, staleAfter, 0, false);
+                             duration, staleAfter, false);
     if (appIndex >= 0) {
         apps[appIndex].staleBehavior = staleBehavior;
     }
@@ -6335,19 +6331,19 @@ void setupApps() {
     // NOTE: clock and date disabled while weatherclock is in development
     // if (settings.clockEnabled) {
     //     appAdd("clock", "Clock", "", settings.clockColor,
-    //            settings.defaultDuration, 0, 0, true);
+    //            settings.defaultDuration, 0, true);
     //     Serial.println("[APPS] Clock app added");
     // }
     //
     // if (settings.dateEnabled) {
     //     appAdd("date", "Date", "", settings.dateColor,
-    //            settings.defaultDuration, 0, 0, true);
+    //            settings.defaultDuration, 0, true);
     //     Serial.println("[APPS] Date app added");
     // }
 
     // WeatherClock system app (replaces clock+date when weather data is available)
     appAdd("weatherclock", "WeatherClock", "", settings.clockColor,
-           settings.weatherDuration, 0, 1, true);
+           settings.weatherDuration, 0, true);
     Serial.println("[APPS] WeatherClock app added");
 
     Serial.printf("[APPS] Initialized with %d apps\n", appCount);
@@ -6356,7 +6352,7 @@ void setupApps() {
 
 int8_t appAdd(const char* id, const char* text, const char* icon,
               uint32_t textColor, uint16_t duration,
-              uint32_t staleAfter, int8_t priority, bool isSystem) {
+              uint32_t staleAfter, bool isSystem) {
 
     // Check if app with same ID exists
     int8_t existingIndex = appFind(id);
@@ -6371,7 +6367,6 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
         app->labelSegmentCount = 0;
         app->duration = duration;
         app->staleAfter = staleAfter;
-        app->priority = priority;
         app->lastUpdate = millis();
         app->active = true;
         // Reset zone data (caller will set via appSetZones if needed)
@@ -6410,7 +6405,6 @@ int8_t appAdd(const char* id, const char* text, const char* icon,
     // Slots are reused, so this has to be set rather than inherited from the previous tenant.
     app->staleBehavior = STALE_HIDE;
     app->lastUpdate = millis();
-    app->priority = constrain(priority, -10, 10);
     app->active = true;
     app->isSystem = isSystem;
     // Initialize zone data (caller will set via appSetZones if needed)

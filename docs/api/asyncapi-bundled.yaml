@@ -335,12 +335,6 @@ channels:
                 documenting seconds, so `3600` expired the app after 3.6
                 seconds; it is now read as seconds.
               default: 0
-            priority:
-              type: integer
-              minimum: -10
-              maximum: 10
-              description: Display priority (-10 to 10, higher = more important).
-              default: 0
             zones:
               type: array
               items:
@@ -898,12 +892,6 @@ channels:
                 firmware compared this value against milliseconds while
                 documenting seconds, so `3600` expired the app after 3.6
                 seconds; it is now read as seconds.
-              default: 0
-            priority:
-              type: integer
-              minimum: -10
-              maximum: 10
-              description: Display priority (-10 to 10, higher = more important).
               default: 0
             zones:
               type: array
@@ -2980,12 +2968,6 @@ components:
               firmware compared this value against milliseconds while
               documenting seconds, so `3600` expired the app after 3.6 seconds;
               it is now read as seconds.
-            default: 0
-          priority:
-            type: integer
-            minimum: -10
-            maximum: 10
-            description: Display priority (-10 to 10, higher = more important).
             default: 0
           zones:
             type: array

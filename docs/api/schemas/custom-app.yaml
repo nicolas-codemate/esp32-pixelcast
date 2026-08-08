@@ -41,12 +41,6 @@ CustomAppRequest:
         compared this value against milliseconds while documenting seconds, so
         `3600` expired the app after 3.6 seconds; it is now read as seconds.
       default: 0
-    priority:
-      type: integer
-      minimum: -10
-      maximum: 10
-      description: Display priority (-10 to 10, higher = more important).
-      default: 0
     zones:
       type: array
       items:
@@ -85,11 +79,6 @@ CustomAppMultiZoneRequest:
       deprecated: true
       description: Former name of `staleAfter`, still accepted.
       default: 0
-    priority:
-      type: integer
-      minimum: -10
-      maximum: 10
-      default: 0
 
 AppResponse:
   type: object
@@ -116,8 +105,6 @@ AppResponse:
     stale:
       type: boolean
       description: Whether the app is currently past its staleAfter window.
-    priority:
-      type: integer
     isSystem:
       type: boolean
       description: System apps cannot be deleted via API.

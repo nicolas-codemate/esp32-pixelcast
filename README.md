@@ -20,7 +20,6 @@
 - **Custom Apps**: Create your own information screens
 - **Auto-rotation**: Configurable cycling between apps
 - **Lifetime**: Automatic expiration of apps not updated
-- **Priorities**: Display priority management
 
 ### Notifications
 - Push notifications with stack

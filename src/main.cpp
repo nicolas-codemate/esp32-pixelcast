@@ -785,7 +785,7 @@ void setup() {
             snprintf(buf, sizeof(buf), "%d%%", percent);
             dma_display->setFont(&TomThumb);
             dma_display->setTextColor(dma_display->color565(150, 150, 150));
-            int16_t textW = strlen(buf) * 4;
+            int16_t textW = calculateTomThumbTextWidth(buf);
             dma_display->setCursor((64 - textW) / 2, 60);
             dma_display->print(buf);
             dma_display->setFont(NULL);
@@ -2550,7 +2550,7 @@ void displayShowWeatherClock(const AppItem* app) {
                 // Day name (TomThumb baseline=39, glyphs y=34-38)
                 dma_display->setFont(&TomThumb);
                 dma_display->setTextColor(coral);
-                int16_t dayNameWidth = strlen(weatherData.forecast[forecastIndex].dayName) * 4;
+                int16_t dayNameWidth = calculateTomThumbTextWidth(weatherData.forecast[forecastIndex].dayName);
                 dma_display->setCursor(colCenter - dayNameWidth / 2, 39);
                 dma_display->print(weatherData.forecast[forecastIndex].dayName);
 
@@ -2740,7 +2740,7 @@ void displayShowApp(AppItem* app) {
 
     // Draw label below text if present (TomThumb font, dimmed color)
     if (app->label[0] != '\0') {
-        int16_t labelWidth = strlen(app->label) * 4;
+        int16_t labelWidth = calculateTomThumbTextWidth(app->label);
         int16_t labelX = (DISPLAY_WIDTH - labelWidth) / 2;
         if (labelX < 2) labelX = 2;
         int16_t labelY = textYPos + 12;
@@ -2863,7 +2863,7 @@ void displayShowZone(AppZone* zone, int16_t x, int16_t y, int16_t w, int16_t h) 
 
         // Draw label at bottom of zone with good margin
         if (hasLabel) {
-            int16_t labelWidth = strlen(zone->label) * 4;
+            int16_t labelWidth = calculateTomThumbTextWidth(zone->label);
             int16_t labelX = x + (w - labelWidth) / 2;
             if (labelX < x) labelX = x;
             int16_t labelY = y + h - 6;

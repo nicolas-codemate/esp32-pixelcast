@@ -624,7 +624,8 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app);
 void displayDrawTrackerSymbol(TrackerData* tracker, bool showBadge, bool dimColors);
 void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
 void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color);
-void formatTrackerValue(float value, char* buffer, size_t bufSize);
+void formatTrackerValue(float value, char* buffer, size_t bufSize, uint8_t maxChars);
+void insertThousandSeparators(const char* digits, char* buffer, size_t bufSize);
 uint32_t parseColorValue(JsonVariant colorVar, uint32_t defaultColor);
 void formatColorHex(uint32_t color, char* buffer, size_t bufSize);
 void parseTextFieldWithSegments(JsonVariant field, char* textBuffer, size_t textBufferSize,
@@ -1576,44 +1577,113 @@ void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color) {
     }
 }
 
-// Smart value formatting with thousand separators
-void formatTrackerValue(float value, char* buffer, size_t bufSize) {
-    if (value >= 1000.0f) {
-        // Integer with thousand separator
-        uint32_t intVal = (uint32_t)value;
-        // Build string with commas from right to left
-        char tmp[20];
-        int len = snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)intVal);
-        int commas = (len - 1) / 3;
-        int outLen = len + commas;
-        if ((size_t)outLen >= bufSize) {
-            snprintf(buffer, bufSize, "%lu", (unsigned long)intVal);
-            return;
+// The default 5x7 font occupies a 6x8 cell: five columns of glyph plus one of spacing.
+#define TEXT_CELL_WIDTH  6
+#define TEXT_CELL_HEIGHT 8
+
+// A float holds about seven significant digits. Printing more turns the binary rounding of
+// the stored value into digits the caller never sent: 6.232 comes back as 6.2319999.
+#define FLOAT_SIGNIFICANT_DIGITS 7
+
+// Decimals kept even when they are zero, because a price reads as a price with its cents.
+#define TRACKER_VALUE_MIN_DECIMALS 2
+
+void insertThousandSeparators(const char* digits, char* buffer, size_t bufSize) {
+    int digitCount = strlen(digits);
+    int separatorCount = (digitCount - 1) / 3;
+    int totalLength = digitCount + separatorCount;
+    if ((size_t)totalLength >= bufSize) {
+        strlcpy(buffer, digits, bufSize);
+        return;
+    }
+
+    buffer[totalLength] = '\0';
+    int sourceIndex = digitCount - 1;
+    int destinationIndex = totalLength - 1;
+    int writtenDigits = 0;
+    while (sourceIndex >= 0) {
+        buffer[destinationIndex--] = digits[sourceIndex--];
+        writtenDigits++;
+        if (writtenDigits % 3 == 0 && sourceIndex >= 0) {
+            buffer[destinationIndex--] = ',';
         }
-        buffer[outLen] = '\0';
-        int srcIdx = len - 1;
-        int dstIdx = outLen - 1;
-        int digitCount = 0;
-        while (srcIdx >= 0) {
-            buffer[dstIdx--] = tmp[srcIdx--];
-            digitCount++;
-            if (digitCount % 3 == 0 && srcIdx >= 0) {
-                buffer[dstIdx--] = ',';
-            }
-        }
-    } else if (value >= 1.0f) {
-        snprintf(buffer, bufSize, "%.2f", value);
-    } else {
-        snprintf(buffer, bufSize, "%.5f", value);
     }
 }
 
-// Tracker header and footer geometry, shared by the full redraw and the scroll repaints.
+// Fills maxChars with as many decimals as the value carries, so a fund quoted at 6.232 keeps
+// its third decimal instead of being rounded to 6.23.
+void formatTrackerValue(float value, char* buffer, size_t bufSize, uint8_t maxChars) {
+    if (bufSize == 0) return;
+    if ((size_t)maxChars >= bufSize) maxChars = bufSize - 1;
+
+    bool isNegative = value < 0.0f;
+    float magnitude = isNegative ? -value : value;
+
+    int integerDigitCount = 1;
+    for (uint32_t remaining = (uint32_t)magnitude; remaining >= 10; remaining /= 10) {
+        integerDigitCount++;
+    }
+
+    uint8_t leadingZeros = 0;
+    if (magnitude > 0.0f && magnitude < 1.0f) {
+        for (float scaled = magnitude; scaled < 0.1f; scaled *= 10.0f) {
+            leadingZeros++;
+        }
+    }
+
+    // Leading zeros say nothing about the value, so they cost none of its significant digits.
+    int decimals = magnitude >= 1.0f
+        ? FLOAT_SIGNIFICANT_DIGITS - integerDigitCount
+        : FLOAT_SIGNIFICANT_DIGITS + leadingZeros;
+    if (decimals < 0) decimals = 0;
+
+    // Rounding can carry into the integer part, so what fits is read off the formatted string
+    // rather than predicted from the value: 9,999.99 at one decimal becomes 10,000.0.
+    size_t length;
+    do {
+        char plainValue[24];
+        snprintf(plainValue, sizeof(plainValue), "%.*f", decimals, magnitude);
+
+        char* fraction = strchr(plainValue, '.');
+        if (fraction) {
+            *fraction++ = '\0';
+            // Dropping every trailing zero would leave 0.00 for a value whose first
+            // significant digit sits further right than the room allows.
+            int minimumDecimals = leadingZeros + 1;
+            if (minimumDecimals < TRACKER_VALUE_MIN_DECIMALS) minimumDecimals = TRACKER_VALUE_MIN_DECIMALS;
+            if (minimumDecimals > decimals) minimumDecimals = decimals;
+
+            int keptDecimals = strlen(fraction);
+            while (keptDecimals > minimumDecimals && fraction[keptDecimals - 1] == '0') {
+                fraction[--keptDecimals] = '\0';
+            }
+        }
+
+        char separatedInteger[24];
+        insertThousandSeparators(plainValue, separatedInteger, sizeof(separatedInteger));
+
+        bool hasFraction = fraction && *fraction;
+        snprintf(buffer, bufSize, "%s%s%s%s",
+                 isNegative ? "-" : "",
+                 separatedInteger,
+                 hasFraction ? "." : "",
+                 hasFraction ? fraction : "");
+        length = strlen(buffer);
+    } while (length > maxChars && decimals-- > 0);
+}
+
+// Tracker row geometry. The header and footer coordinates are shared by the full redraw and
+// the scroll repaints.
 #define TRACKER_HEADER_HEIGHT       12
 #define TRACKER_SYMBOL_X            13
 #define TRACKER_SYMBOL_X_NO_ICON    2
 #define TRACKER_SYMBOL_Y            4
 #define TRACKER_STALE_BADGE_X       42
+#define TRACKER_VALUE_X             2
+#define TRACKER_CURRENCY_RIGHT_X    62
+// Without it the last digit sits one pixel from the currency, the same gap that separates two
+// digits, and the two read as one run: "1,234.57EUR".
+#define TRACKER_VALUE_GUTTER        2
 #define TRACKER_BOTTOM_Y            56
 #define TRACKER_BOTTOM_COLOR        0x969696
 #define TRACKER_BOTTOM_COLOR_STALE  0x3C3C3C
@@ -1780,18 +1850,22 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
     displayDrawTrackerHeader(tracker, showBadge, dimColors, getIcon(tracker->icon));
 
     // --- Row 2: Price value (y=14..22) ---
-    char valueBuf[20];
-    formatTrackerValue(tracker->currentValue, valueBuf, sizeof(valueBuf));
+    bool hasCurrency = strlen(tracker->currencySymbol) > 0;
+    int16_t currencyX = TRACKER_CURRENCY_RIGHT_X - calculateTomThumbTextWidth(tracker->currencySymbol);
+    int16_t valueAreaEnd = hasCurrency ? currencyX - TRACKER_VALUE_GUTTER : DISPLAY_WIDTH;
+    uint8_t valueMaxChars = (valueAreaEnd - TRACKER_VALUE_X) / TEXT_CELL_WIDTH;
+
+    char valueBuf[24];
+    formatTrackerValue(tracker->currentValue, valueBuf, sizeof(valueBuf), valueMaxChars);
     dma_display->setTextColor(valueColor);
-    dma_display->setCursor(2, 16);
+    dma_display->setCursor(TRACKER_VALUE_X, 16);
     dma_display->print(valueBuf);
 
     // Currency symbol right-aligned in TomThumb
-    if (strlen(tracker->currencySymbol) > 0) {
+    if (hasCurrency) {
         dma_display->setFont(&TomThumb);
         dma_display->setTextColor(dimWhite);
-        int16_t currWidth = strlen(tracker->currencySymbol) * 4;
-        dma_display->setCursor(62 - currWidth, 22);
+        dma_display->setCursor(currencyX, 22);
         dma_display->print(tracker->currencySymbol);
         dma_display->setFont(NULL);  // Reset to default
     }
@@ -3489,10 +3563,6 @@ void printTextWithSegments(const char* text, int16_t x, int16_t y,
         dma_display->setCursor(cursorX, y);
     }
 }
-
-// The default 5x7 font occupies a 6x8 cell: five columns of glyph plus one of spacing.
-#define TEXT_CELL_WIDTH  6
-#define TEXT_CELL_HEIGHT 8
 
 // Adafruit_GFX draws a character whole or not at all, so one that straddles a bound goes
 // through a stencil first.

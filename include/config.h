@@ -23,10 +23,10 @@
     #define VERSION_MINOR 6
 #endif
 #ifndef VERSION_PATCH
-    #define VERSION_PATCH 1
+    #define VERSION_PATCH 2
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.6.1"
+    #define VERSION_STRING "1.6.2"
 #endif
 
 // ============================================================================
@@ -54,6 +54,13 @@
 #endif
 #ifndef DOUBLE_BUFFER
     #define DOUBLE_BUFFER 1
+#endif
+// How many buffers a change has to be painted into before every frame the panel can show
+// carries it. Derived from DOUBLE_BUFFER, not meant to be set from the build flags.
+#if DOUBLE_BUFFER
+    #define DISPLAY_BUFFER_COUNT 2
+#else
+    #define DISPLAY_BUFFER_COUNT 1
 #endif
 #ifndef DEFAULT_BRIGHTNESS
     #define DEFAULT_BRIGHTNESS 128  // 0-255

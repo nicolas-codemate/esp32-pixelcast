@@ -354,12 +354,23 @@ unsigned long lastForecastPageSwitch = 0;
 // Weather display cache (global so they can be reset on app switch)
 int weatherLastDrawnMinute = -1;
 unsigned long weatherLastUpdateDrawn = 0;
+uint8_t weatherFullRepaintsPending = 0;
+uint8_t weatherForecastRepaintsPending = 0;
 
 // Tracker display cache (global so they can be reset on app switch)
 unsigned long trackerLastUpdateDrawn = 0;
 bool trackerBadgeDrawn = false;
 bool trackerDimDrawn = false;
 bool trackerIconDrawn = false;
+uint8_t trackerFullRepaintsPending = 0;
+
+// A screen arms one of these counters when its content changes and spends one unit per full
+// paint, so the change reaches every buffer before a partial repaint is allowed to run.
+bool consumePendingRepaint(uint8_t& pendingRepaints) {
+    if (pendingRepaints == 0) return false;
+    pendingRepaints--;
+    return true;
+}
 
 // The symbol and the bottom text scroll independently, so they each carry their own state.
 // Both are written by the render pass and read by loopDisplay; the REST handler can rewrite
@@ -562,6 +573,7 @@ void drawDropIcon(int16_t x, int16_t y, uint16_t color);
 void drawSeparatorLine(int16_t y, uint16_t color);
 void drawIconAtScale(CachedIcon* icon, int16_t x, int16_t y, uint8_t scale);
 void displayClear();
+void displayDrawOtaProgress(uint8_t percent);
 void displaySetBrightness(uint8_t brightness);
 
 uint32_t dimColorQuarter(uint32_t color);
@@ -755,20 +767,7 @@ void setup() {
         ArduinoOTA.setHostname(MDNS_NAME);
         ArduinoOTA.onStart([]() {
             Serial.println("[OTA] Update starting...");
-            dma_display->fillScreen(0);
-            dma_display->setTextSize(1);
-            dma_display->setTextColor(dma_display->color565(255, 165, 0));
-            // "OTA" default font, centered (3 chars x 6px = 18px)
-            dma_display->setCursor(23, 4);
-            dma_display->print("OTA");
-            // "UPDATE" same font, centered (6 chars x 6px = 36px)
-            dma_display->setCursor(14, 18);
-            dma_display->print("UPDATE");
-            // Progress bar frame near bottom
-            dma_display->drawRect(4, 46, 56, 7, dma_display->color565(80, 80, 80));
-            #if DOUBLE_BUFFER
-                dma_display->flipDMABuffer();
-            #endif
+            displayDrawOtaProgress(0);
         });
         ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
             static uint8_t lastPercent = 255;
@@ -776,20 +775,7 @@ void setup() {
             // Only redraw every 5% to avoid slowing down OTA transfer
             if (percent == lastPercent || (percent % 5 != 0 && percent != 100)) return;
             lastPercent = percent;
-            uint8_t barWidth = (uint8_t)((progress * 54) / total);
-            if (barWidth > 0) {
-                dma_display->fillRect(5, 47, barWidth, 5,
-                    dma_display->color565(255, 165, 0));
-            }
-            dma_display->fillRect(0, 56, 64, 8, 0);
-            char buf[8];
-            snprintf(buf, sizeof(buf), "%d%%", percent);
-            dma_display->setFont(&TomThumb);
-            dma_display->setTextColor(dma_display->color565(150, 150, 150));
-            int16_t textWidth = calculateTomThumbTextWidth(buf);
-            dma_display->setCursor((64 - textWidth) / 2, 60);
-            dma_display->print(buf);
-            dma_display->setFont(NULL);
+            displayDrawOtaProgress(percent);
         });
         ArduinoOTA.onEnd([]() {
             Serial.println("[OTA] Update complete!");
@@ -1861,16 +1847,20 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
     bool showBadge = isStale && (app->staleBehavior == STALE_DIM || app->staleBehavior == STALE_BADGE);
     bool dimColors = isStale && app->staleBehavior == STALE_DIM;
 
-    // A tracker screen shows a fixed snapshot, so it only has to be painted when the data
-    // arrives or when it goes stale. Repainting it every second would blank the framebuffer
-    // the DMA is reading, which shows up as flicker on single-buffered builds. A scrolling
-    // symbol or footer does need a frame every 50 ms, so those two rows - and only those -
-    // are repainted on their own.
-    bool needsFullRedraw = (trackerLastUpdateDrawn != tracker->lastUpdate) ||
-                           (trackerBadgeDrawn != showBadge) ||
-                           (trackerDimDrawn != dimColors);
+    // A tracker screen shows a fixed snapshot, and a full paint costs an icon lookup plus the
+    // whole layout, so it only runs when the data arrives or goes stale.
+    bool contentChanged = (trackerLastUpdateDrawn != tracker->lastUpdate) ||
+                          (trackerBadgeDrawn != showBadge) ||
+                          (trackerDimDrawn != dimColors);
 
-    if (!needsFullRedraw) {
+    if (contentChanged) {
+        trackerLastUpdateDrawn = tracker->lastUpdate;
+        trackerBadgeDrawn = showBadge;
+        trackerDimDrawn = dimColors;
+        trackerFullRepaintsPending = DISPLAY_BUFFER_COUNT;
+    }
+
+    if (!consumePendingRepaint(trackerFullRepaintsPending)) {
         if (trackerSymbolScrollState.needsScroll) {
             displayDrawTrackerSymbol(tracker, showBadge, dimColors);
         }
@@ -1883,10 +1873,6 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
         #endif
         return;
     }
-
-    trackerLastUpdateDrawn = tracker->lastUpdate;
-    trackerBadgeDrawn = showBadge;
-    trackerDimDrawn = dimColors;
 
     dma_display->clearScreen();
 
@@ -2404,8 +2390,8 @@ void displayShowWeatherClock(const AppItem* app) {
         hours -= 12;
     }
 
-    bool needsFullRedraw = (weatherLastDrawnMinute != minutes) ||
-                           (weatherLastUpdateDrawn != weatherData.lastUpdate);
+    bool contentChanged = (weatherLastDrawnMinute != minutes) ||
+                          (weatherLastUpdateDrawn != weatherData.lastUpdate);
 
     // Forecast pagination. The hourly window, when there is one, takes the first
     // page of the same carousel and pushes the days one page to the right.
@@ -2448,7 +2434,18 @@ void displayShowWeatherClock(const AppItem* app) {
 
     forecastPage = currentPage;
 
-    bool needsForecastRedraw = needsFullRedraw || pageChanged;
+    // A change has to reach every buffer before the seconds-only path is allowed to run
+    if (contentChanged) {
+        weatherLastDrawnMinute = minutes;
+        weatherLastUpdateDrawn = weatherData.lastUpdate;
+        weatherFullRepaintsPending = DISPLAY_BUFFER_COUNT;
+    }
+    if (contentChanged || pageChanged) {
+        weatherForecastRepaintsPending = DISPLAY_BUFFER_COUNT;
+    }
+
+    bool needsFullRedraw = consumePendingRepaint(weatherFullRepaintsPending);
+    bool needsForecastRedraw = consumePendingRepaint(weatherForecastRepaintsPending);
 
     uint16_t white = dma_display->color565(255, 255, 255);
     uint16_t dimGray = dma_display->color565(40, 40, 40);
@@ -2574,9 +2571,6 @@ void displayShowWeatherClock(const AppItem* app) {
 
         // ---- Separator (y=31) ----
         drawSeparatorLine(31, dimGray);
-
-        weatherLastDrawnMinute = minutes;
-        weatherLastUpdateDrawn = weatherData.lastUpdate;
     }
 
     // ---- Forecast (y=33-63) - redrawn on full redraw or page change ----
@@ -2689,11 +2683,7 @@ void displayShowApp(AppItem* app) {
     // Detect app switch and clear screen to prevent ghosting
     int8_t appIndex = appFind(app->id);
     if (appIndex != lastDisplayedAppIndex) {
-        dma_display->clearScreen();
-        #if DOUBLE_BUFFER
-            dma_display->flipDMABuffer();
-            dma_display->clearScreen();
-        #endif
+        displayClear();
         lastDisplayedAppIndex = appIndex;
         // Reset weather display cache to force full redraw
         weatherLastDrawnMinute = -1;
@@ -3003,7 +2993,45 @@ void displayShowMultiZone(AppItem* app) {
 }
 
 void displayClear() {
-    dma_display->clearScreen();
+    // Every buffer, so a later flip cannot bring back the frame that was on screen
+    for (uint8_t remainingBuffers = DISPLAY_BUFFER_COUNT; remainingBuffers > 0; remainingBuffers--) {
+        dma_display->clearScreen();
+        #if DOUBLE_BUFFER
+            dma_display->flipDMABuffer();
+        #endif
+    }
+}
+
+// Repainted whole on every step: with two buffers, a bar drawn on top of the previous frame
+// would land on the frame before it.
+void displayDrawOtaProgress(uint8_t percent) {
+    dma_display->fillScreen(0);
+    dma_display->setFont(NULL);
+    dma_display->setTextSize(1);
+    dma_display->setTextColor(dma_display->color565(255, 165, 0));
+    // "OTA" default font, centered (3 chars x 6px = 18px)
+    dma_display->setCursor(23, 4);
+    dma_display->print("OTA");
+    // "UPDATE" same font, centered (6 chars x 6px = 36px)
+    dma_display->setCursor(14, 18);
+    dma_display->print("UPDATE");
+    // Progress bar frame near bottom
+    dma_display->drawRect(4, 46, 56, 7, dma_display->color565(80, 80, 80));
+
+    uint8_t barWidth = (uint8_t)(((uint16_t)percent * 54) / 100);
+    if (barWidth > 0) {
+        dma_display->fillRect(5, 47, barWidth, 5, dma_display->color565(255, 165, 0));
+    }
+
+    char percentText[8];
+    snprintf(percentText, sizeof(percentText), "%d%%", percent);
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(dma_display->color565(150, 150, 150));
+    int16_t textWidth = calculateTomThumbTextWidth(percentText);
+    dma_display->setCursor((DISPLAY_WIDTH - textWidth) / 2, 60);
+    dma_display->print(percentText);
+    dma_display->setFont(NULL);
+
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
     #endif
@@ -6536,9 +6564,9 @@ void loopApps() {
         currentNotif = notifGetNext();  // Try next in queue
         if (currentNotif) {
             resetNotifScrollState();
-            // Draw twice to flush both DMA buffers
-            displayShowNotification(currentNotif);
-            displayShowNotification(currentNotif);
+            for (uint8_t paint = DISPLAY_BUFFER_COUNT; paint > 0; paint--) {
+                displayShowNotification(currentNotif);
+            }
             lastDisplayUpdate = now;
         }
     }
@@ -6552,9 +6580,10 @@ void loopApps() {
                 savedAppIndex = currentAppIndex;
             }
             resetNotifScrollState();
-            // Draw twice to flush both DMA buffers (prevents weather ghosting)
-            displayShowNotification(currentNotif);
-            displayShowNotification(currentNotif);
+            // Every buffer, otherwise the app underneath shows through on the next flip
+            for (uint8_t paint = DISPLAY_BUFFER_COUNT; paint > 0; paint--) {
+                displayShowNotification(currentNotif);
+            }
             lastDisplayUpdate = now;
         }
     }
@@ -6577,20 +6606,13 @@ void loopApps() {
         trackerLastUpdateDrawn = 0;
         resetTrackerScrollStates();
         Serial.println("[NOTIF] All dismissed, resuming app rotation");
-        // Clear both DMA buffers to remove any notification pixel remnants,
-        // then force immediate app redraw on both buffers
-        dma_display->clearScreen();
-        #if DOUBLE_BUFFER
-            dma_display->flipDMABuffer();
-        #endif
-        dma_display->clearScreen();
-        #if DOUBLE_BUFFER
-            dma_display->flipDMABuffer();
-        #endif
+        // Wipe the notification pixels, then paint the app into every buffer
+        displayClear();
         AppItem* restored = appGetCurrent();
         if (restored) {
-            displayShowApp(restored);
-            displayShowApp(restored);
+            for (uint8_t paint = DISPLAY_BUFFER_COUNT; paint > 0; paint--) {
+                displayShowApp(restored);
+            }
             lastDisplayUpdate = now;
         }
     }
@@ -6710,10 +6732,10 @@ void loopSleepTransition()
             displaySetBrightness(0);
             displayClear();
         } else if (strcmp(settings.sleep.displayMode, "clock") == 0) {
-            // Render twice to flush both DMA buffers so the clock replaces
-            // any leftover app/notification frame immediately on entry.
-            displayShowTime();
-            displayShowTime();
+            // Every buffer, so the clock replaces any leftover frame immediately on entry
+            for (uint8_t paint = DISPLAY_BUFFER_COUNT; paint > 0; paint--) {
+                displayShowTime();
+            }
             lastDisplayUpdate = millis();
         }
     } else if (!isSleeping && wasSleeping) {

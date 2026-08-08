@@ -619,6 +619,7 @@ const AppItem* trackerFindApp(const char* name);
 TrackerData* trackerAllocate(const char* name);
 bool trackerRemove(const char* name);
 void trackerInit();
+void trackerApplyJsonFields(TrackerData* tracker, JsonObject doc);
 void displayShowTracker(TrackerData* tracker, const AppItem* app);
 void displayDrawTrackerSymbol(TrackerData* tracker, bool showBadge, bool dimColors);
 void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
@@ -1912,6 +1913,66 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();
     #endif
+}
+
+// Sits here rather than with the other tracker helpers because the default colour it passes
+// for bottomText is only defined further down, next to the display code.
+void trackerApplyJsonFields(TrackerData* tracker, JsonObject doc) {
+    if (!doc["symbol"].isNull()) {
+        strlcpy(tracker->symbol, doc["symbol"] | "", sizeof(tracker->symbol));
+    }
+    if (!doc["icon"].isNull()) {
+        strlcpy(tracker->icon, doc["icon"] | "", sizeof(tracker->icon));
+    }
+    if (!doc["currency"].isNull()) {
+        strlcpy(tracker->currencySymbol, doc["currency"] | "", sizeof(tracker->currencySymbol));
+    }
+    if (!doc["value"].isNull()) {
+        tracker->currentValue = doc["value"].as<float>();
+    }
+    if (!doc["change"].isNull()) {
+        tracker->changePercent = doc["change"].as<float>();
+    }
+    if (!doc["bottomText"].isNull()) {
+        parseTextFieldWithSegments(doc["bottomText"], tracker->bottomText,
+                                   sizeof(tracker->bottomText),
+                                   tracker->bottomTextSegments,
+                                   &tracker->bottomTextSegmentCount,
+                                   TRACKER_BOTTOM_COLOR);
+    }
+    if (!doc["sparklinePeriod"].isNull()) {
+        strlcpy(tracker->sparklinePeriod, doc["sparklinePeriod"] | "", sizeof(tracker->sparklinePeriod));
+    }
+
+    tracker->symbolColor = parseColorValue(doc["symbolColor"], tracker->symbolColor);
+    tracker->sparklineColor = parseColorValue(doc["sparklineColor"], tracker->sparklineColor);
+
+    // Parse sparkline data (float array -> scaled uint16)
+    if (doc["sparkline"].is<JsonArray>()) {
+        JsonArray sparkArr = doc["sparkline"];
+        uint8_t count = min((int)sparkArr.size(), (int)MAX_SPARKLINE_POINTS);
+
+        if (count >= 2) {
+            // Find min/max of float values
+            float minVal = sparkArr[0].as<float>();
+            float maxVal = minVal;
+            for (uint8_t i = 1; i < count; i++) {
+                float v = sparkArr[i].as<float>();
+                if (v < minVal) minVal = v;
+                if (v > maxVal) maxVal = v;
+            }
+
+            float range = maxVal - minVal;
+            if (range < 0.0001f) range = 1.0f;
+
+            // Scale to uint16 (0-65535)
+            for (uint8_t i = 0; i < count; i++) {
+                float normalized = (sparkArr[i].as<float>() - minVal) / range;
+                tracker->sparkline[i] = (uint16_t)(normalized * 65535.0f);
+            }
+            tracker->sparklineCount = count;
+        }
+    }
 }
 
 #define TODAY_HEAVY_PRECIP_TENTHS 10
@@ -4769,62 +4830,7 @@ void setupWebServer() {
                 return;
             }
 
-            // Parse fields
-            if (!doc["symbol"].isNull()) {
-                strlcpy(tracker->symbol, doc["symbol"] | "", sizeof(tracker->symbol));
-            }
-            if (!doc["icon"].isNull()) {
-                strlcpy(tracker->icon, doc["icon"] | "", sizeof(tracker->icon));
-            }
-            if (!doc["currency"].isNull()) {
-                strlcpy(tracker->currencySymbol, doc["currency"] | "", sizeof(tracker->currencySymbol));
-            }
-            if (!doc["value"].isNull()) {
-                tracker->currentValue = doc["value"].as<float>();
-            }
-            if (!doc["change"].isNull()) {
-                tracker->changePercent = doc["change"].as<float>();
-            }
-            if (!doc["bottomText"].isNull()) {
-                parseTextFieldWithSegments(doc["bottomText"], tracker->bottomText,
-                                           sizeof(tracker->bottomText),
-                                           tracker->bottomTextSegments,
-                                           &tracker->bottomTextSegmentCount,
-                                           TRACKER_BOTTOM_COLOR);
-            }
-            if (!doc["sparklinePeriod"].isNull()) {
-                strlcpy(tracker->sparklinePeriod, doc["sparklinePeriod"] | "", sizeof(tracker->sparklinePeriod));
-            }
-
-            tracker->symbolColor = parseColorValue(doc["symbolColor"], tracker->symbolColor);
-            tracker->sparklineColor = parseColorValue(doc["sparklineColor"], tracker->sparklineColor);
-
-            // Parse sparkline data (float array -> scaled uint16)
-            if (doc["sparkline"].is<JsonArray>()) {
-                JsonArray sparkArr = doc["sparkline"];
-                uint8_t count = min((int)sparkArr.size(), (int)MAX_SPARKLINE_POINTS);
-
-                if (count >= 2) {
-                    // Find min/max of float values
-                    float minVal = sparkArr[0].as<float>();
-                    float maxVal = minVal;
-                    for (uint8_t i = 1; i < count; i++) {
-                        float v = sparkArr[i].as<float>();
-                        if (v < minVal) minVal = v;
-                        if (v > maxVal) maxVal = v;
-                    }
-
-                    float range = maxVal - minVal;
-                    if (range < 0.0001f) range = 1.0f;
-
-                    // Scale to uint16 (0-65535)
-                    for (uint8_t i = 0; i < count; i++) {
-                        float normalized = (sparkArr[i].as<float>() - minVal) / range;
-                        tracker->sparkline[i] = (uint16_t)(normalized * 65535.0f);
-                    }
-                    tracker->sparklineCount = count;
-                }
-            }
+            trackerApplyJsonFields(tracker, doc);
 
             tracker->lastUpdate = millis();
 
@@ -5859,60 +5865,7 @@ void mqttHandleTracker(const char* name, JsonObject& doc) {
         return;
     }
 
-    // Parse fields
-    if (!doc["symbol"].isNull()) {
-        strlcpy(tracker->symbol, doc["symbol"] | "", sizeof(tracker->symbol));
-    }
-    if (!doc["icon"].isNull()) {
-        strlcpy(tracker->icon, doc["icon"] | "", sizeof(tracker->icon));
-    }
-    if (!doc["currency"].isNull()) {
-        strlcpy(tracker->currencySymbol, doc["currency"] | "", sizeof(tracker->currencySymbol));
-    }
-    if (!doc["value"].isNull()) {
-        tracker->currentValue = doc["value"].as<float>();
-    }
-    if (!doc["change"].isNull()) {
-        tracker->changePercent = doc["change"].as<float>();
-    }
-    if (!doc["bottomText"].isNull()) {
-        parseTextFieldWithSegments(doc["bottomText"], tracker->bottomText,
-                                   sizeof(tracker->bottomText),
-                                   tracker->bottomTextSegments,
-                                   &tracker->bottomTextSegmentCount,
-                                   TRACKER_BOTTOM_COLOR);
-    }
-    if (!doc["sparklinePeriod"].isNull()) {
-        strlcpy(tracker->sparklinePeriod, doc["sparklinePeriod"] | "", sizeof(tracker->sparklinePeriod));
-    }
-
-    tracker->symbolColor = parseColorValue(doc["symbolColor"], tracker->symbolColor);
-    tracker->sparklineColor = parseColorValue(doc["sparklineColor"], tracker->sparklineColor);
-
-    // Parse sparkline data (float array -> scaled uint16)
-    if (doc["sparkline"].is<JsonArray>()) {
-        JsonArray sparkArr = doc["sparkline"];
-        uint8_t count = min((int)sparkArr.size(), (int)MAX_SPARKLINE_POINTS);
-
-        if (count >= 2) {
-            float minVal = sparkArr[0].as<float>();
-            float maxVal = minVal;
-            for (uint8_t i = 1; i < count; i++) {
-                float v = sparkArr[i].as<float>();
-                if (v < minVal) minVal = v;
-                if (v > maxVal) maxVal = v;
-            }
-
-            float range = maxVal - minVal;
-            if (range < 0.0001f) range = 1.0f;
-
-            for (uint8_t i = 0; i < count; i++) {
-                float normalized = (sparkArr[i].as<float>() - minVal) / range;
-                tracker->sparkline[i] = (uint16_t)(normalized * 65535.0f);
-            }
-            tracker->sparklineCount = count;
-        }
-    }
+    trackerApplyJsonFields(tracker, doc);
 
     tracker->lastUpdate = millis();
 

@@ -72,7 +72,7 @@ This document details the development phases of the ESP32-PixelCast project, fro
 ## Phase 2: Application System ✅
 
 ### 2.1 App Manager
-- [x] `AppItem` structure (id, text, icon, color, duration, staleAfter, staleBehavior, priority)
+- [x] `AppItem` structure (id, text, icon, color, duration, staleAfter, staleBehavior)
 - [x] Circular application queue (max 16)
 - [x] Add/remove/update apps
 - [x] Client-declared stale policy: `staleAfter` seconds of silence, then `hide`/`dim`/`badge`/`none`

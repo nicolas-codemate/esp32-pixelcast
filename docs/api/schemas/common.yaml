@@ -89,8 +89,8 @@ StaleBehavior:
     What the app does once stale. `hide` leaves the rotation until the client
     pushes again, `dim` stays visible dimmed with a STALE badge, `badge` stays
     visible at full colour with the badge, `none` shows no sign at all.
-    `dim` and `badge` are only rendered by the tracker layout; sending them to
-    another endpoint is rejected with HTTP 400.
+    `dim` and `badge` are only rendered by the tracker and gauge layouts; sending
+    them to another endpoint is rejected with HTTP 400.
   examples:
     - "badge"
 

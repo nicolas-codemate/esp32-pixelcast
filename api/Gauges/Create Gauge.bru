@@ -1,0 +1,95 @@
+meta {
+  name: Create Gauge
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/gauge?name=claude
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+params:query {
+  name: claude
+}
+
+body:json {
+  {
+    "title": "Claude",
+    "icon": "claude",
+    "duration": 10000,
+    "staleAfter": 2700,
+    "staleBehavior": "dim",
+    "rows": [
+      { "label": "5h", "info": "14:50", "value": "41%", "percent": 41, "color": "#4CAF50", "note": "x1.2^", "noteColor": "#FFC107" },
+      { "label": "7j", "info": "15/08 17h", "value": "28%", "percent": 28, "color": "#4CAF50", "note": "x1.1>", "noteColor": "#4CAF50" },
+      { "label": "fable", "value": "3%", "percent": 3, "color": "#4CAF50" },
+      { "label": "credits", "value": "1%", "percent": 1, "color": "#4CAF50" }
+    ]
+  }
+}
+
+docs {
+  Creates or updates a gauge app: a set of bounded 0-100% values, each with
+  its own progress bar (quota, battery, disk fill, progress).
+
+  Each gauge is registered in the app rotation and displayed with a dedicated
+  layout: icon + title header, then one 14-pixel row per value, three rows per
+  page, with a horizontal dot carousel at the bottom when there are more.
+
+  The gauge name in the query param becomes the unique key, max 15 chars: a
+  longer name is refused with HTTP 400 ("Gauge name too long (max 15)") rather
+  than shortened, since the shortened key and the app ID would stop matching.
+  App ID in rotation is prefixed with "gauge_" (e.g. "gauge_claude").
+  Two gauges can exist at a time (MAX_GAUGE_APPS).
+
+  Parameters:
+  - title: Header text, max 31 chars (e.g. "Claude"). Scrolls when it is wider
+    than the header. Latin-1 accents are shown as their closest ASCII letter;
+    anything else outside ASCII is dropped
+  - icon: Icon name from /icons folder (optional), drawn 8x8 in the header
+  - rows: Up to 9 rows, three per page. More than 9 is refused with HTTP 400
+    and the gauge keeps the rows it had. A last page holding one or two rows is
+    centred vertically in the band the three would have filled
+  - duration: Display duration in ms (default: 10000), split evenly across the
+    carousel pages
+  - staleAfter: Silence tolerated before the gauge is stale, in seconds
+    (default: 3600)
+  - staleBehavior: "hide", "dim" (default), "badge" or "none"
+
+  Row fields:
+  - label: Row name, max 11 chars, drawn on the left of the top line. It takes
+    what the value, the info and their gutters leave and is the only field cut
+    short
+  - info: Optional context, max 15 chars (e.g. a reset time), centred in the gap
+    between the end of the label and the start of the value, or between the
+    label and the right margin when the row carries no value
+  - value: Headline figure as a string, max 7 chars (e.g. "41%"), right-aligned
+    on the right margin
+  - note: Optional pace marker, max 7 chars, right-aligned on the bottom line.
+    Its presence shortens the bar from 60 to 38 pixels; only 5 characters fit
+    beside the bar and the rest is cut. Arrows are written "^", ">" and "v"
+  - percent: Bar fill, clamped to 0-100, rounded to the nearest pixel with a
+    floor of one - any percentage above zero lights at least one pixel and only
+    0 leaves the bar empty
+  - color: Bar color - hex "#4CAF50", RGB [76,175,80], or uint32
+  - noteColor: Note color - same formats (default: "#969696")
+
+  The update is partial: title, icon and rows are only written when present,
+  so a client can push rows alone. A rows array replaces the stored rows whole.
+
+  Stale behavior:
+  - Past staleAfter, "dim" dims the data colors (title, row fields, bars, notes)
+    to 1/4 brightness and shows a red "STALE" badge in the top-right corner. The
+    separator and the carousel dots keep their colors, since a quarter of their
+    grey is below what the panel shows
+  - The badge takes the icon's place: with "dim" as with "badge", the icon is
+    hidden while the data is stale and the title restarts from the left margin
+  - "badge" keeps full colors with the badge, "hide" leaves the rotation,
+    "none" shows no sign at all
+}

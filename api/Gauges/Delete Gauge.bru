@@ -1,0 +1,19 @@
+meta {
+  name: Delete Gauge
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/api/gauge?name=claude
+  body: none
+  auth: none
+}
+
+params:query {
+  name: claude
+}
+
+docs {
+  Removes a gauge and its corresponding app from rotation.
+}

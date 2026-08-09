@@ -1,0 +1,22 @@
+meta {
+  name: Get Gauge
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/gauge?name=claude
+  body: none
+  auth: none
+}
+
+params:query {
+  name: claude
+}
+
+docs {
+  Returns data for a single gauge by name.
+
+  Response includes the title, the icon, every stored row with its texts,
+  percent and colors, age in seconds, and stale status.
+}

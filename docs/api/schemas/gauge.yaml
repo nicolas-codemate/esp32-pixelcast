@@ -1,0 +1,218 @@
+# Gauge schemas
+
+GaugeRow:
+  type: object
+  description: >
+    One 14-pixel row: `label` / `info` / `value` on the top line, the progress bar and
+    its `note` on the line below. The top line is laid out value first: `value` owns the
+    right edge, `label` gets what is left once `value`, `info` and their two-pixel gutters
+    are reserved and is the only field cut short, then `info` is centred in the gap those
+    two actually leave open. Every field is drawn in TomThumb over the 61 pixels between
+    the left margin and the right edge; most glyphs advance four pixels and the narrow
+    ones (`1`, `:`, `.`, `i`, space) two or three, so a field too wide for its column is
+    cut on the last glyph that fits rather than on a character count.
+  properties:
+    label:
+      type: string
+      maxLength: 11
+      description: >
+        Row name, drawn on the left of the top line (e.g. "5h", "credits"). It gets
+        whatever width `info` and `value` did not take, and is cut on the last glyph
+        that fits - an `info` long enough to reach the left margin leaves nothing of it.
+      examples:
+        - "5h"
+        - "credits"
+    info:
+      type: string
+      maxLength: 15
+      description: >
+        Optional context between the label and the value, usually a reset time (e.g.
+        "14:50", "15/08 17h"). Centred in the gap between the end of the label and the
+        start of the value, or between the label and the right margin when the row
+        carries no `value`. It is cut on the last glyph that fits before being centred,
+        so it can never spill over either neighbour. Formatting is the client's call:
+        the firmware prints the string as it is given.
+      examples:
+        - "14:50"
+        - "15/08 17h"
+    value:
+      type: string
+      maxLength: 7
+      description: >
+        Headline figure of the row, right-aligned on the last usable pixel. A string
+        rather than a number, so the unit travels with it: "41%", "3.2GB", "12/20".
+      examples:
+        - "41%"
+    note:
+      type: string
+      maxLength: 7
+      description: >
+        Optional pace or trend marker, right-aligned on the bottom line next to the bar.
+        Its presence is what shortens the bar from 60 to 38 pixels, so a row with no note
+        gets a bar over the full width. Only 21 pixels are left for it, five TomThumb
+        characters, and a longer note is cut on the last one that fits. The panel carries
+        no arrow glyph, so pace is written with `^`, `>` and `v`.
+      examples:
+        - "x1.2^"
+    percent:
+      type: integer
+      minimum: 0
+      maximum: 100
+      default: 0
+      description: >
+        Bar fill, clamped to 0-100 on parse. The only number the firmware interprets;
+        everything else on the row is text it prints untouched. The fill is rounded to
+        the nearest pixel with a floor of one, so any percentage above zero lights at
+        least one pixel and only 0% leaves the bar empty. The fill spans the 58 pixels
+        inside a full-width bar, 36 inside a bar shortened by a note.
+      examples:
+        - 41
+    color:
+      $ref: "common.yaml#/Color"
+      default: "#FFFFFF"
+    noteColor:
+      $ref: "common.yaml#/Color"
+      default: "#969696"
+
+GaugeUpdateRequest:
+  type: object
+  description: >
+    Partial update: `title`, `icon` and `rows` are only written when present, so a client
+    can push rows alone and leave the header untouched. A `rows` array replaces the stored
+    rows whole - there is no per-row patch.
+  properties:
+    name:
+      type: string
+      maxLength: 15
+      description: >
+        Gauge identifier. Can also be passed as `?name=` query parameter. Up to two gauges
+        exist at a time (`MAX_GAUGE_APPS`). A longer name is refused with HTTP 400
+        (`Gauge name too long (max 15)`) rather than shortened, since the shortened key
+        and the `gauge_{name}` app id would stop matching; over MQTT the message is
+        dropped with a serial log.
+      examples:
+        - "claude"
+    title:
+      type: string
+      maxLength: 31
+      description: >
+        Headline shown on the 12-pixel header (e.g. "Claude", "Disques"). Longer than the
+        header is wide is fine: the display scrolls it, pausing at each end. The header
+        holds eight characters beside an icon and ten without one, since a gauge with no
+        `icon` gives its title the full width. While a STALE badge is up the icon steps
+        aside, the title restarts from the left margin and the band it gets is six
+        characters wide.
+        The panel has no accented glyphs, so Latin-1 accents are shown as their closest
+        ASCII letter - "Santé" reads "Sante". Anything else outside ASCII is dropped.
+      examples:
+        - "Claude"
+    icon:
+      type: string
+      description: >
+        Icon name from filesystem, drawn 8x8 on the left of the header. It is hidden
+        while the data is stale and `staleBehavior` is `dim` or `badge`: the STALE badge
+        takes the header room the icon would need, so the badge replaces it until the
+        client pushes again.
+      examples:
+        - "claude"
+    rows:
+      type: array
+      items:
+        $ref: "#/GaugeRow"
+      maxItems: 9
+      description: >
+        Rows to display, three per page. Beyond three rows the panel paginates on its own,
+        one dot per page at the bottom, each page holding the screen for the app duration
+        divided by the page count - so the carousel never lengthens the rotation. A last
+        page holding one or two rows is centred vertically in the band the three would
+        have filled. More than nine rows is refused whole with HTTP 400 and the gauge
+        keeps the rows it had.
+    duration:
+      type: integer
+      description: Display duration in milliseconds, split evenly across the carousel pages.
+      default: 10000
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+      default: 3600
+    staleBehavior:
+      $ref: "common.yaml#/StaleBehavior"
+      default: dim
+
+GaugeResponse:
+  type: object
+  properties:
+    name:
+      type: string
+    title:
+      type: string
+    icon:
+      type: string
+    rows:
+      type: array
+      items:
+        type: object
+        properties:
+          label:
+            type: string
+          info:
+            type: string
+          value:
+            type: string
+          note:
+            type: string
+          percent:
+            type: integer
+          color:
+            type: string
+            pattern: "^#[0-9a-fA-F]{6}$"
+            description: Hex color string.
+            examples:
+              - "#4CAF50"
+          noteColor:
+            type: string
+            pattern: "^#[0-9a-fA-F]{6}$"
+            description: Hex color string.
+            examples:
+              - "#FFC107"
+      description: >
+        Rows as stored, in display order. Text fields come back trimmed to what the
+        firmware kept, and colors as hex strings whatever form they were sent in.
+    age:
+      type: integer
+      description: Seconds since last update.
+    stale:
+      type: boolean
+      description: >
+        True once the silence exceeds `staleAfter`. What the panel then does is
+        set by `staleBehavior`.
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+    staleBehavior:
+      $ref: "common.yaml#/StaleBehavior"
+
+GaugeListResponse:
+  type: object
+  properties:
+    gauges:
+      type: array
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          title:
+            type: string
+          rowCount:
+            type: integer
+            description: Number of rows currently stored.
+          age:
+            type: integer
+          stale:
+            type: boolean
+          staleAfter:
+            $ref: "common.yaml#/StaleAfter"
+          staleBehavior:
+            $ref: "common.yaml#/StaleBehavior"
+    count:
+      type: integer
+      description: Total number of active gauges.

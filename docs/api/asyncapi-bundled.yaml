@@ -14,7 +14,7 @@ info:
 
     - Delete via `{"delete": true}` flag instead of HTTP DELETE.
 
-    - Name can be in topic path or JSON body for custom/tracker.
+    - Name can be in topic path or JSON body for custom/tracker/gauge.
 
     - No icon management over MQTT.
 
@@ -322,8 +322,8 @@ channels:
                 the client pushes again, `dim` stays visible dimmed with a STALE
                 badge, `badge` stays visible at full colour with the badge,
                 `none` shows no sign at all. `dim` and `badge` are only rendered
-                by the tracker layout; sending them to another endpoint is
-                rejected with HTTP 400.
+                by the tracker and gauge layouts; sending them to another
+                endpoint is rejected with HTTP 400.
               examples:
                 - badge
             lifetime:
@@ -880,8 +880,8 @@ channels:
                 the client pushes again, `dim` stays visible dimmed with a STALE
                 badge, `badge` stays visible at full colour with the badge,
                 `none` shows no sign at all. `dim` and `badge` are only rendered
-                by the tracker layout; sending them to another endpoint is
-                rejected with HTTP 400.
+                by the tracker and gauge layouts; sending them to another
+                endpoint is rejected with HTTP 400.
               examples:
                 - badge
             lifetime:
@@ -1784,8 +1784,8 @@ channels:
                     until the client pushes again, `dim` stays visible dimmed
                     with a STALE badge, `badge` stays visible at full colour
                     with the badge, `none` shows no sign at all. `dim` and
-                    `badge` are only rendered by the tracker layout; sending
-                    them to another endpoint is rejected with HTTP 400.
+                    `badge` are only rendered by the tracker and gauge layouts;
+                    sending them to another endpoint is rejected with HTTP 400.
                   examples:
                     - badge
               enum:
@@ -1887,8 +1887,13 @@ channels:
             value:
               type: number
               format: float
-              description: |
-                Current price/value. The panel shows as many decimals as fit the value row, which the currency label shortens when one is set. Two decimals are always shown when they fit, so 128.4 reads 128.40 and 6.232 keeps its third decimal. Digits beyond the seven a float can carry are dropped rather than printed as rounding noise.
+              description: >
+                Current price/value. The panel shows as many decimals as fit the
+                value row, which the currency label shortens when one is set.
+                Two decimals are always shown when they fit, so 128.4 reads
+                128.40 and 6.232 keeps its third decimal. Digits beyond the
+                seven a float can carry are dropped rather than printed as
+                rounding noise.
               examples:
                 - 98452.3
             change:
@@ -2129,8 +2134,8 @@ channels:
                 the client pushes again, `dim` stays visible dimmed with a STALE
                 badge, `badge` stays visible at full colour with the badge,
                 `none` shows no sign at all. `dim` and `badge` are only rendered
-                by the tracker layout; sending them to another endpoint is
-                rejected with HTTP 400.
+                by the tracker and gauge layouts; sending them to another
+                endpoint is rejected with HTTP 400.
               examples:
                 - badge
         examples:
@@ -2219,8 +2224,13 @@ channels:
             value:
               type: number
               format: float
-              description: |
-                Current price/value. The panel shows as many decimals as fit the value row, which the currency label shortens when one is set. Two decimals are always shown when they fit, so 128.4 reads 128.40 and 6.232 keeps its third decimal. Digits beyond the seven a float can carry are dropped rather than printed as rounding noise.
+              description: >
+                Current price/value. The panel shows as many decimals as fit the
+                value row, which the currency label shortens when one is set.
+                Two decimals are always shown when they fit, so 128.4 reads
+                128.40 and 6.232 keeps its third decimal. Digits beyond the
+                seven a float can carry are dropped rather than printed as
+                rounding noise.
               examples:
                 - 98452.3
             change:
@@ -2461,8 +2471,8 @@ channels:
                 the client pushes again, `dim` stays visible dimmed with a STALE
                 badge, `badge` stays visible at full colour with the badge,
                 `none` shows no sign at all. `dim` and `badge` are only rendered
-                by the tracker layout; sending them to another endpoint is
-                rejected with HTTP 400.
+                by the tracker and gauge layouts; sending them to another
+                endpoint is rejected with HTTP 400.
               examples:
                 - badge
         examples:
@@ -2500,6 +2510,612 @@ channels:
                   c: '#00D4FF'
           - name: deleteTracker
             summary: Delete a tracker
+            payload:
+              delete: true
+  gauge:
+    address: '{prefix}/gauge'
+    description: >
+      Create or update a gauge. Name must be in the JSON body. Send `{"delete":
+      true, "name": "claude"}` to delete.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      gaugeMessage:
+        payload:
+          type: object
+          description: >
+            Partial update: `title`, `icon` and `rows` are only written when
+            present, so a client can push rows alone and leave the header
+            untouched. A `rows` array replaces the stored rows whole - there is
+            no per-row patch.
+          properties:
+            name:
+              type: string
+              maxLength: 15
+              description: >
+                Gauge identifier. Can also be passed as `?name=` query
+                parameter. Up to two gauges exist at a time (`MAX_GAUGE_APPS`).
+                A longer name is refused with HTTP 400 (`Gauge name too long
+                (max 15)`) rather than shortened, since the shortened key and
+                the `gauge_{name}` app id would stop matching; over MQTT the
+                message is dropped with a serial log.
+              examples:
+                - claude
+            title:
+              type: string
+              maxLength: 31
+              description: >
+                Headline shown on the 12-pixel header (e.g. "Claude",
+                "Disques"). Longer than the header is wide is fine: the display
+                scrolls it, pausing at each end. The header holds eight
+                characters beside an icon and ten without one, since a gauge
+                with no `icon` gives its title the full width. While a STALE
+                badge is up the icon steps aside, the title restarts from the
+                left margin and the band it gets is six characters wide. The
+                panel has no accented glyphs, so Latin-1 accents are shown as
+                their closest ASCII letter - "Santé" reads "Sante". Anything
+                else outside ASCII is dropped.
+              examples:
+                - Claude
+            icon:
+              type: string
+              description: >
+                Icon name from filesystem, drawn 8x8 on the left of the header.
+                It is hidden while the data is stale and `staleBehavior` is
+                `dim` or `badge`: the STALE badge takes the header room the icon
+                would need, so the badge replaces it until the client pushes
+                again.
+              examples:
+                - claude
+            rows:
+              type: array
+              items:
+                type: object
+                description: >
+                  One 14-pixel row: `label` / `info` / `value` on the top line,
+                  the progress bar and its `note` on the line below. The top
+                  line is laid out value first: `value` owns the right edge,
+                  `label` gets what is left once `value`, `info` and their
+                  two-pixel gutters are reserved and is the only field cut
+                  short, then `info` is centred in the gap those two actually
+                  leave open. Every field is drawn in TomThumb over the 61
+                  pixels between the left margin and the right edge; most glyphs
+                  advance four pixels and the narrow ones (`1`, `:`, `.`, `i`,
+                  space) two or three, so a field too wide for its column is cut
+                  on the last glyph that fits rather than on a character count.
+                properties:
+                  label:
+                    type: string
+                    maxLength: 11
+                    description: >
+                      Row name, drawn on the left of the top line (e.g. "5h",
+                      "credits"). It gets whatever width `info` and `value` did
+                      not take, and is cut on the last glyph that fits - an
+                      `info` long enough to reach the left margin leaves nothing
+                      of it.
+                    examples:
+                      - 5h
+                      - credits
+                  info:
+                    type: string
+                    maxLength: 15
+                    description: >
+                      Optional context between the label and the value, usually
+                      a reset time (e.g. "14:50", "15/08 17h"). Centred in the
+                      gap between the end of the label and the start of the
+                      value, or between the label and the right margin when the
+                      row carries no `value`. It is cut on the last glyph that
+                      fits before being centred, so it can never spill over
+                      either neighbour. Formatting is the client's call: the
+                      firmware prints the string as it is given.
+                    examples:
+                      - '14:50'
+                      - 15/08 17h
+                  value:
+                    type: string
+                    maxLength: 7
+                    description: >
+                      Headline figure of the row, right-aligned on the last
+                      usable pixel. A string rather than a number, so the unit
+                      travels with it: "41%", "3.2GB", "12/20".
+                    examples:
+                      - 41%
+                  note:
+                    type: string
+                    maxLength: 7
+                    description: >
+                      Optional pace or trend marker, right-aligned on the bottom
+                      line next to the bar. Its presence is what shortens the
+                      bar from 60 to 38 pixels, so a row with no note gets a bar
+                      over the full width. Only 21 pixels are left for it, five
+                      TomThumb characters, and a longer note is cut on the last
+                      one that fits. The panel carries no arrow glyph, so pace
+                      is written with `^`, `>` and `v`.
+                    examples:
+                      - x1.2^
+                  percent:
+                    type: integer
+                    minimum: 0
+                    maximum: 100
+                    default: 0
+                    description: >
+                      Bar fill, clamped to 0-100 on parse. The only number the
+                      firmware interprets; everything else on the row is text it
+                      prints untouched. The fill is rounded to the nearest pixel
+                      with a floor of one, so any percentage above zero lights
+                      at least one pixel and only 0% leaves the bar empty. The
+                      fill spans the 58 pixels inside a full-width bar, 36
+                      inside a bar shortened by a note.
+                    examples:
+                      - 41
+                  color:
+                    default: '#FFFFFF'
+                    description: >
+                      Color value. Accepts RGB array, hex string, or unsigned
+                      32-bit integer.
+                    oneOf:
+                      - type: array
+                        items:
+                          type: integer
+                          minimum: 0
+                          maximum: 255
+                        minItems: 3
+                        maxItems: 3
+                        description: RGB array [R, G, B]
+                        examples:
+                          - - 255
+                            - 136
+                            - 0
+                      - type: string
+                        pattern: ^#[0-9a-fA-F]{6}$
+                        description: Hex string
+                        examples:
+                          - '#FF8800'
+                      - type: integer
+                        minimum: 0
+                        maximum: 16777215
+                        description: Unsigned 32-bit integer (0xRRGGBB)
+                        examples:
+                          - 16746496
+                  noteColor:
+                    default: '#969696'
+                    description: >
+                      Color value. Accepts RGB array, hex string, or unsigned
+                      32-bit integer.
+                    oneOf:
+                      - type: array
+                        items:
+                          type: integer
+                          minimum: 0
+                          maximum: 255
+                        minItems: 3
+                        maxItems: 3
+                        description: RGB array [R, G, B]
+                        examples:
+                          - - 255
+                            - 136
+                            - 0
+                      - type: string
+                        pattern: ^#[0-9a-fA-F]{6}$
+                        description: Hex string
+                        examples:
+                          - '#FF8800'
+                      - type: integer
+                        minimum: 0
+                        maximum: 16777215
+                        description: Unsigned 32-bit integer (0xRRGGBB)
+                        examples:
+                          - 16746496
+              maxItems: 9
+              description: >
+                Rows to display, three per page. Beyond three rows the panel
+                paginates on its own, one dot per page at the bottom, each page
+                holding the screen for the app duration divided by the page
+                count - so the carousel never lengthens the rotation. A last
+                page holding one or two rows is centred vertically in the band
+                the three would have filled. More than nine rows is refused
+                whole with HTTP 400 and the gauge keeps the rows it had.
+            duration:
+              type: integer
+              description: >-
+                Display duration in milliseconds, split evenly across the
+                carousel pages.
+              default: 10000
+            staleAfter:
+              default: 3600
+              type: integer
+              minimum: 0
+              maximum: 604800
+              description: >
+                Silence tolerated before the app is considered stale, in
+                seconds. 0 = never. The firmware cannot know when your data is
+                due, so declare your own push interval plus a margin: a client
+                pushing every 30 minutes sets 5400. Values above 604800 (7 days)
+                are clamped.
+              examples:
+                - 5400
+            staleBehavior:
+              default: dim
+              type: string
+              enum:
+                - hide
+                - dim
+                - badge
+                - none
+              description: >
+                What the app does once stale. `hide` leaves the rotation until
+                the client pushes again, `dim` stays visible dimmed with a STALE
+                badge, `badge` stays visible at full colour with the badge,
+                `none` shows no sign at all. `dim` and `badge` are only rendered
+                by the tracker and gauge layouts; sending them to another
+                endpoint is rejected with HTTP 400.
+              examples:
+                - badge
+        description: >
+          Same payload as `POST /api/gauge`, except that a name over fifteen
+          characters and an oversized `rows` array are dropped with a serial log
+          instead of an HTTP 400, and an unknown `staleBehavior` falls back to
+          `dim` instead of being rejected. Watch the payload size: the MQTT
+          receive buffer is 2048 bytes (`MQTT_BUFFER_SIZE`) and nine rows come
+          close to 1.3 KB, so a broker message longer than the buffer is dropped
+          before the firmware ever parses it.
+        examples:
+          - name: claudeLimits
+            summary: Subscription limits, four rows over two pages
+            payload:
+              title: Claude
+              icon: claude
+              duration: 10000
+              staleAfter: 2700
+              staleBehavior: dim
+              rows:
+                - label: 5h
+                  info: '14:50'
+                  value: 41%
+                  percent: 41
+                  color: '#4CAF50'
+                  note: x1.2^
+                  noteColor: '#FFC107'
+                - label: 7j
+                  info: 15/08 17h
+                  value: 28%
+                  percent: 28
+                  color: '#4CAF50'
+                  note: x1.1>
+                  noteColor: '#4CAF50'
+                - label: fable
+                  value: 3%
+                  percent: 3
+                  color: '#4CAF50'
+                - label: credits
+                  value: 1%
+                  percent: 1
+                  color: '#4CAF50'
+          - name: diskUsage
+            summary: Disk fill levels, no info and no note, bars at full width
+            payload:
+              title: Disques
+              icon: disk
+              rows:
+                - label: root
+                  value: 62%
+                  percent: 62
+                  color: '#4CAF50'
+                - label: data
+                  value: 88%
+                  percent: 88
+                  color: '#FFC107'
+                - label: backup
+                  value: 97%
+                  percent: 97
+                  color: '#F44336'
+          - name: deleteGauge
+            summary: Delete a gauge
+            payload:
+              delete: true
+  gaugeNamed:
+    address: '{prefix}/gauge/{name}'
+    description: >
+      Create or update a gauge with name in the topic path. Send `{"delete":
+      true}` to delete.
+    parameters:
+      prefix:
+        default: pixelcast
+      name:
+        description: Gauge name (e.g. "claude").
+    messages:
+      gaugeMessage:
+        payload:
+          type: object
+          description: >
+            Partial update: `title`, `icon` and `rows` are only written when
+            present, so a client can push rows alone and leave the header
+            untouched. A `rows` array replaces the stored rows whole - there is
+            no per-row patch.
+          properties:
+            name:
+              type: string
+              maxLength: 15
+              description: >
+                Gauge identifier. Can also be passed as `?name=` query
+                parameter. Up to two gauges exist at a time (`MAX_GAUGE_APPS`).
+                A longer name is refused with HTTP 400 (`Gauge name too long
+                (max 15)`) rather than shortened, since the shortened key and
+                the `gauge_{name}` app id would stop matching; over MQTT the
+                message is dropped with a serial log.
+              examples:
+                - claude
+            title:
+              type: string
+              maxLength: 31
+              description: >
+                Headline shown on the 12-pixel header (e.g. "Claude",
+                "Disques"). Longer than the header is wide is fine: the display
+                scrolls it, pausing at each end. The header holds eight
+                characters beside an icon and ten without one, since a gauge
+                with no `icon` gives its title the full width. While a STALE
+                badge is up the icon steps aside, the title restarts from the
+                left margin and the band it gets is six characters wide. The
+                panel has no accented glyphs, so Latin-1 accents are shown as
+                their closest ASCII letter - "Santé" reads "Sante". Anything
+                else outside ASCII is dropped.
+              examples:
+                - Claude
+            icon:
+              type: string
+              description: >
+                Icon name from filesystem, drawn 8x8 on the left of the header.
+                It is hidden while the data is stale and `staleBehavior` is
+                `dim` or `badge`: the STALE badge takes the header room the icon
+                would need, so the badge replaces it until the client pushes
+                again.
+              examples:
+                - claude
+            rows:
+              type: array
+              items:
+                type: object
+                description: >
+                  One 14-pixel row: `label` / `info` / `value` on the top line,
+                  the progress bar and its `note` on the line below. The top
+                  line is laid out value first: `value` owns the right edge,
+                  `label` gets what is left once `value`, `info` and their
+                  two-pixel gutters are reserved and is the only field cut
+                  short, then `info` is centred in the gap those two actually
+                  leave open. Every field is drawn in TomThumb over the 61
+                  pixels between the left margin and the right edge; most glyphs
+                  advance four pixels and the narrow ones (`1`, `:`, `.`, `i`,
+                  space) two or three, so a field too wide for its column is cut
+                  on the last glyph that fits rather than on a character count.
+                properties:
+                  label:
+                    type: string
+                    maxLength: 11
+                    description: >
+                      Row name, drawn on the left of the top line (e.g. "5h",
+                      "credits"). It gets whatever width `info` and `value` did
+                      not take, and is cut on the last glyph that fits - an
+                      `info` long enough to reach the left margin leaves nothing
+                      of it.
+                    examples:
+                      - 5h
+                      - credits
+                  info:
+                    type: string
+                    maxLength: 15
+                    description: >
+                      Optional context between the label and the value, usually
+                      a reset time (e.g. "14:50", "15/08 17h"). Centred in the
+                      gap between the end of the label and the start of the
+                      value, or between the label and the right margin when the
+                      row carries no `value`. It is cut on the last glyph that
+                      fits before being centred, so it can never spill over
+                      either neighbour. Formatting is the client's call: the
+                      firmware prints the string as it is given.
+                    examples:
+                      - '14:50'
+                      - 15/08 17h
+                  value:
+                    type: string
+                    maxLength: 7
+                    description: >
+                      Headline figure of the row, right-aligned on the last
+                      usable pixel. A string rather than a number, so the unit
+                      travels with it: "41%", "3.2GB", "12/20".
+                    examples:
+                      - 41%
+                  note:
+                    type: string
+                    maxLength: 7
+                    description: >
+                      Optional pace or trend marker, right-aligned on the bottom
+                      line next to the bar. Its presence is what shortens the
+                      bar from 60 to 38 pixels, so a row with no note gets a bar
+                      over the full width. Only 21 pixels are left for it, five
+                      TomThumb characters, and a longer note is cut on the last
+                      one that fits. The panel carries no arrow glyph, so pace
+                      is written with `^`, `>` and `v`.
+                    examples:
+                      - x1.2^
+                  percent:
+                    type: integer
+                    minimum: 0
+                    maximum: 100
+                    default: 0
+                    description: >
+                      Bar fill, clamped to 0-100 on parse. The only number the
+                      firmware interprets; everything else on the row is text it
+                      prints untouched. The fill is rounded to the nearest pixel
+                      with a floor of one, so any percentage above zero lights
+                      at least one pixel and only 0% leaves the bar empty. The
+                      fill spans the 58 pixels inside a full-width bar, 36
+                      inside a bar shortened by a note.
+                    examples:
+                      - 41
+                  color:
+                    default: '#FFFFFF'
+                    description: >
+                      Color value. Accepts RGB array, hex string, or unsigned
+                      32-bit integer.
+                    oneOf:
+                      - type: array
+                        items:
+                          type: integer
+                          minimum: 0
+                          maximum: 255
+                        minItems: 3
+                        maxItems: 3
+                        description: RGB array [R, G, B]
+                        examples:
+                          - - 255
+                            - 136
+                            - 0
+                      - type: string
+                        pattern: ^#[0-9a-fA-F]{6}$
+                        description: Hex string
+                        examples:
+                          - '#FF8800'
+                      - type: integer
+                        minimum: 0
+                        maximum: 16777215
+                        description: Unsigned 32-bit integer (0xRRGGBB)
+                        examples:
+                          - 16746496
+                  noteColor:
+                    default: '#969696'
+                    description: >
+                      Color value. Accepts RGB array, hex string, or unsigned
+                      32-bit integer.
+                    oneOf:
+                      - type: array
+                        items:
+                          type: integer
+                          minimum: 0
+                          maximum: 255
+                        minItems: 3
+                        maxItems: 3
+                        description: RGB array [R, G, B]
+                        examples:
+                          - - 255
+                            - 136
+                            - 0
+                      - type: string
+                        pattern: ^#[0-9a-fA-F]{6}$
+                        description: Hex string
+                        examples:
+                          - '#FF8800'
+                      - type: integer
+                        minimum: 0
+                        maximum: 16777215
+                        description: Unsigned 32-bit integer (0xRRGGBB)
+                        examples:
+                          - 16746496
+              maxItems: 9
+              description: >
+                Rows to display, three per page. Beyond three rows the panel
+                paginates on its own, one dot per page at the bottom, each page
+                holding the screen for the app duration divided by the page
+                count - so the carousel never lengthens the rotation. A last
+                page holding one or two rows is centred vertically in the band
+                the three would have filled. More than nine rows is refused
+                whole with HTTP 400 and the gauge keeps the rows it had.
+            duration:
+              type: integer
+              description: >-
+                Display duration in milliseconds, split evenly across the
+                carousel pages.
+              default: 10000
+            staleAfter:
+              default: 3600
+              type: integer
+              minimum: 0
+              maximum: 604800
+              description: >
+                Silence tolerated before the app is considered stale, in
+                seconds. 0 = never. The firmware cannot know when your data is
+                due, so declare your own push interval plus a margin: a client
+                pushing every 30 minutes sets 5400. Values above 604800 (7 days)
+                are clamped.
+              examples:
+                - 5400
+            staleBehavior:
+              default: dim
+              type: string
+              enum:
+                - hide
+                - dim
+                - badge
+                - none
+              description: >
+                What the app does once stale. `hide` leaves the rotation until
+                the client pushes again, `dim` stays visible dimmed with a STALE
+                badge, `badge` stays visible at full colour with the badge,
+                `none` shows no sign at all. `dim` and `badge` are only rendered
+                by the tracker and gauge layouts; sending them to another
+                endpoint is rejected with HTTP 400.
+              examples:
+                - badge
+        description: >
+          Same payload as `POST /api/gauge`, except that a name over fifteen
+          characters and an oversized `rows` array are dropped with a serial log
+          instead of an HTTP 400, and an unknown `staleBehavior` falls back to
+          `dim` instead of being rejected. Watch the payload size: the MQTT
+          receive buffer is 2048 bytes (`MQTT_BUFFER_SIZE`) and nine rows come
+          close to 1.3 KB, so a broker message longer than the buffer is dropped
+          before the firmware ever parses it.
+        examples:
+          - name: claudeLimits
+            summary: Subscription limits, four rows over two pages
+            payload:
+              title: Claude
+              icon: claude
+              duration: 10000
+              staleAfter: 2700
+              staleBehavior: dim
+              rows:
+                - label: 5h
+                  info: '14:50'
+                  value: 41%
+                  percent: 41
+                  color: '#4CAF50'
+                  note: x1.2^
+                  noteColor: '#FFC107'
+                - label: 7j
+                  info: 15/08 17h
+                  value: 28%
+                  percent: 28
+                  color: '#4CAF50'
+                  note: x1.1>
+                  noteColor: '#4CAF50'
+                - label: fable
+                  value: 3%
+                  percent: 3
+                  color: '#4CAF50'
+                - label: credits
+                  value: 1%
+                  percent: 1
+                  color: '#4CAF50'
+          - name: diskUsage
+            summary: Disk fill levels, no info and no note, bars at full width
+            payload:
+              title: Disques
+              icon: disk
+              rows:
+                - label: root
+                  value: 62%
+                  percent: 62
+                  color: '#4CAF50'
+                - label: data
+                  value: 88%
+                  percent: 88
+                  color: '#FFC107'
+                - label: backup
+                  value: 97%
+                  percent: 97
+                  color: '#F44336'
+          - name: deleteGauge
+            summary: Delete a gauge
             payload:
               delete: true
   reboot:
@@ -2664,6 +3280,14 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/trackerNamed'
+  receiveGauge:
+    action: receive
+    channel:
+      $ref: '#/channels/gauge'
+  receiveGaugeNamed:
+    action: receive
+    channel:
+      $ref: '#/channels/gaugeNamed'
   receiveReboot:
     action: receive
     channel:
@@ -2956,8 +3580,8 @@ components:
               client pushes again, `dim` stays visible dimmed with a STALE
               badge, `badge` stays visible at full colour with the badge, `none`
               shows no sign at all. `dim` and `badge` are only rendered by the
-              tracker layout; sending them to another endpoint is rejected with
-              HTTP 400.
+              tracker and gauge layouts; sending them to another endpoint is
+              rejected with HTTP 400.
             examples:
               - badge
           lifetime:
@@ -3672,8 +4296,8 @@ components:
                   the client pushes again, `dim` stays visible dimmed with a
                   STALE badge, `badge` stays visible at full colour with the
                   badge, `none` shows no sign at all. `dim` and `badge` are only
-                  rendered by the tracker layout; sending them to another
-                  endpoint is rejected with HTTP 400.
+                  rendered by the tracker and gauge layouts; sending them to
+                  another endpoint is rejected with HTTP 400.
                 examples:
                   - badge
             enum:
@@ -3766,8 +4390,12 @@ components:
           value:
             type: number
             format: float
-            description: |
-              Current price/value. The panel shows as many decimals as fit the value row, which the currency label shortens when one is set. Two decimals are always shown when they fit, so 128.4 reads 128.40 and 6.232 keeps its third decimal. Digits beyond the seven a float can carry are dropped rather than printed as rounding noise.
+            description: >
+              Current price/value. The panel shows as many decimals as fit the
+              value row, which the currency label shortens when one is set. Two
+              decimals are always shown when they fit, so 128.4 reads 128.40 and
+              6.232 keeps its third decimal. Digits beyond the seven a float can
+              carry are dropped rather than printed as rounding noise.
             examples:
               - 98452.3
           change:
@@ -4005,8 +4633,8 @@ components:
               client pushes again, `dim` stays visible dimmed with a STALE
               badge, `badge` stays visible at full colour with the badge, `none`
               shows no sign at all. `dim` and `badge` are only rendered by the
-              tracker layout; sending them to another endpoint is rejected with
-              HTTP 400.
+              tracker and gauge layouts; sending them to another endpoint is
+              rejected with HTTP 400.
             examples:
               - badge
       examples:
@@ -4044,6 +4672,296 @@ components:
                 c: '#00D4FF'
         - name: deleteTracker
           summary: Delete a tracker
+          payload:
+            delete: true
+    Gauge:
+      payload:
+        type: object
+        description: >
+          Partial update: `title`, `icon` and `rows` are only written when
+          present, so a client can push rows alone and leave the header
+          untouched. A `rows` array replaces the stored rows whole - there is no
+          per-row patch.
+        properties:
+          name:
+            type: string
+            maxLength: 15
+            description: >
+              Gauge identifier. Can also be passed as `?name=` query parameter.
+              Up to two gauges exist at a time (`MAX_GAUGE_APPS`). A longer name
+              is refused with HTTP 400 (`Gauge name too long (max 15)`) rather
+              than shortened, since the shortened key and the `gauge_{name}` app
+              id would stop matching; over MQTT the message is dropped with a
+              serial log.
+            examples:
+              - claude
+          title:
+            type: string
+            maxLength: 31
+            description: >
+              Headline shown on the 12-pixel header (e.g. "Claude", "Disques").
+              Longer than the header is wide is fine: the display scrolls it,
+              pausing at each end. The header holds eight characters beside an
+              icon and ten without one, since a gauge with no `icon` gives its
+              title the full width. While a STALE badge is up the icon steps
+              aside, the title restarts from the left margin and the band it
+              gets is six characters wide. The panel has no accented glyphs, so
+              Latin-1 accents are shown as their closest ASCII letter - "Santé"
+              reads "Sante". Anything else outside ASCII is dropped.
+            examples:
+              - Claude
+          icon:
+            type: string
+            description: >
+              Icon name from filesystem, drawn 8x8 on the left of the header. It
+              is hidden while the data is stale and `staleBehavior` is `dim` or
+              `badge`: the STALE badge takes the header room the icon would
+              need, so the badge replaces it until the client pushes again.
+            examples:
+              - claude
+          rows:
+            type: array
+            items:
+              type: object
+              description: >
+                One 14-pixel row: `label` / `info` / `value` on the top line,
+                the progress bar and its `note` on the line below. The top line
+                is laid out value first: `value` owns the right edge, `label`
+                gets what is left once `value`, `info` and their two-pixel
+                gutters are reserved and is the only field cut short, then
+                `info` is centred in the gap those two actually leave open.
+                Every field is drawn in TomThumb over the 61 pixels between the
+                left margin and the right edge; most glyphs advance four pixels
+                and the narrow ones (`1`, `:`, `.`, `i`, space) two or three, so
+                a field too wide for its column is cut on the last glyph that
+                fits rather than on a character count.
+              properties:
+                label:
+                  type: string
+                  maxLength: 11
+                  description: >
+                    Row name, drawn on the left of the top line (e.g. "5h",
+                    "credits"). It gets whatever width `info` and `value` did
+                    not take, and is cut on the last glyph that fits - an `info`
+                    long enough to reach the left margin leaves nothing of it.
+                  examples:
+                    - 5h
+                    - credits
+                info:
+                  type: string
+                  maxLength: 15
+                  description: >
+                    Optional context between the label and the value, usually a
+                    reset time (e.g. "14:50", "15/08 17h"). Centred in the gap
+                    between the end of the label and the start of the value, or
+                    between the label and the right margin when the row carries
+                    no `value`. It is cut on the last glyph that fits before
+                    being centred, so it can never spill over either neighbour.
+                    Formatting is the client's call: the firmware prints the
+                    string as it is given.
+                  examples:
+                    - '14:50'
+                    - 15/08 17h
+                value:
+                  type: string
+                  maxLength: 7
+                  description: >
+                    Headline figure of the row, right-aligned on the last usable
+                    pixel. A string rather than a number, so the unit travels
+                    with it: "41%", "3.2GB", "12/20".
+                  examples:
+                    - 41%
+                note:
+                  type: string
+                  maxLength: 7
+                  description: >
+                    Optional pace or trend marker, right-aligned on the bottom
+                    line next to the bar. Its presence is what shortens the bar
+                    from 60 to 38 pixels, so a row with no note gets a bar over
+                    the full width. Only 21 pixels are left for it, five
+                    TomThumb characters, and a longer note is cut on the last
+                    one that fits. The panel carries no arrow glyph, so pace is
+                    written with `^`, `>` and `v`.
+                  examples:
+                    - x1.2^
+                percent:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                  default: 0
+                  description: >
+                    Bar fill, clamped to 0-100 on parse. The only number the
+                    firmware interprets; everything else on the row is text it
+                    prints untouched. The fill is rounded to the nearest pixel
+                    with a floor of one, so any percentage above zero lights at
+                    least one pixel and only 0% leaves the bar empty. The fill
+                    spans the 58 pixels inside a full-width bar, 36 inside a bar
+                    shortened by a note.
+                  examples:
+                    - 41
+                color:
+                  default: '#FFFFFF'
+                  description: >
+                    Color value. Accepts RGB array, hex string, or unsigned
+                    32-bit integer.
+                  oneOf:
+                    - type: array
+                      items:
+                        type: integer
+                        minimum: 0
+                        maximum: 255
+                      minItems: 3
+                      maxItems: 3
+                      description: RGB array [R, G, B]
+                      examples:
+                        - - 255
+                          - 136
+                          - 0
+                    - type: string
+                      pattern: ^#[0-9a-fA-F]{6}$
+                      description: Hex string
+                      examples:
+                        - '#FF8800'
+                    - type: integer
+                      minimum: 0
+                      maximum: 16777215
+                      description: Unsigned 32-bit integer (0xRRGGBB)
+                      examples:
+                        - 16746496
+                noteColor:
+                  default: '#969696'
+                  description: >
+                    Color value. Accepts RGB array, hex string, or unsigned
+                    32-bit integer.
+                  oneOf:
+                    - type: array
+                      items:
+                        type: integer
+                        minimum: 0
+                        maximum: 255
+                      minItems: 3
+                      maxItems: 3
+                      description: RGB array [R, G, B]
+                      examples:
+                        - - 255
+                          - 136
+                          - 0
+                    - type: string
+                      pattern: ^#[0-9a-fA-F]{6}$
+                      description: Hex string
+                      examples:
+                        - '#FF8800'
+                    - type: integer
+                      minimum: 0
+                      maximum: 16777215
+                      description: Unsigned 32-bit integer (0xRRGGBB)
+                      examples:
+                        - 16746496
+            maxItems: 9
+            description: >
+              Rows to display, three per page. Beyond three rows the panel
+              paginates on its own, one dot per page at the bottom, each page
+              holding the screen for the app duration divided by the page count
+              - so the carousel never lengthens the rotation. A last page
+              holding one or two rows is centred vertically in the band the
+              three would have filled. More than nine rows is refused whole with
+              HTTP 400 and the gauge keeps the rows it had.
+          duration:
+            type: integer
+            description: >-
+              Display duration in milliseconds, split evenly across the carousel
+              pages.
+            default: 10000
+          staleAfter:
+            default: 3600
+            type: integer
+            minimum: 0
+            maximum: 604800
+            description: >
+              Silence tolerated before the app is considered stale, in seconds.
+              0 = never. The firmware cannot know when your data is due, so
+              declare your own push interval plus a margin: a client pushing
+              every 30 minutes sets 5400. Values above 604800 (7 days) are
+              clamped.
+            examples:
+              - 5400
+          staleBehavior:
+            default: dim
+            type: string
+            enum:
+              - hide
+              - dim
+              - badge
+              - none
+            description: >
+              What the app does once stale. `hide` leaves the rotation until the
+              client pushes again, `dim` stays visible dimmed with a STALE
+              badge, `badge` stays visible at full colour with the badge, `none`
+              shows no sign at all. `dim` and `badge` are only rendered by the
+              tracker and gauge layouts; sending them to another endpoint is
+              rejected with HTTP 400.
+            examples:
+              - badge
+      description: >
+        Same payload as `POST /api/gauge`, except that a name over fifteen
+        characters and an oversized `rows` array are dropped with a serial log
+        instead of an HTTP 400, and an unknown `staleBehavior` falls back to
+        `dim` instead of being rejected. Watch the payload size: the MQTT
+        receive buffer is 2048 bytes (`MQTT_BUFFER_SIZE`) and nine rows come
+        close to 1.3 KB, so a broker message longer than the buffer is dropped
+        before the firmware ever parses it.
+      examples:
+        - name: claudeLimits
+          summary: Subscription limits, four rows over two pages
+          payload:
+            title: Claude
+            icon: claude
+            duration: 10000
+            staleAfter: 2700
+            staleBehavior: dim
+            rows:
+              - label: 5h
+                info: '14:50'
+                value: 41%
+                percent: 41
+                color: '#4CAF50'
+                note: x1.2^
+                noteColor: '#FFC107'
+              - label: 7j
+                info: 15/08 17h
+                value: 28%
+                percent: 28
+                color: '#4CAF50'
+                note: x1.1>
+                noteColor: '#4CAF50'
+              - label: fable
+                value: 3%
+                percent: 3
+                color: '#4CAF50'
+              - label: credits
+                value: 1%
+                percent: 1
+                color: '#4CAF50'
+        - name: diskUsage
+          summary: Disk fill levels, no info and no note, bars at full width
+          payload:
+            title: Disques
+            icon: disk
+            rows:
+              - label: root
+                value: 62%
+                percent: 62
+                color: '#4CAF50'
+              - label: data
+                value: 88%
+                percent: 88
+                color: '#FFC107'
+              - label: backup
+                value: 97%
+                percent: 97
+                color: '#F44336'
+        - name: deleteGauge
+          summary: Delete a gauge
           payload:
             delete: true
     Status:

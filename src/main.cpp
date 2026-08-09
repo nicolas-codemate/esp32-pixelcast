@@ -298,6 +298,31 @@ struct TrackerData {
 TrackerData trackers[MAX_TRACKERS];
 uint8_t trackerCount = 0;
 
+// Gauge Data (populated by POST /api/gauge)
+struct GaugeRow {
+    char label[12];
+    char info[16];
+    char value[8];
+    char note[8];
+    uint8_t percent;          // 0-100, clamped on parse
+    uint32_t barColor;
+    uint32_t noteColor;
+};
+
+struct GaugeData {
+    char name[16];            // Key: "claude", "battery"
+    // Scrolls when it overflows, so the cap is storage rather than screen width: 64 bytes
+    // hold 31 characters whatever their encoding, an accented one taking two.
+    char title[64];
+    char icon[32];            // Icon name (LittleFS)
+    GaugeRow rows[MAX_GAUGE_ROWS];
+    uint8_t rowCount;
+    unsigned long lastUpdate;
+    bool valid;
+};
+GaugeData gauges[MAX_GAUGE_APPS];
+uint8_t gaugeCount = 0;
+
 // Indicator Data
 enum IndicatorMode : uint8_t {
     INDICATOR_OFF = 0,
@@ -364,6 +389,19 @@ bool trackerDimDrawn = false;
 bool trackerIconDrawn = false;
 uint8_t trackerFullRepaintsPending = 0;
 
+// Gauge display cache (global so they can be reset on app switch)
+unsigned long gaugeLastUpdateDrawn = 0;
+bool gaugeBadgeDrawn = false;
+bool gaugeDimDrawn = false;
+bool gaugeIconDrawn = false;
+// Which of the two top indicators were in use at the last full paint: the header geometry
+// dodges them, so their coming and going has to repaint it
+uint8_t gaugeTopIndicatorsDrawn = 0;
+uint8_t gaugeFullRepaintsPending = 0;
+uint8_t gaugeRowRepaintsPending = 0;
+uint8_t gaugePage = 0;
+unsigned long lastGaugePageSwitch = 0;
+
 // A screen arms one of these counters when its content changes and spends one unit per full
 // paint, so the change reaches every buffer before a partial repaint is allowed to run.
 bool consumePendingRepaint(uint8_t& pendingRepaints) {
@@ -378,6 +416,9 @@ bool consumePendingRepaint(uint8_t& pendingRepaints) {
 // frame, repaired 50 ms later.
 ScrollState trackerSymbolScrollState;
 ScrollState trackerBottomScrollState;
+
+// Only the gauge title scrolls: its rows are clipped instead, so they need no state of their own.
+ScrollState gaugeTitleScrollState;
 
 // Icon Upload State
 File uploadFile;
@@ -580,8 +621,11 @@ uint32_t dimColorQuarter(uint32_t color);
 char utf8FrenchToAscii(uint8_t leadByte, uint8_t continuationByte);
 int16_t calculateTextWidth(const char* text);
 int16_t calculateTomThumbTextWidth(const char* text);
+void truncateTomThumbTextToWidth(const char* text, char* buffer, size_t bufferSize,
+                                 int16_t maxWidth);
 void resetScrollState();
 void resetTrackerScrollStates();
+void resetGaugeDisplayState();
 bool scrollStateAdvance(ScrollState& state, unsigned long now);
 void scrollStateArm(ScrollState& state, int16_t textWidth, int16_t availableWidth);
 void scrollStateReset(ScrollState& state);
@@ -654,6 +698,17 @@ void printTextWithinBounds(const char* text, int16_t x, int16_t y,
 void drawCharacterWithinBounds(char character, int16_t x, int16_t y,
                                int16_t boundLeft, int16_t boundRight, uint16_t color);
 
+// Gauge management
+GaugeData* gaugeFind(const char* name);
+const AppItem* gaugeFindApp(const char* name);
+GaugeData* gaugeAllocate(const char* name);
+bool gaugeRemove(const char* name);
+void gaugeInit();
+bool gaugeRowCountFits(JsonObject doc);
+void gaugeApplyJsonFields(GaugeData* gauge, JsonObject doc);
+void displayShowGauge(GaugeData* gauge, const AppItem* app);
+void displayDrawGaugeTitle(GaugeData* gauge, bool showBadge, bool dimColors);
+
 // Notification management
 void notifInit();
 int8_t notifAdd(const char* id, const char* text, const char* icon,
@@ -687,6 +742,8 @@ void mqttHandleIndicator(uint8_t index, JsonObject& doc);
 void mqttHandleWeather(JsonObject& doc);
 void mqttHandleTracker(const char* name, JsonObject& doc);
 void mqttHandleTrackerDelete(const char* name);
+void mqttHandleGauge(const char* name, JsonObject& doc);
+void mqttHandleGaugeDelete(const char* name);
 void mqttHandleSettings(JsonObject& doc);
 void mqttHandleBrightness(JsonObject& doc);
 void mqttHandleReboot();
@@ -736,6 +793,9 @@ void setup() {
 
     // Initialize tracker system
     trackerInit();
+
+    // Initialize gauge system
+    gaugeInit();
 
     // Initialize notification system
     notifInit();
@@ -1286,6 +1346,114 @@ void trackerApplyJsonFields(TrackerData* tracker, JsonObject doc) {
                 tracker->sparkline[i] = (uint16_t)(normalized * 65535.0f);
             }
             tracker->sparklineCount = count;
+        }
+    }
+}
+
+// ============================================================================
+// Gauge Functions
+// ============================================================================
+
+#define GAUGE_NOTE_COLOR 0x969696
+
+// The store keeps its own copy of the name while the rotation app id is built from the incoming
+// one, so a name the store would have to shorten is refused instead: the two spellings drifting
+// apart is what makes a gauge impossible to draw, to find and to delete.
+bool gaugeNameFits(const char* name) {
+    return strlen(name) < sizeof(GaugeData::name);
+}
+
+GaugeData* gaugeFind(const char* name) {
+    for (uint8_t i = 0; i < MAX_GAUGE_APPS; i++) {
+        if (gauges[i].valid && strcmp(gauges[i].name, name) == 0) {
+            return &gauges[i];
+        }
+    }
+    return nullptr;
+}
+
+GaugeData* gaugeAllocate(const char* name) {
+    // Check if already exists
+    GaugeData* existing = gaugeFind(name);
+    if (existing) return existing;
+
+    // Find first free slot
+    for (uint8_t i = 0; i < MAX_GAUGE_APPS; i++) {
+        if (!gauges[i].valid) {
+            memset(&gauges[i], 0, sizeof(GaugeData));
+            strlcpy(gauges[i].name, name, sizeof(gauges[i].name));
+            gauges[i].valid = true;
+            gaugeCount++;
+            return &gauges[i];
+        }
+    }
+    return nullptr;
+}
+
+bool gaugeRemove(const char* name) {
+    GaugeData* gauge = gaugeFind(name);
+    if (!gauge) return false;
+
+    gauge->valid = false;
+    gaugeCount--;
+
+    // Remove corresponding app from rotation
+    char appId[32];
+    snprintf(appId, sizeof(appId), "%s%s", GAUGE_ID_PREFIX, name);
+    appRemove(appId);
+
+    Serial.printf("[GAUGE] Removed: %s\n", name);
+    return true;
+}
+
+void gaugeInit() {
+    memset(gauges, 0, sizeof(gauges));
+    gaugeCount = 0;
+    Serial.println("[GAUGE] Initialized");
+}
+
+// A gauge's stale policy is stored on its rotation app, alongside every other app's.
+const AppItem* gaugeFindApp(const char* name) {
+    char appId[32];
+    snprintf(appId, sizeof(appId), "%s%s", GAUGE_ID_PREFIX, name);
+    int8_t index = appFind(appId);
+    return index >= 0 ? &apps[index] : nullptr;
+}
+
+// Asked before a slot is taken, so an oversized payload is refused without the caller having
+// anything to undo. A payload without a rows array is accepted: it leaves the rows in place.
+bool gaugeRowCountFits(JsonObject doc) {
+    return !doc["rows"].is<JsonArray>() || doc["rows"].as<JsonArray>().size() <= MAX_GAUGE_ROWS;
+}
+
+void gaugeApplyJsonFields(GaugeData* gauge, JsonObject doc) {
+    if (!doc["title"].isNull()) {
+        strlcpy(gauge->title, doc["title"] | "", sizeof(gauge->title));
+    }
+    if (!doc["icon"].isNull()) {
+        strlcpy(gauge->icon, doc["icon"] | "", sizeof(gauge->icon));
+    }
+
+    if (doc["rows"].is<JsonArray>()) {
+        JsonArray rowsArray = doc["rows"];
+        memset(gauge->rows, 0, sizeof(gauge->rows));
+        gauge->rowCount = 0;
+
+        for (JsonObject rowObject : rowsArray) {
+            GaugeRow* row = &gauge->rows[gauge->rowCount];
+            strlcpy(row->label, rowObject["label"] | "", sizeof(row->label));
+            strlcpy(row->info, rowObject["info"] | "", sizeof(row->info));
+            strlcpy(row->value, rowObject["value"] | "", sizeof(row->value));
+            strlcpy(row->note, rowObject["note"] | "", sizeof(row->note));
+
+            int percent = rowObject["percent"] | 0;
+            if (percent < 0) percent = 0;
+            if (percent > 100) percent = 100;
+            row->percent = (uint8_t)percent;
+
+            row->barColor = parseColorValue(rowObject["color"], 0xFFFFFF);
+            row->noteColor = parseColorValue(rowObject["noteColor"], GAUGE_NOTE_COLOR);
+            gauge->rowCount++;
         }
     }
 }
@@ -1951,6 +2119,390 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
     drawSeparatorLine(55, dimGray);
 
     displayDrawTrackerBottom(tracker, dimColors);
+
+    drawIndicators();
+
+    #if DOUBLE_BUFFER
+        dma_display->flipDMABuffer();
+    #endif
+}
+
+// ============================================================
+// Layout map (64x64 display) - app "gauge"
+// NULL font: setCursor = top-left of the glyph cell, 6px advance, 7px tall
+// TomThumb:  setCursor = baseline, capitals sit 5px above it
+//
+// y=0-11:   header - 8x8 icon at x=2, title at x=13; without an icon the title starts at x=2,
+//                    or at x=6 when the top-left indicator is lit. It scrolls when it overflows.
+//                    Stale data takes the icon's place with a STALE badge at x=42, or at x=39
+//                    when the top-right indicator is lit.
+// y=12:     separator line
+// y=14-55:  three 14px row bands; a page holding one or two rows is centred in the band instead
+//           y=14-27:  row 1 - label/info/value baseline y=19, bar y=20-24
+//           y=28-41:  row 2 - baseline y=33, bar y=34-38
+//           y=42-55:  row 3 - baseline y=47, bar y=48-52
+// y=59-60:  carousel dots, horizontal, centred
+// ============================================================
+#define GAUGE_HEADER_HEIGHT       12
+#define GAUGE_TITLE_X             13
+#define GAUGE_TITLE_X_NO_ICON     2
+// drawIndicators paints the top-left corner after the header. With an icon under it the title
+// already starts clear of the footprint; without one it has to be pushed past it by hand.
+#define GAUGE_TITLE_X_PAST_INDICATOR (INDICATOR_FOOTPRINT + 1)
+#define GAUGE_TITLE_Y             4
+#define GAUGE_STALE_BADGE_X       42
+#define GAUGE_BADGE_WIDTH         20   // "STALE" in TomThumb, five glyph advances
+#define GAUGE_BADGE_GUTTER        4
+// The top-right indicator is painted over the header after it, so while it is in use the badge
+// sits entirely left of its footprint rather than losing the top rows of its last glyph. The
+// blank column TomThumb carries in every advance is what keeps the two from touching.
+#define GAUGE_BADGE_X_PAST_INDICATOR (DISPLAY_WIDTH - INDICATOR_FOOTPRINT - GAUGE_BADGE_WIDTH)
+#define GAUGE_SEPARATOR_Y         12
+#define GAUGE_ROWS_PER_PAGE       3
+#define GAUGE_ROW_TOP_Y           14
+#define GAUGE_ROW_HEIGHT          14
+#define GAUGE_ROW_BASELINE_OFFSET 5
+#define GAUGE_BAR_OFFSET_Y        6
+#define GAUGE_BAR_HEIGHT          5
+#define GAUGE_BAR_X               1
+#define GAUGE_LABEL_X             1
+#define GAUGE_RIGHT_X             62
+#define GAUGE_FIELD_GUTTER        2
+#define GAUGE_DOT_Y               59
+
+// A field right-aligned on GAUGE_RIGHT_X stops its ink two columns earlier, because TomThumb
+// carries a blank column inside every glyph advance. The bar ends on that same column so its
+// right edge lines up with the values stacked above it.
+#define GAUGE_BAR_RIGHT_X         (GAUGE_RIGHT_X - 2)
+#define GAUGE_NOTE_WIDTH          20   // Five TomThumb glyphs, the widest note a row has room for
+#define GAUGE_BAR_WIDTH_FULL      (GAUGE_BAR_RIGHT_X - GAUGE_BAR_X + 1)
+#define GAUGE_BAR_WIDTH_WITH_NOTE (GAUGE_BAR_WIDTH_FULL - GAUGE_NOTE_WIDTH - GAUGE_FIELD_GUTTER)
+
+// The client picks the bar and note colours; the three text fields are fixed so the value,
+// the only figure being read, keeps the strongest contrast.
+#define GAUGE_TITLE_COLOR         0xFFFFFF
+#define GAUGE_LABEL_COLOR         0xC8C8C8
+#define GAUGE_INFO_COLOR          0x969696
+#define GAUGE_VALUE_COLOR         0xFFFFFF
+#define GAUGE_BAR_OUTLINE_COLOR   0x505050
+#define GAUGE_SEPARATOR_COLOR     0x282828
+#define GAUGE_DOT_ACTIVE_COLOR    0x783CC8
+#define GAUGE_DOT_IDLE_COLOR      0x282828
+
+// The carousel is what the rows are shown through, and displayShowGauge clamps its page count
+// to MAX_CAROUSEL_PAGES: rows past this product would be stored, returned by the API and never
+// drawn, which is exactly the silent amputation the explicit refusal exists to avoid.
+static_assert(MAX_GAUGE_ROWS <= GAUGE_ROWS_PER_PAGE * MAX_CAROUSEL_PAGES,
+              "MAX_GAUGE_ROWS must not exceed what the carousel can display");
+
+// The rotation app id is GAUGE_ID_PREFIX followed by the gauge name, and a name the store keeps
+// whole must reach that id whole too, or the gauge can no longer be found, drawn or deleted.
+static_assert(sizeof(GAUGE_ID_PREFIX) - 1 + sizeof(GaugeData::name) <= sizeof(AppItem::id),
+              "GAUGE_ID_PREFIX plus a full-length gauge name must fit AppItem::id");
+
+uint16_t gaugeColor565(uint32_t color, bool dimColors) {
+    uint32_t shown = dimColors ? dimColorQuarter(color) : color;
+    return dma_display->color565((shown >> 16) & 0xFF, (shown >> 8) & 0xFF, shown & 0xFF);
+}
+
+// Goes through the shared label primitive rather than print(): TomThumb has no glyph past 0x7E,
+// and GFX drops such a byte without advancing the cursor, so a plain print() of an accented
+// field would draw fewer glyphs than every width this layout measures for it. The primitive
+// transliterates instead, exactly as calculateTomThumbTextWidth counts, and restores the
+// default font on the way out.
+void printGaugeRowField(const char* text, int16_t x, int16_t baselineY,
+                        uint32_t color, bool dimColors) {
+    printLabelWithSegments(text, x, baselineY, dimColors ? dimColorQuarter(color) : color,
+                           nullptr, 0, false);
+}
+
+enum GaugeFieldPlacement : uint8_t {
+    GAUGE_FIELD_RIGHT_ALIGNED,
+    GAUGE_FIELD_CENTRED
+};
+
+// Places a field between its two neighbours, cut on the last glyph that fits before it is
+// placed: a gap narrower than the text can then neither push it off the panel nor let it paint
+// over either neighbour. Right-aligned and centred differ only in where the leftover width
+// goes - all of it on the left, or half on each side. Returns the x the field was drawn at.
+int16_t printGaugeRowFieldWithinBounds(const char* text, int16_t leftBound, int16_t rightBound,
+                                       GaugeFieldPlacement placement, int16_t baselineY,
+                                       uint32_t color, bool dimColors) {
+    char fitted[sizeof(GaugeRow::info)];
+    truncateTomThumbTextToWidth(text, fitted, sizeof(fitted), rightBound - leftBound);
+
+    int16_t leftoverWidth = rightBound - leftBound - calculateTomThumbTextWidth(fitted);
+    int16_t x = leftBound + (placement == GAUGE_FIELD_CENTRED ? leftoverWidth / 2 : leftoverWidth);
+    printGaugeRowField(fitted, x, baselineY, color, dimColors);
+    return x;
+}
+
+// Read by the badge itself and by the title, which stops short of it: the two have to agree on
+// where the badge sits or the title runs into it.
+int16_t gaugeStaleBadgeX() {
+    return indicators[1].mode != INDICATOR_OFF ? GAUGE_BADGE_X_PAST_INDICATOR
+                                               : GAUGE_STALE_BADGE_X;
+}
+
+// --- Header, the title alone (y=0..11) ---
+// Runs every scroll step, and the DMA reads this framebuffer while it is being written, so it
+// touches nothing outside the strip the title moves in.
+void displayDrawGaugeTitle(GaugeData* gauge, bool showBadge, bool dimColors) {
+    uint16_t black = dma_display->color565(0, 0, 0);
+
+    // Taken from the last full redraw rather than the cache, so an icon evicted mid-scroll
+    // cannot shift the title sideways
+    int16_t titleAreaX = gaugeIconDrawn ? GAUGE_TITLE_X : GAUGE_TITLE_X_NO_ICON;
+    int16_t titleAreaEnd = showBadge ? GAUGE_STALE_BADGE_X - GAUGE_BADGE_GUTTER : DISPLAY_WIDTH;
+
+    dma_display->fillRect(titleAreaX, 0, titleAreaEnd - titleAreaX, GAUGE_HEADER_HEIGHT, black);
+
+    // A blinking indicator in its off phase is the only one drawIndicators leaves unpainted, so
+    // it is the only one whose corner has to be cleared here for it to blink at all. Clearing it
+    // in the other modes would black out the nine icon pixels the top-left corner covers, twenty
+    // times a second, only for drawIndicators to paint over them again.
+    for (uint8_t corner = 0; corner < 2; corner++) {
+        if (indicators[corner].mode != INDICATOR_BLINK) continue;
+        int16_t cornerX = (corner == 0) ? 0 : DISPLAY_WIDTH - INDICATOR_FOOTPRINT;
+        dma_display->fillRect(cornerX, 0, INDICATOR_FOOTPRINT, INDICATOR_FOOTPRINT, black);
+
+        if (corner == 0 && gaugeIconDrawn) {
+            // Cache-only lookup: getIcon would fall back to a filesystem read, 20 times a second
+            drawIconAtScale(getCachedIcon(gauge->icon), 2, 2, 1);
+        }
+    }
+
+    // Both bounds close in only once the band above has been erased at its widest, so that an
+    // indicator switched on mid-app cannot leave part of an old glyph behind at either end
+    if (!gaugeIconDrawn && indicators[0].mode != INDICATOR_OFF) {
+        titleAreaX = GAUGE_TITLE_X_PAST_INDICATOR;
+    }
+    if (showBadge) {
+        titleAreaEnd = gaugeStaleBadgeX() - GAUGE_BADGE_GUTTER;
+    }
+
+    scrollStateArm(gaugeTitleScrollState, calculateTextWidth(gauge->title),
+                   titleAreaEnd - titleAreaX);
+
+    int16_t titleX = titleAreaX;
+    if (gaugeTitleScrollState.needsScroll) {
+        titleX -= gaugeTitleScrollState.scrollOffset;
+    }
+
+    dma_display->setFont(NULL);  // Default 5x7 font
+    dma_display->setTextSize(1);
+    printTextWithinBounds(gauge->title, titleX, GAUGE_TITLE_Y, titleAreaX, titleAreaEnd,
+                          dimColors ? dimColorQuarter(GAUGE_TITLE_COLOR) : GAUGE_TITLE_COLOR);
+}
+
+// --- Header: icon + title (y=0..11) ---
+// Reached only from the full repaint, which clears the screen first, so the band arrives black
+// and nothing is erased here.
+void displayDrawGaugeHeader(GaugeData* gauge, bool showBadge, bool dimColors, CachedIcon* icon) {
+    // The badge occupies 20 of the header's 64 pixels. Keeping the icon as well would leave the
+    // title 25 px, less than the 36 a six-character title needs, so the badge takes the icon's
+    // place: a stale screen says what it is rather than which icon it had.
+    gaugeIconDrawn = (icon && icon->valid) && !showBadge;
+    if (gaugeIconDrawn) {
+        drawIconAtScale(icon, 2, 2, 1);
+    }
+
+    if (showBadge) {
+        dma_display->setFont(&TomThumb);
+        dma_display->setTextColor(dma_display->color565(200, 0, 0));
+        dma_display->setCursor(gaugeStaleBadgeX(), 6);
+        dma_display->print("STALE");
+    }
+
+    displayDrawGaugeTitle(gauge, showBadge, dimColors);
+
+    // Contract for the rows drawn after this one: default font, size 1
+    dma_display->setFont(NULL);
+    dma_display->setTextSize(1);
+}
+
+// --- One row, two lines (14px band) ---
+// Draws only its own ink: displayDrawGaugePage blacks the whole row band before calling this,
+// and every page it lays out sits inside that band.
+void displayDrawGaugeRow(const GaugeRow* row, int16_t topY, bool dimColors) {
+    int16_t baselineY = topY + GAUGE_ROW_BASELINE_OFFSET;
+
+    // The value owns the right edge and the label the left. The label is the only field allowed
+    // to lose characters, so it takes what is left once the value, the info and their gutters
+    // are reserved; the info is then centred in the gap those two actually leave open.
+    int16_t columnRightBound = GAUGE_RIGHT_X;
+
+    if (row->value[0]) {
+        columnRightBound = printGaugeRowFieldWithinBounds(row->value, GAUGE_LABEL_X, GAUGE_RIGHT_X,
+                                                          GAUGE_FIELD_RIGHT_ALIGNED, baselineY,
+                                                          GAUGE_VALUE_COLOR, dimColors)
+                           - GAUGE_FIELD_GUTTER;
+    }
+
+    int16_t labelMaxWidth = columnRightBound - GAUGE_LABEL_X;
+    if (row->info[0]) {
+        labelMaxWidth -= calculateTomThumbTextWidth(row->info) + GAUGE_FIELD_GUTTER;
+    }
+
+    int16_t labelWidth = 0;
+    if (row->label[0]) {
+        char clippedLabel[sizeof(row->label)];
+        truncateTomThumbTextToWidth(row->label, clippedLabel, sizeof(clippedLabel), labelMaxWidth);
+        printGaugeRowField(clippedLabel, GAUGE_LABEL_X, baselineY, GAUGE_LABEL_COLOR, dimColors);
+        labelWidth = calculateTomThumbTextWidth(clippedLabel);
+    }
+
+    if (row->info[0]) {
+        int16_t gapStart = labelWidth > 0 ? GAUGE_LABEL_X + labelWidth + GAUGE_FIELD_GUTTER
+                                          : GAUGE_LABEL_X;
+        printGaugeRowFieldWithinBounds(row->info, gapStart, columnRightBound, GAUGE_FIELD_CENTRED,
+                                       baselineY, GAUGE_INFO_COLOR, dimColors);
+    }
+
+    int16_t barY = topY + GAUGE_BAR_OFFSET_Y;
+    int16_t barWidth = row->note[0] ? GAUGE_BAR_WIDTH_WITH_NOTE : GAUGE_BAR_WIDTH_FULL;
+
+    dma_display->drawRect(GAUGE_BAR_X, barY, barWidth, GAUGE_BAR_HEIGHT,
+                          gaugeColor565(GAUGE_BAR_OUTLINE_COLOR, dimColors));
+
+    // Rounded to the nearest pixel, with a floor of one so that any share above zero is visible
+    // at all - the same arithmetic the hourly rain bars use.
+    if (row->percent > 0) {
+        int16_t fillWidth = (int16_t)max(1, (row->percent * (barWidth - 2) + 50) / 100);
+        dma_display->fillRect(GAUGE_BAR_X + 1, barY + 1, fillWidth, GAUGE_BAR_HEIGHT - 2,
+                              gaugeColor565(row->barColor, dimColors));
+    }
+
+    if (row->note[0]) {
+        printGaugeRowFieldWithinBounds(row->note, GAUGE_BAR_X + barWidth + GAUGE_FIELD_GUTTER,
+                                       GAUGE_RIGHT_X, GAUGE_FIELD_RIGHT_ALIGNED,
+                                       barY + GAUGE_BAR_HEIGHT, row->noteColor, dimColors);
+    }
+}
+
+// --- Carousel page: the rows it holds (y=14..55) plus the dots (y=59..60) ---
+void displayDrawGaugePage(GaugeData* gauge, uint8_t page, uint8_t pageCount, bool dimColors) {
+    uint16_t black = dma_display->color565(0, 0, 0);
+
+    uint8_t firstRow = page * GAUGE_ROWS_PER_PAGE;
+    uint8_t rowsOnPage = firstRow < gauge->rowCount
+        ? min((uint8_t)(gauge->rowCount - firstRow), (uint8_t)GAUGE_ROWS_PER_PAGE)
+        : 0;
+
+    // The whole band is wiped first, so a page shorter than the one before it leaves none of its
+    // rows behind, and the short page then sits in the middle of the band rather than at its top.
+    dma_display->fillRect(0, GAUGE_ROW_TOP_Y, DISPLAY_WIDTH,
+                          GAUGE_ROWS_PER_PAGE * GAUGE_ROW_HEIGHT, black);
+
+    int16_t rowsTopY = GAUGE_ROW_TOP_Y +
+                       ((GAUGE_ROWS_PER_PAGE - rowsOnPage) * GAUGE_ROW_HEIGHT) / 2;
+
+    for (uint8_t slot = 0; slot < rowsOnPage; slot++) {
+        displayDrawGaugeRow(&gauge->rows[firstRow + slot],
+                            rowsTopY + slot * GAUGE_ROW_HEIGHT, dimColors);
+    }
+
+    const int16_t dotSize = 2;
+    const int16_t dotPitch = 3;
+
+    dma_display->fillRect(0, GAUGE_DOT_Y, DISPLAY_WIDTH, dotSize, black);
+
+    if (pageCount > 1) {
+        int16_t startX = (DISPLAY_WIDTH - (pageCount * dotPitch - 1)) / 2;
+        for (uint8_t dot = 0; dot < pageCount; dot++) {
+            uint32_t dotColor = (dot == page) ? GAUGE_DOT_ACTIVE_COLOR : GAUGE_DOT_IDLE_COLOR;
+            // Never dimmed: a quarter of the idle grey is (8,8,8), which the panel does not
+            // show, and stale data is exactly when the reader needs to know pages exist.
+            dma_display->fillRect(startX + dot * dotPitch, GAUGE_DOT_Y, dotSize, dotSize,
+                                  gaugeColor565(dotColor, false));
+        }
+    }
+}
+
+// Display gauge layout on 64x64 matrix
+void displayShowGauge(GaugeData* gauge, const AppItem* app) {
+    if (!gauge) return;
+
+    bool isStale = appIsStale(app);
+    bool showBadge = isStale && (app->staleBehavior == STALE_DIM || app->staleBehavior == STALE_BADGE);
+    bool dimColors = isStale && app->staleBehavior == STALE_DIM;
+
+    uint8_t pageCount = max((uint8_t)1,
+                            (uint8_t)((gauge->rowCount + GAUGE_ROWS_PER_PAGE - 1) / GAUGE_ROWS_PER_PAGE));
+    pageCount = min(pageCount, (uint8_t)MAX_CAROUSEL_PAGES);
+
+    // Every page shows for its share of the app's slot, so the carousel never lengthens the rotation
+    unsigned long pageInterval = (unsigned long)app->duration / pageCount;
+
+    // The API handler runs on another task and can reset gaugePage mid-frame, so the whole
+    // frame is drawn from one snapshot of it
+    uint8_t currentPage = gaugePage;
+
+    // A payload with fewer rows can leave the carousel parked on a page that no longer exists
+    if (currentPage >= pageCount) {
+        currentPage = 0;
+    }
+
+    bool pageChanged = false;
+    if (pageCount > 1) {
+        unsigned long now = millis();
+        if (now - lastGaugePageSwitch >= pageInterval) {
+            currentPage = (currentPage + 1) % pageCount;
+            lastGaugePageSwitch = now;
+            pageChanged = true;
+        }
+    }
+
+    gaugePage = currentPage;
+
+    // The title and the badge both step aside for the top indicators, so the header has to be
+    // laid out again when one of them is switched on or off
+    uint8_t topIndicatorsInUse = (indicators[0].mode != INDICATOR_OFF ? 1 : 0) |
+                                 (indicators[1].mode != INDICATOR_OFF ? 2 : 0);
+
+    // A gauge screen shows a fixed snapshot, and a full paint costs an icon lookup plus the
+    // whole layout, so it only runs when the data arrives or goes stale.
+    bool contentChanged = (gaugeLastUpdateDrawn != gauge->lastUpdate) ||
+                          (gaugeBadgeDrawn != showBadge) ||
+                          (gaugeDimDrawn != dimColors) ||
+                          (gaugeTopIndicatorsDrawn != topIndicatorsInUse);
+
+    if (contentChanged) {
+        gaugeLastUpdateDrawn = gauge->lastUpdate;
+        gaugeBadgeDrawn = showBadge;
+        gaugeDimDrawn = dimColors;
+        gaugeTopIndicatorsDrawn = topIndicatorsInUse;
+        gaugeFullRepaintsPending = DISPLAY_BUFFER_COUNT;
+    }
+    // The carousel turning is the only thing that needs the rows redrawn on their own: new data
+    // already arms the full repaint above, which draws the page as part of the whole screen.
+    if (pageChanged) {
+        gaugeRowRepaintsPending = DISPLAY_BUFFER_COUNT;
+    }
+
+    bool needsFullRedraw = consumePendingRepaint(gaugeFullRepaintsPending);
+    bool needsRowRedraw = consumePendingRepaint(gaugeRowRepaintsPending);
+
+    if (!needsFullRedraw) {
+        if (needsRowRedraw) {
+            displayDrawGaugePage(gauge, currentPage, pageCount, dimColors);
+        }
+        if (gaugeTitleScrollState.needsScroll) {
+            displayDrawGaugeTitle(gauge, showBadge, dimColors);
+        }
+        drawIndicators();
+        #if DOUBLE_BUFFER
+            dma_display->flipDMABuffer();
+        #endif
+        return;
+    }
+
+    dma_display->clearScreen();
+
+    displayDrawGaugeHeader(gauge, showBadge, dimColors, getIcon(gauge->icon));
+    // Undimmed for the same reason as the dots: it frames the screen instead of carrying data
+    drawSeparatorLine(GAUGE_SEPARATOR_Y, gaugeColor565(GAUGE_SEPARATOR_COLOR, false));
+    displayDrawGaugePage(gauge, currentPage, pageCount, dimColors);
 
     drawIndicators();
 
@@ -2691,6 +3243,7 @@ void displayShowApp(AppItem* app) {
         // Reset tracker display cache to force full redraw
         trackerLastUpdateDrawn = 0;
         resetTrackerScrollStates();
+        resetGaugeDisplayState();
         // Reset forecast pagination to first page
         forecastPage = 0;
         lastForecastPageSwitch = millis();
@@ -2725,6 +3278,24 @@ void displayShowApp(AppItem* app) {
                 resetScrollState();
             }
             displayShowTracker(tracker, app);
+            return;
+        }
+        // Fallback to default custom app layout if no data
+    }
+
+    // Gauge layout apps (ID starts with "gauge_")
+    if (strncmp(app->id, GAUGE_ID_PREFIX, strlen(GAUGE_ID_PREFIX)) == 0) {
+        const char* gaugeName = app->id + strlen(GAUGE_ID_PREFIX);
+        GaugeData* gauge = gaugeFind(gaugeName);
+        if (gauge && gauge->valid) {
+            // The custom layout below may have rendered this app moments ago, while its gauge
+            // data was still missing, arming appScrollState with the title it printed as plain
+            // text. Nothing else disarms it, and the loop would keep asking for 20 redraws a
+            // second for a string no longer drawn.
+            if (appScrollState.needsScroll) {
+                resetScrollState();
+            }
+            displayShowGauge(gauge, app);
             return;
         }
         // Fallback to default custom app layout if no data
@@ -3142,6 +3713,36 @@ int16_t calculateTomThumbTextWidth(const char* text)
     return totalWidth;
 }
 
+// TomThumb advances differ per glyph, so text that overruns its column is cut on the last
+// glyph that fits rather than on a character count.
+void truncateTomThumbTextToWidth(const char* text, char* buffer, size_t bufferSize,
+                                 int16_t maxWidth) {
+    size_t writtenBytes = 0;
+    int16_t usedWidth = 0;
+    const uint8_t* character = (const uint8_t*)text;
+
+    while (*character) {
+        // An accented letter arrives as two bytes and is drawn as one transliterated glyph
+        uint8_t glyphByteCount = (*character == 0xC3 && *(character + 1)) ? 2 : 1;
+        char glyphBytes[3] = {(char)character[0], '\0', '\0'};
+        if (glyphByteCount == 2) {
+            glyphBytes[1] = (char)character[1];
+        }
+
+        int16_t glyphWidth = calculateTomThumbTextWidth(glyphBytes);
+        if (usedWidth + glyphWidth > maxWidth) break;
+        if (writtenBytes + glyphByteCount >= bufferSize) break;
+
+        for (uint8_t i = 0; i < glyphByteCount; i++) {
+            buffer[writtenBytes++] = (char)character[i];
+        }
+        usedWidth += glyphWidth;
+        character += glyphByteCount;
+    }
+
+    buffer[writtenBytes] = '\0';
+}
+
 // One three-phase run for every scrolling text on screen: pause at the start, step one pixel
 // per SCROLL_SPEED, pause at the end, rewind. Returns whether the caller has to repaint.
 bool scrollStateAdvance(ScrollState& state, unsigned long now) {
@@ -3209,6 +3810,13 @@ void resetNotifScrollState() {
 void resetTrackerScrollStates() {
     scrollStateReset(trackerSymbolScrollState);
     scrollStateReset(trackerBottomScrollState);
+}
+
+void resetGaugeDisplayState() {
+    gaugeLastUpdateDrawn = 0;
+    scrollStateReset(gaugeTitleScrollState);
+    gaugePage = 0;
+    lastGaugePageSwitch = millis();
 }
 
 // ============================================================================
@@ -4460,7 +5068,7 @@ void setupWebServer() {
             }
             if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
                 request->send(400, "application/json",
-                    "{\"error\":\"staleBehavior dim and badge are only supported on tracker apps\"}");
+                    "{\"error\":\"staleBehavior dim and badge are only supported on tracker and gauge apps\"}");
                 return;
             }
 
@@ -4707,7 +5315,7 @@ void setupWebServer() {
             }
             if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
                 request->send(400, "application/json",
-                    "{\"error\":\"staleBehavior dim and badge are only supported on tracker apps\"}");
+                    "{\"error\":\"staleBehavior dim and badge are only supported on tracker and gauge apps\"}");
                 return;
             }
             weatherClockApplyStalePolicy(staleAfter, staleBehavior);
@@ -4888,6 +5496,186 @@ void setupWebServer() {
             request->send(200, "application/json", "{\"success\":true}");
         });
     webServer.addHandler(trackerHandler);
+
+    // ========================================================================
+    // Gauge API
+    // ========================================================================
+
+    // GET /api/gauges - List all active gauges
+    webServer.on("/api/gauges", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        JsonArray arr = doc["gauges"].to<JsonArray>();
+
+        for (uint8_t i = 0; i < MAX_GAUGE_APPS; i++) {
+            if (gauges[i].valid) {
+                JsonObject g = arr.add<JsonObject>();
+                g["name"] = gauges[i].name;
+                g["title"] = gauges[i].title;
+                g["rowCount"] = gauges[i].rowCount;
+                unsigned long ageMs = millis() - gauges[i].lastUpdate;
+                const AppItem* gaugeApp = gaugeFindApp(gauges[i].name);
+                g["age"] = ageMs / 1000;
+                g["stale"] = appIsStale(gaugeApp);
+                if (gaugeApp) {
+                    g["staleAfter"] = gaugeApp->staleAfter / 1000;
+                    g["staleBehavior"] = staleBehaviorName(gaugeApp->staleBehavior);
+                }
+            }
+        }
+        doc["count"] = gaugeCount;
+
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // GET /api/gauge?name=claude - Get single gauge data
+    webServer.on("/api/gauge", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!request->hasParam("name")) {
+            request->send(400, "application/json", "{\"error\":\"Missing gauge name\"}");
+            return;
+        }
+
+        String name = request->getParam("name")->value();
+        GaugeData* gauge = gaugeFind(name.c_str());
+
+        if (!gauge) {
+            request->send(404, "application/json", "{\"error\":\"Gauge not found\"}");
+            return;
+        }
+
+        JsonDocument doc;
+        doc["name"] = gauge->name;
+        doc["title"] = gauge->title;
+        doc["icon"] = gauge->icon;
+
+        JsonArray rowsArray = doc["rows"].to<JsonArray>();
+        for (uint8_t i = 0; i < gauge->rowCount; i++) {
+            const GaugeRow* row = &gauge->rows[i];
+            JsonObject rowObject = rowsArray.add<JsonObject>();
+            rowObject["label"] = row->label;
+            rowObject["info"] = row->info;
+            rowObject["value"] = row->value;
+            rowObject["note"] = row->note;
+            rowObject["percent"] = row->percent;
+            char barColorHex[8];
+            formatColorHex(row->barColor, barColorHex, sizeof(barColorHex));
+            rowObject["color"] = barColorHex;
+            char noteColorHex[8];
+            formatColorHex(row->noteColor, noteColorHex, sizeof(noteColorHex));
+            rowObject["noteColor"] = noteColorHex;
+        }
+
+        unsigned long ageMs = millis() - gauge->lastUpdate;
+        const AppItem* gaugeApp = gaugeFindApp(gauge->name);
+        doc["age"] = ageMs / 1000;
+        doc["stale"] = appIsStale(gaugeApp);
+        if (gaugeApp) {
+            doc["staleAfter"] = gaugeApp->staleAfter / 1000;
+            doc["staleBehavior"] = staleBehaviorName(gaugeApp->staleBehavior);
+        }
+
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // DELETE /api/gauge?name=claude - Remove gauge
+    webServer.on("/api/gauge", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+        if (!request->hasParam("name")) {
+            request->send(400, "application/json", "{\"error\":\"Missing gauge name\"}");
+            return;
+        }
+
+        String name = request->getParam("name")->value();
+        if (gaugeRemove(name.c_str())) {
+            request->send(200, "application/json", "{\"success\":true}");
+        } else {
+            request->send(404, "application/json", "{\"error\":\"Gauge not found\"}");
+        }
+    });
+
+    // POST /api/gauge?name=claude - Create/update gauge
+    AsyncCallbackJsonWebHandler* gaugeHandler = new AsyncCallbackJsonWebHandler("/api/gauge",
+        [](AsyncWebServerRequest *request, JsonVariant &json) {
+            Serial.println("[API] /gauge handler called");
+            JsonObject doc = json.as<JsonObject>();
+
+            if (doc.isNull()) {
+                request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
+            }
+
+            // Get gauge name from query param or JSON
+            String name;
+            if (request->hasParam("name")) {
+                name = request->getParam("name")->value();
+            } else if (!doc["name"].isNull()) {
+                name = doc["name"].as<String>();
+            } else {
+                request->send(400, "application/json", "{\"error\":\"Missing gauge name\"}");
+                return;
+            }
+
+            // A name longer than the store holds would be truncated there but not in the app id
+            // built below, and the two would stop matching: the gauge would never be found again,
+            // neither to draw it nor to delete it, while still holding one of the two slots.
+            char errorMessage[64];
+            if (!gaugeNameFits(name.c_str())) {
+                snprintf(errorMessage, sizeof(errorMessage),
+                         "{\"error\":\"Gauge name too long (max %d)\"}",
+                         (int)sizeof(GaugeData::name) - 1);
+                request->send(400, "application/json", errorMessage);
+                return;
+            }
+
+            if (!gaugeRowCountFits(doc)) {
+                snprintf(errorMessage, sizeof(errorMessage),
+                         "{\"error\":\"Too many rows (max %d)\"}", MAX_GAUGE_ROWS);
+                request->send(400, "application/json", errorMessage);
+                return;
+            }
+
+            // Everything the request can be refused on is checked before a slot is taken, so a
+            // rejected POST leaves the device exactly as it found it
+            StaleBehavior staleBehavior = STALE_DIM;
+            if (!doc["staleBehavior"].isNull() &&
+                !parseStaleBehavior(doc["staleBehavior"], &staleBehavior)) {
+                request->send(400, "application/json",
+                    "{\"error\":\"staleBehavior must be hide, dim, badge or none\"}");
+                return;
+            }
+
+            uint32_t staleAfter = GAUGE_DEFAULT_STALE_AFTER;
+            if (!doc["staleAfter"].isNull()) {
+                staleAfter = staleAfterSecondsToMillis(doc["staleAfter"].as<uint32_t>());
+            }
+
+            // Allocate or find existing gauge
+            GaugeData* gauge = gaugeAllocate(name.c_str());
+            if (!gauge) {
+                request->send(500, "application/json", "{\"error\":\"No gauge slot available\"}");
+                return;
+            }
+
+            gaugeApplyJsonFields(gauge, doc);
+            gauge->lastUpdate = millis();
+
+            // Register/update app in rotation
+            char appId[32];
+            snprintf(appId, sizeof(appId), "%s%s", GAUGE_ID_PREFIX, name.c_str());
+            uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
+            int8_t appIndex = appAdd(appId, gauge->title, gauge->icon, 0xFFFFFF,
+                                     duration, staleAfter, false);
+            if (appIndex >= 0) {
+                apps[appIndex].staleBehavior = staleBehavior;
+            }
+
+            Serial.printf("[GAUGE] Updated: %s (%s, %d rows)\n",
+                         name.c_str(), gauge->title, gauge->rowCount);
+            request->send(200, "application/json", "{\"success\":true}");
+        });
+    webServer.addHandler(gaugeHandler);
 
     // ========================================================================
     // Sleep API
@@ -5250,6 +6038,19 @@ void setupWebServer() {
             }
             return;
         }
+        if (method == HTTP_DELETE_METHOD && url == "/api/gauge") {
+            if (!request->hasParam("name")) {
+                request->send(400, "application/json", "{\"error\":\"Missing gauge name\"}");
+                return;
+            }
+            String name = request->getParam("name")->value();
+            if (gaugeRemove(name.c_str())) {
+                request->send(200, "application/json", "{\"success\":true}");
+            } else {
+                request->send(404, "application/json", "{\"error\":\"Gauge not found\"}");
+            }
+            return;
+        }
         if (method == HTTP_DELETE_METHOD && url.startsWith("/api/indicator")) {
             // Extract indicator number from URL (last char)
             char lastChar = url.charAt(url.length() - 1);
@@ -5607,6 +6408,28 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                 mqttHandleTracker(name, obj);
             }
         }
+    } else if (strcmp(relativeTopic, MQTT_TOPIC_GAUGE) == 0) {
+        // /gauge with name in JSON body
+        const char* name = obj["name"] | "";
+        if (strlen(name) > 0) {
+            if (obj["delete"] | false) {
+                mqttHandleGaugeDelete(name);
+            } else {
+                mqttHandleGauge(name, obj);
+            }
+        } else {
+            Serial.println("[MQTT] /gauge missing name");
+        }
+    } else if (strncmp(relativeTopic, MQTT_TOPIC_GAUGE "/", strlen(MQTT_TOPIC_GAUGE) + 1) == 0) {
+        // /gauge/{name}
+        const char* name = relativeTopic + strlen(MQTT_TOPIC_GAUGE) + 1;
+        if (strlen(name) > 0) {
+            if (obj["delete"] | false) {
+                mqttHandleGaugeDelete(name);
+            } else {
+                mqttHandleGauge(name, obj);
+            }
+        }
     } else if (strncmp(relativeTopic, MQTT_TOPIC_INDICATOR, strlen(MQTT_TOPIC_INDICATOR)) == 0) {
         // /indicator1, /indicator2, /indicator3
         const char* indexStr = relativeTopic + strlen(MQTT_TOPIC_INDICATOR);
@@ -5713,7 +6536,7 @@ void mqttHandleCustom(const char* name, JsonObject& doc) {
         Serial.println("[MQTT] Unknown staleBehavior, keeping hide");
     }
     if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
-        Serial.println("[MQTT] staleBehavior dim and badge need a tracker app, keeping hide");
+        Serial.println("[MQTT] staleBehavior dim and badge need a tracker or gauge app, keeping hide");
         staleBehavior = STALE_HIDE;
     }
 
@@ -5867,7 +6690,7 @@ void mqttHandleWeather(JsonObject& doc) {
         Serial.println("[MQTT] Unknown staleBehavior, keeping hide");
     }
     if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
-        Serial.println("[MQTT] staleBehavior dim and badge need a tracker app, keeping hide");
+        Serial.println("[MQTT] staleBehavior dim and badge need a tracker or gauge app, keeping hide");
         staleBehavior = STALE_HIDE;
     }
     weatherClockApplyStalePolicy(staleAfter, staleBehavior);
@@ -5925,6 +6748,61 @@ void mqttHandleTrackerDelete(const char* name) {
         Serial.printf("[MQTT] Tracker '%s' deleted\n", name);
     } else {
         Serial.printf("[MQTT] Tracker '%s' not found\n", name);
+    }
+}
+
+void mqttHandleGauge(const char* name, JsonObject& doc) {
+    if (!gaugeNameFits(name)) {
+        Serial.printf("[MQTT] Gauge '%s' rejected: name longer than %d characters\n",
+                      name, (int)sizeof(GaugeData::name) - 1);
+        return;
+    }
+
+    if (!gaugeRowCountFits(doc)) {
+        Serial.printf("[MQTT] Gauge '%s' rejected: more than %d rows\n", name, MAX_GAUGE_ROWS);
+        return;
+    }
+
+    // Allocate or find existing gauge
+    GaugeData* gauge = gaugeAllocate(name);
+    if (!gauge) {
+        Serial.printf("[MQTT] No gauge slot available for '%s'\n", name);
+        return;
+    }
+
+    gaugeApplyJsonFields(gauge, doc);
+    gauge->lastUpdate = millis();
+
+    uint32_t staleAfter = GAUGE_DEFAULT_STALE_AFTER;
+    if (!doc["staleAfter"].isNull()) {
+        staleAfter = staleAfterSecondsToMillis(doc["staleAfter"].as<uint32_t>());
+    }
+
+    StaleBehavior staleBehavior = STALE_DIM;
+    if (!doc["staleBehavior"].isNull() &&
+        !parseStaleBehavior(doc["staleBehavior"], &staleBehavior)) {
+        Serial.println("[MQTT] Unknown staleBehavior, keeping dim");
+    }
+
+    // Register/update app in rotation
+    char appId[32];
+    snprintf(appId, sizeof(appId), "%s%s", GAUGE_ID_PREFIX, name);
+    uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
+    int8_t appIndex = appAdd(appId, gauge->title, gauge->icon, 0xFFFFFF,
+                             duration, staleAfter, false);
+    if (appIndex >= 0) {
+        apps[appIndex].staleBehavior = staleBehavior;
+    }
+
+    Serial.printf("[MQTT] Gauge updated: %s (%s, %d rows)\n",
+                  name, gauge->title, gauge->rowCount);
+}
+
+void mqttHandleGaugeDelete(const char* name) {
+    if (gaugeRemove(name)) {
+        Serial.printf("[MQTT] Gauge '%s' deleted\n", name);
+    } else {
+        Serial.printf("[MQTT] Gauge '%s' not found\n", name);
     }
 }
 
@@ -6605,6 +7483,7 @@ void loopApps() {
         // Reset tracker cache too, otherwise the restored tracker screen stays blank
         trackerLastUpdateDrawn = 0;
         resetTrackerScrollStates();
+        resetGaugeDisplayState();
         Serial.println("[NOTIF] All dismissed, resuming app rotation");
         // Wipe the notification pixels, then paint the app into every buffer
         displayClear();
@@ -6742,9 +7621,10 @@ void loopSleepTransition()
         Serial.printf("[SLEEP] exiting at %u\n", (unsigned)time(nullptr));
         displaySetBrightness(previousBrightness);
         lastDisplayUpdate = 0;
-        // The sleep clock overwrote the app frame, so a tracker screen has to repaint
+        // The sleep clock overwrote the app frame, so a tracker or gauge screen has to repaint
         trackerLastUpdateDrawn = 0;
         resetTrackerScrollStates();
+        resetGaugeDisplayState();
     }
     wasSleeping = isSleeping;
 }
@@ -6969,6 +7849,7 @@ void loopDisplay() {
         needsRedraw = scrollStateAdvance(appScrollState, now);
         needsRedraw |= scrollStateAdvance(trackerSymbolScrollState, now);
         needsRedraw |= scrollStateAdvance(trackerBottomScrollState, now);
+        needsRedraw |= scrollStateAdvance(gaugeTitleScrollState, now);
     }
 
     // Regular display update (1000ms for non-scrolling, 50ms for indicator animation)

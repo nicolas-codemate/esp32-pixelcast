@@ -86,7 +86,7 @@ This document details the development phases of the ESP32-PixelCast project, fro
 ### 2.3 Application Rendering
 - [x] Layout: vertical (icon top centered + text below)
 - [x] Scrolling text if too long
-- [ ] Progress bar (optional)
+- [x] Progress bar (optional)
 - [ ] Bar chart (optional)
 
 ### 2.4 Built-in System Apps
@@ -138,10 +138,29 @@ This document details the development phases of the ESP32-PixelCast project, fro
       window the client sets (default 1h)
 - [x] `parseColorValue()` extracted as reusable helper
 
+### 2b.3 Gauge System App
+- [x] `GaugeData` / `GaugeRow` structures (title, icon, rows of label/info/value/note/percent)
+- [x] Up to 2 concurrent gauges (`MAX_GAUGE_APPS`), 9 rows each (`MAX_GAUGE_ROWS`)
+- [x] REST API: `POST /api/gauge`, `GET /api/gauge`, `GET /api/gauges`, `DELETE /api/gauge`
+- [x] Dynamic app registration (auto-creates app in rotation on first POST)
+- [x] App IDs prefixed with `gauge_` (e.g. `gauge_claude`)
+- [x] Progress bar per row (`fillRect` inside `drawRect`), `percent` clamped to 0-100
+- [x] Layout: icon+title / separator / rows of label+info+value over bar+note / carousel dots
+- [x] Title scrolls when it overflows the header, which runs the full width without an icon
+- [x] Width redistributes: a row without a note gets a 60-pixel bar instead of 38
+- [x] Carousel of 3 rows per page, up to `MAX_CAROUSEL_PAGES`, each page holding the screen
+      for the app duration divided by the page count
+- [x] Horizontal page indicator dots at the bottom, so rows keep the full width
+- [x] Customizable colors (bar, note) with the client choosing the thresholds
+- [x] Stale rendering driven by the client: `dim` (default) dims the data colors to 1/4 and
+      shows a "STALE" badge in place of the icon, `badge` keeps full colors with the badge,
+      `none` shows nothing, over a `staleAfter` window the client sets (default 1h)
+
 **Deliverables:**
 - [x] Working weather dashboard with forecast
 - [x] Working tracker display with sparkline
-- [x] Bruno API collections for both features
+- [x] Working gauge display with progress-bar rows and carousel
+- [x] Bruno API collections for the three features
 
 ---
 
@@ -230,6 +249,10 @@ This document details the development phases of the ESP32-PixelCast project, fro
 | GET | `/api/tracker` | Read single tracker data | ✅ |
 | GET | `/api/trackers` | List all active trackers | ✅ |
 | DELETE | `/api/tracker` | Remove tracker from rotation | ✅ |
+| POST | `/api/gauge` | Create/Update a gauge | ✅ |
+| GET | `/api/gauge` | Read single gauge data | ✅ |
+| GET | `/api/gauges` | List all active gauges | ✅ |
+| DELETE | `/api/gauge` | Remove gauge from rotation | ✅ |
 | POST | `/api/icons` | Upload icon file | ✅ |
 | POST | `/api/lametric` | Download LaMetric icon by ID | ✅ |
 
@@ -264,6 +287,7 @@ pixelcast/
 ├── indicator{1-3}    # → Indicators
 ├── weather           # → Update weather data
 ├── tracker/{name}    # → Create/Update tracker
+├── gauge/{name}      # → Create/Update gauge
 ├── settings          # → Settings
 ├── brightness        # → Brightness
 ├── reboot            # → Reboot

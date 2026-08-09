@@ -14,7 +14,7 @@ info:
 
     - Delete via `{"delete": true}` flag instead of HTTP DELETE.
 
-    - Name can be in topic path or JSON body for custom/tracker.
+    - Name can be in topic path or JSON body for custom/tracker/gauge.
 
     - No icon management over MQTT.
 
@@ -189,6 +189,32 @@ channels:
       trackerMessage:
         $ref: "#/components/messages/Tracker"
 
+  gauge:
+    address: "{prefix}/gauge"
+    description: >
+      Create or update a gauge. Name must be in the JSON body.
+      Send `{"delete": true, "name": "claude"}` to delete.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      gaugeMessage:
+        $ref: "#/components/messages/Gauge"
+
+  gaugeNamed:
+    address: "{prefix}/gauge/{name}"
+    description: >
+      Create or update a gauge with name in the topic path.
+      Send `{"delete": true}` to delete.
+    parameters:
+      prefix:
+        default: pixelcast
+      name:
+        description: Gauge name (e.g. "claude").
+    messages:
+      gaugeMessage:
+        $ref: "#/components/messages/Gauge"
+
   reboot:
     address: "{prefix}/reboot"
     description: Reboot the device. Payload can be empty.
@@ -302,6 +328,14 @@ operations:
     action: receive
     channel:
       $ref: "#/channels/trackerNamed"
+  receiveGauge:
+    action: receive
+    channel:
+      $ref: "#/channels/gauge"
+  receiveGaugeNamed:
+    action: receive
+    channel:
+      $ref: "#/channels/gaugeNamed"
   receiveReboot:
     action: receive
     channel:
@@ -473,6 +507,45 @@ components:
                 c: "#00D4FF"
         - name: deleteTracker
           summary: Delete a tracker
+          payload:
+            delete: true
+
+    Gauge:
+      payload:
+        $ref: "schemas/gauge.yaml#/GaugeUpdateRequest"
+      description: >
+        Same payload as `POST /api/gauge`, except that a name over fifteen characters
+        and an oversized `rows` array are dropped with a serial log instead of an
+        HTTP 400, and an unknown `staleBehavior` falls back to `dim` instead of being
+        rejected. Watch the
+        payload size: the MQTT receive buffer is 2048 bytes (`MQTT_BUFFER_SIZE`) and
+        nine rows come close to 1.3 KB, so a broker message longer than the buffer is
+        dropped before the firmware ever parses it.
+      examples:
+        - name: claudeLimits
+          summary: Subscription limits, four rows over two pages
+          payload:
+            title: "Claude"
+            icon: "claude"
+            duration: 10000
+            staleAfter: 2700
+            staleBehavior: "dim"
+            rows:
+              - { label: "5h", info: "14:50", value: "41%", percent: 41, color: "#4CAF50", note: "x1.2^", noteColor: "#FFC107" }
+              - { label: "7j", info: "15/08 17h", value: "28%", percent: 28, color: "#4CAF50", note: "x1.1>", noteColor: "#4CAF50" }
+              - { label: "fable", value: "3%", percent: 3, color: "#4CAF50" }
+              - { label: "credits", value: "1%", percent: 1, color: "#4CAF50" }
+        - name: diskUsage
+          summary: Disk fill levels, no info and no note, bars at full width
+          payload:
+            title: "Disques"
+            icon: "disk"
+            rows:
+              - { label: "root", value: "62%", percent: 62, color: "#4CAF50" }
+              - { label: "data", value: "88%", percent: 88, color: "#FFC107" }
+              - { label: "backup", value: "97%", percent: 97, color: "#F44336" }
+        - name: deleteGauge
+          summary: Delete a gauge
           payload:
             delete: true
 

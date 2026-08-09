@@ -20,13 +20,13 @@
     #define VERSION_MAJOR 1
 #endif
 #ifndef VERSION_MINOR
-    #define VERSION_MINOR 6
+    #define VERSION_MINOR 7
 #endif
 #ifndef VERSION_PATCH
-    #define VERSION_PATCH 3
+    #define VERSION_PATCH 0
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.6.3"
+    #define VERSION_STRING "1.7.0"
 #endif
 
 // ============================================================================
@@ -156,6 +156,17 @@
 #define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"
 
 // ============================================================================
+// Gauge Layout
+// ============================================================================
+#ifndef MAX_GAUGE_APPS
+    #define MAX_GAUGE_APPS 2
+#endif
+#ifndef MAX_GAUGE_ROWS
+    #define MAX_GAUGE_ROWS 9
+#endif
+#define GAUGE_ID_PREFIX "gauge_"
+
+// ============================================================================
 // Stale Policy
 // ============================================================================
 // An app goes stale when its client stops pushing. Only the client knows how long a
@@ -163,6 +174,7 @@
 #define MAX_STALE_AFTER_SECONDS 604800       // 7 days, keeps the ms conversion clear of the millis() wrap
 #define TRACKER_DEFAULT_STALE_AFTER 3600000  // 1 hour in ms
 #define WEATHER_DEFAULT_STALE_AFTER 3600000  // 1 hour in ms
+#define GAUGE_DEFAULT_STALE_AFTER 3600000    // 1 hour in ms
 
 // ============================================================================
 // Sleep Configuration
@@ -234,6 +246,7 @@ static_assert(MAX_WEATHER_DURATION <= UINT16_MAX,
 #define MQTT_TOPIC_REBOOT       "/reboot"
 #define MQTT_TOPIC_WEATHER      "/weather"
 #define MQTT_TOPIC_TRACKER      "/tracker"
+#define MQTT_TOPIC_GAUGE        "/gauge"
 #define MQTT_TOPIC_STATS        "/stats"
 #define MQTT_TOPIC_STATUS       "/status"
 #define MQTT_TOPIC_SLEEP        "/sleep"

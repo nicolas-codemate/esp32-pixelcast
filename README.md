@@ -192,6 +192,9 @@ curl -X DELETE "http://pixelcast.local/api/indicator1"
 | `pixelcast/custom/{name}` | To Device | Create/Update an app |
 | `pixelcast/notify` | To Device | Send notification |
 | `pixelcast/indicator{1-3}` | To Device | Control indicator |
+| `pixelcast/weather` | To Device | Update weather data |
+| `pixelcast/tracker/{name}` | To Device | Create/Update a tracker |
+| `pixelcast/gauge/{name}` | To Device | Create/Update a gauge |
 | `pixelcast/settings` | To Device | Modify settings |
 | `pixelcast/stats` | From Device | Statistics (auto-publish) |
 | `pixelcast/status` | From Device | Online/Offline (LWT) |
@@ -241,6 +244,10 @@ Full interactive documentation: **[REST API](https://nicolas-codemate.github.io/
 | `GET` | `/api/tracker?name={name}` | Read tracker data |
 | `GET` | `/api/trackers` | List all trackers |
 | `DELETE` | `/api/tracker?name={name}` | Remove tracker |
+| `POST` | `/api/gauge?name={name}` | Create/update gauge |
+| `GET` | `/api/gauge?name={name}` | Read gauge data |
+| `GET` | `/api/gauges` | List all gauges |
+| `DELETE` | `/api/gauge?name={name}` | Remove gauge |
 | `POST` | `/api/indicator{1-3}` | Set corner indicator |
 | `DELETE` | `/api/indicator{1-3}` | Turn off corner indicator |
 | `GET` | `/api/stats` | System statistics |

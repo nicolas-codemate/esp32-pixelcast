@@ -34,6 +34,8 @@ tags:
     description: WeatherClock system app.
   - name: Tracker
     description: Financial/metric trackers (crypto, stocks).
+  - name: Gauge
+    description: Progress-bar dashboards for bounded 0-100% values.
   - name: Notifications
     description: Notification queue management.
   - name: Indicators
@@ -497,6 +499,180 @@ paths:
                 $ref: "schemas/common.yaml#/ErrorResponse"
         "404":
           description: Tracker not found.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+
+  # ===========================================================================
+  # Gauge
+  # ===========================================================================
+  /gauges:
+    get:
+      operationId: listGauges
+      summary: List all active gauges
+      tags: [Gauge]
+      responses:
+        "200":
+          description: List of gauge summaries.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/gauge.yaml#/GaugeListResponse"
+
+  /gauge:
+    get:
+      operationId: getGauge
+      summary: Get single gauge data
+      tags: [Gauge]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Gauge identifier (e.g. "claude").
+      responses:
+        "200":
+          description: Gauge data.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/gauge.yaml#/GaugeResponse"
+        "400":
+          description: Missing gauge name.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "404":
+          description: Gauge not found.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+    post:
+      operationId: createOrUpdateGauge
+      summary: Create or update a gauge
+      description: >
+        Push a set of rows, each a bounded 0-100% value with its own progress bar.
+        The gauge is automatically registered as an app in the rotation with ID
+        `gauge_{name}`. Name can be in query param or JSON body. The update is
+        partial: `title`, `icon` and `rows` are only written when present, and a
+        `rows` array replaces the stored rows whole. Two gauges can exist at a time.
+      tags: [Gauge]
+      parameters:
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: Gauge name. Also accepted in JSON body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/gauge.yaml#/GaugeUpdateRequest"
+            examples:
+              claudeLimits:
+                summary: Subscription limits, four rows over two pages
+                value:
+                  title: "Claude"
+                  icon: "claude"
+                  duration: 10000
+                  staleAfter: 2700
+                  staleBehavior: "dim"
+                  rows:
+                    - label: "5h"
+                      info: "14:50"
+                      value: "41%"
+                      percent: 41
+                      color: "#4CAF50"
+                      note: "x1.2^"
+                      noteColor: "#FFC107"
+                    - label: "7j"
+                      info: "15/08 17h"
+                      value: "28%"
+                      percent: 28
+                      color: "#4CAF50"
+                      note: "x1.1>"
+                      noteColor: "#4CAF50"
+                    - label: "fable"
+                      value: "3%"
+                      percent: 3
+                      color: "#4CAF50"
+                    - label: "credits"
+                      value: "1%"
+                      percent: 1
+                      color: "#4CAF50"
+              diskUsage:
+                summary: Disk fill levels, no info and no note, bars at full width
+                value:
+                  title: "Disques"
+                  icon: "disk"
+                  rows:
+                    - label: "root"
+                      value: "62%"
+                      percent: 62
+                      color: "#4CAF50"
+                    - label: "data"
+                      value: "88%"
+                      percent: 88
+                      color: "#FFC107"
+                    - label: "backup"
+                      value: "97%"
+                      percent: 97
+                      color: "#F44336"
+      responses:
+        "200":
+          description: Gauge created or updated.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: >
+            Missing gauge name, invalid JSON, a name over fifteen characters
+            (`Gauge name too long (max 15)`), more than nine rows
+            (`Too many rows (max 9)`), or an unknown `staleBehavior`. Nothing is
+            written unless the whole payload is accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "500":
+          description: No gauge slot available.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+    delete:
+      operationId: deleteGauge
+      summary: Delete a gauge
+      description: Removes the gauge data and its app from rotation.
+      tags: [Gauge]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Gauge name to delete.
+      responses:
+        "200":
+          description: Gauge deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/SuccessResponse"
+        "400":
+          description: Missing gauge name.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "404":
+          description: Gauge not found.
           content:
             application/json:
               schema:

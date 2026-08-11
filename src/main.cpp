@@ -58,6 +58,11 @@
 #define MAX_ZONES 4
 #define MAX_TEXT_SEGMENTS 8
 
+// Static RAM is the scarce resource, so a gauge field that shows six to ten glyphs at a time
+// does not reserve room for eight colour changes.
+#define MAX_GAUGE_TITLE_SEGMENTS 4
+#define MAX_GAUGE_LABEL_SEGMENTS 3
+
 // Packed: aligning the colour behind the offset would waste 3 bytes on each of the 64
 // segments an app carries, and static RAM is the scarce resource on this board.
 struct __attribute__((packed)) TextSegment {
@@ -320,6 +325,8 @@ struct GaugeRow {
     uint8_t percent;          // 0-100, clamped on parse
     uint32_t barColor;
     uint32_t noteColor;
+    TextSegment labelSegments[MAX_GAUGE_LABEL_SEGMENTS];
+    uint8_t labelSegmentCount;
 };
 
 struct GaugeData {
@@ -327,8 +334,10 @@ struct GaugeData {
     // Scrolls when it overflows, so the cap is storage rather than screen width: 64 bytes
     // hold 31 characters whatever their encoding, an accented one taking two.
     char title[64];
+    TextSegment titleSegments[MAX_GAUGE_TITLE_SEGMENTS];
     char icon[32];            // Icon name (LittleFS)
     GaugeRow rows[MAX_GAUGE_ROWS];
+    uint8_t titleSegmentCount;
     uint8_t rowCount;
     unsigned long lastUpdate;
     bool valid;
@@ -363,10 +372,12 @@ IndicatorAnimState indicatorAnimState[NUM_INDICATORS];
 struct NotificationItem {
     char id[24];              // Unique ID ("notif_<millis>" or user-provided)
     char text[128];           // Notification text (longer than app's 64 chars)
+    TextSegment textSegments[MAX_TEXT_SEGMENTS];
     char icon[32];            // Icon filename
     uint32_t textColor;       // RGB color
     uint32_t backgroundColor; // RGB color for area outside card frame (0 = none)
     uint16_t duration;        // Display duration in ms (0 = hold mode)
+    uint8_t textSegmentCount;
     bool hold;                // Explicit hold flag (never auto-expires)
     bool urgent;              // Jumps to front of queue
     bool stack;               // Queue sequentially (true) vs replace current (false)
@@ -711,7 +722,10 @@ void printLabelWithSegments(const char* text, int16_t x, int16_t y,
                             uint32_t defaultColor, const TextSegment* segments, uint8_t segmentCount,
                             bool dimDefault);
 void printTextWithinBounds(const char* text, int16_t x, int16_t y,
-                           int16_t boundLeft, int16_t boundRight, uint32_t color);
+                           int16_t boundLeft, int16_t boundRight, uint32_t color,
+                           const TextSegment* segments, uint8_t segmentCount);
+const TextSegment* dimTextSegments(const TextSegment* segments, uint8_t segmentCount,
+                                   bool dimColors, TextSegment* dimmedBuffer);
 void drawCharacterWithinBounds(char character, int16_t x, int16_t y,
                                int16_t boundLeft, int16_t boundRight, uint16_t color);
 
@@ -728,9 +742,10 @@ void displayDrawGaugeTitle(GaugeData* gauge, bool showBadge, bool dimColors);
 
 // Notification management
 void notifInit();
-int8_t notifAdd(const char* id, const char* text, const char* icon,
-                uint32_t textColor, uint32_t bgColor, uint16_t duration,
-                bool hold, bool urgent, bool stack);
+int8_t notifAdd(const char* id, const char* text,
+                const TextSegment* textSegments, uint8_t textSegmentCount,
+                const char* icon, uint32_t textColor, uint32_t bgColor,
+                uint16_t duration, bool hold, bool urgent, bool stack);
 bool notifDismiss();
 void notifClearAll();
 NotificationItem* notifGetCurrent();
@@ -1447,7 +1462,11 @@ void trackerApplyJsonFields(TrackerData* tracker, JsonObject doc) {
 // Gauge Functions
 // ============================================================================
 
-#define GAUGE_NOTE_COLOR 0x969696
+// Up here rather than with the layout constants: each one is read at parse time, as the colour
+// its field takes when the client sends none of its own.
+#define GAUGE_NOTE_COLOR  0x969696
+#define GAUGE_TITLE_COLOR 0xFFFFFF
+#define GAUGE_LABEL_COLOR 0xC8C8C8
 
 // The store keeps its own copy of the name while the rotation app id is built from the incoming
 // one, so a name the store would have to shorten is refused instead: the two spellings drifting
@@ -1520,8 +1539,17 @@ bool gaugeRowCountFits(JsonObject doc) {
 }
 
 void gaugeApplyJsonFields(GaugeData* gauge, JsonObject doc) {
+    // The shared parser fills up to MAX_TEXT_SEGMENTS; a gauge keeps fewer, so the colour
+    // changes past its cap are dropped and the tail stays the last kept colour
+    TextSegment parsedSegments[MAX_TEXT_SEGMENTS];
+    uint8_t parsedCount = 0;
+
     if (!doc["title"].isNull()) {
-        strlcpy(gauge->title, doc["title"] | "", sizeof(gauge->title));
+        parseTextFieldWithSegments(doc["title"], gauge->title, sizeof(gauge->title),
+                                   parsedSegments, &parsedCount, GAUGE_TITLE_COLOR);
+        gauge->titleSegmentCount = min(parsedCount, (uint8_t)MAX_GAUGE_TITLE_SEGMENTS);
+        memcpy(gauge->titleSegments, parsedSegments,
+               gauge->titleSegmentCount * sizeof(TextSegment));
     }
     if (!doc["icon"].isNull()) {
         strlcpy(gauge->icon, doc["icon"] | "", sizeof(gauge->icon));
@@ -1534,7 +1562,11 @@ void gaugeApplyJsonFields(GaugeData* gauge, JsonObject doc) {
 
         for (JsonObject rowObject : rowsArray) {
             GaugeRow* row = &gauge->rows[gauge->rowCount];
-            strlcpy(row->label, rowObject["label"] | "", sizeof(row->label));
+            parseTextFieldWithSegments(rowObject["label"], row->label, sizeof(row->label),
+                                       parsedSegments, &parsedCount, GAUGE_LABEL_COLOR);
+            row->labelSegmentCount = min(parsedCount, (uint8_t)MAX_GAUGE_LABEL_SEGMENTS);
+            memcpy(row->labelSegments, parsedSegments,
+                   row->labelSegmentCount * sizeof(TextSegment));
             strlcpy(row->info, rowObject["info"] | "", sizeof(row->info));
             strlcpy(row->value, rowObject["value"] | "", sizeof(row->value));
             strlcpy(row->note, rowObject["note"] | "", sizeof(row->note));
@@ -1564,9 +1596,10 @@ void notifInit() {
     Serial.println("[NOTIF] Initialized");
 }
 
-int8_t notifAdd(const char* id, const char* text, const char* icon,
-                uint32_t textColor, uint32_t bgColor, uint16_t duration,
-                bool hold, bool urgent, bool stack) {
+int8_t notifAdd(const char* id, const char* text,
+                const TextSegment* textSegments, uint8_t textSegmentCount,
+                const char* icon, uint32_t textColor, uint32_t bgColor,
+                uint16_t duration, bool hold, bool urgent, bool stack) {
     // Replace mode: clear all existing notifications first
     if (!stack) {
         notifClearAll();
@@ -1597,6 +1630,10 @@ int8_t notifAdd(const char* id, const char* text, const char* icon,
     }
 
     strlcpy(notif->text, text, sizeof(notif->text));
+    if (textSegmentCount > 0) {
+        memcpy(notif->textSegments, textSegments, textSegmentCount * sizeof(TextSegment));
+        notif->textSegmentCount = textSegmentCount;
+    }
     if (icon) {
         strlcpy(notif->icon, icon, sizeof(notif->icon));
     }
@@ -1620,6 +1657,29 @@ int8_t notifAdd(const char* id, const char* text, const char* icon,
     Serial.printf("[NOTIF] Added: %s (duration=%d, hold=%d, urgent=%d, stack=%d)\n",
                   notif->id, duration, hold, urgent, stack);
     return freeSlot;
+}
+
+// Refusals the two transports report their own way: -1 for a full queue, as notifAdd returns it.
+#define NOTIF_ADD_MISSING_TEXT (-2)
+
+int8_t notifAddFromJson(JsonObject doc) {
+    uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
+
+    char text[sizeof(NotificationItem::text)] = "";
+    TextSegment textSegments[MAX_TEXT_SEGMENTS];
+    uint8_t textSegmentCount = 0;
+    parseTextFieldWithSegments(doc["text"], text, sizeof(text),
+                               textSegments, &textSegmentCount, textColor);
+
+    if (text[0] == '\0') {
+        return NOTIF_ADD_MISSING_TEXT;
+    }
+
+    return notifAdd(doc["id"] | "", text, textSegments, textSegmentCount,
+                    doc["icon"] | "", textColor,
+                    parseColorValue(doc["background"], 0x000000),
+                    doc["duration"] | (uint16_t)DEFAULT_NOTIF_DURATION,
+                    doc["hold"] | false, doc["urgent"] | false, doc["stack"] | true);
 }
 
 bool notifDismiss() {
@@ -1813,13 +1873,7 @@ void serializeTextField(JsonObject& obj, const char* fieldName, const char* text
         if (start >= textLen) break;
         if (end > textLen) end = textLen;
 
-        // Copy substring
-        char buf[64];
-        size_t len = end - start;
-        if (len >= sizeof(buf)) len = sizeof(buf) - 1;
-        memcpy(buf, text + start, len);
-        buf[len] = '\0';
-        seg["t"] = (const char*)buf;
+        seg["t"] = JsonString(text + start, end - start);
 
         char colorHex[8];
         formatColorHex(segments[i].color, colorHex, sizeof(colorHex));
@@ -2014,7 +2068,7 @@ void displayDrawTrackerSymbol(TrackerData* tracker, bool showBadge, bool dimColo
     dma_display->setFont(NULL);  // Default 5x7 font
     dma_display->setTextSize(1);
     printTextWithinBounds(tracker->symbol, symbolX, TRACKER_SYMBOL_Y,
-                          symbolAreaX, symbolAreaEnd, symbolColor);
+                          symbolAreaX, symbolAreaEnd, symbolColor, nullptr, 0);
 }
 
 // --- Row 1: icon + symbol (y=0..9) ---
@@ -2060,16 +2114,10 @@ void displayDrawTrackerBottom(TrackerData* tracker, bool dimColors) {
         textX = (DISPLAY_WIDTH - textWidth) / 2;
     }
 
-    // A dimmed screen dims every colour it shows, segments included
     TextSegment dimmedSegments[MAX_TEXT_SEGMENTS];
-    const TextSegment* segments = tracker->bottomTextSegments;
-    if (dimColors && tracker->bottomTextSegmentCount > 0) {
-        for (uint8_t i = 0; i < tracker->bottomTextSegmentCount; i++) {
-            dimmedSegments[i] = tracker->bottomTextSegments[i];
-            dimmedSegments[i].color = dimColorQuarter(dimmedSegments[i].color);
-        }
-        segments = dimmedSegments;
-    }
+    const TextSegment* segments = dimTextSegments(tracker->bottomTextSegments,
+                                                  tracker->bottomTextSegmentCount,
+                                                  dimColors, dimmedSegments);
 
     dma_display->setFont(NULL);
     dma_display->setTextSize(1);
@@ -2339,10 +2387,9 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
 #define GAUGE_BAR_WIDTH_FULL      (GAUGE_BAR_RIGHT_X - GAUGE_BAR_X + 1)
 #define GAUGE_BAR_WIDTH_WITH_NOTE (GAUGE_BAR_WIDTH_FULL - GAUGE_NOTE_WIDTH - GAUGE_FIELD_GUTTER)
 
-// The client picks the bar and note colours; the three text fields are fixed so the value,
-// the only figure being read, keeps the strongest contrast.
-#define GAUGE_TITLE_COLOR         0xFFFFFF
-#define GAUGE_LABEL_COLOR         0xC8C8C8
+// The client picks the bar and note colours and may colour the title and the label; the info
+// and the value stay fixed so the value, the only figure being read, keeps the strongest
+// contrast.
 #define GAUGE_INFO_COLOR          0x969696
 #define GAUGE_VALUE_COLOR         0xFFFFFF
 #define GAUGE_BAR_OUTLINE_COLOR   0x505050
@@ -2367,9 +2414,12 @@ static_assert(sizeof(GAUGE_ID_PREFIX) - 1 + sizeof(GaugeData::name) <= sizeof(Ap
 // transliterates instead, exactly as calculateTomThumbTextWidth counts, and restores the
 // default font on the way out.
 void printGaugeRowField(const char* text, int16_t x, int16_t baselineY,
-                        uint32_t color, bool dimColors) {
+                        uint32_t color, bool dimColors,
+                        const TextSegment* segments, uint8_t segmentCount) {
+    TextSegment dimmedSegments[MAX_TEXT_SEGMENTS];
     printLabelWithSegments(text, x, baselineY, dimColors ? dimColorQuarter(color) : color,
-                           nullptr, 0, false);
+                           dimTextSegments(segments, segmentCount, dimColors, dimmedSegments),
+                           segmentCount, false);
 }
 
 enum GaugeFieldPlacement : uint8_t {
@@ -2389,7 +2439,7 @@ int16_t printGaugeRowFieldWithinBounds(const char* text, int16_t leftBound, int1
 
     int16_t leftoverWidth = rightBound - leftBound - calculateTomThumbTextWidth(fitted);
     int16_t x = leftBound + (placement == GAUGE_FIELD_CENTRED ? leftoverWidth / 2 : leftoverWidth);
-    printGaugeRowField(fitted, x, baselineY, color, dimColors);
+    printGaugeRowField(fitted, x, baselineY, color, dimColors, nullptr, 0);
     return x;
 }
 
@@ -2445,10 +2495,16 @@ void displayDrawGaugeTitle(GaugeData* gauge, bool showBadge, bool dimColors) {
         titleX -= gaugeTitleScrollState.scrollOffset;
     }
 
+    TextSegment dimmedTitleSegments[MAX_TEXT_SEGMENTS];
+    const TextSegment* titleSegments = dimTextSegments(gauge->titleSegments,
+                                                       gauge->titleSegmentCount,
+                                                       dimColors, dimmedTitleSegments);
+
     dma_display->setFont(NULL);  // Default 5x7 font
     dma_display->setTextSize(1);
     printTextWithinBounds(gauge->title, titleX, GAUGE_TITLE_Y, titleAreaX, titleAreaEnd,
-                          dimColors ? dimColorQuarter(GAUGE_TITLE_COLOR) : GAUGE_TITLE_COLOR);
+                          dimColors ? dimColorQuarter(GAUGE_TITLE_COLOR) : GAUGE_TITLE_COLOR,
+                          titleSegments, gauge->titleSegmentCount);
 }
 
 // --- Header: icon + title (y=0..11) ---
@@ -2504,7 +2560,10 @@ void displayDrawGaugeRow(const GaugeRow* row, int16_t topY, bool dimColors) {
     if (row->label[0]) {
         char clippedLabel[sizeof(row->label)];
         truncateTomThumbTextToWidth(row->label, clippedLabel, sizeof(clippedLabel), labelMaxWidth);
-        printGaugeRowField(clippedLabel, GAUGE_LABEL_X, baselineY, GAUGE_LABEL_COLOR, dimColors);
+        // The cut lands on a byte boundary and keeps the head of the string, so every surviving
+        // segment offset still points where it did
+        printGaugeRowField(clippedLabel, GAUGE_LABEL_X, baselineY, GAUGE_LABEL_COLOR, dimColors,
+                           row->labelSegments, row->labelSegmentCount);
         labelWidth = calculateTomThumbTextWidth(clippedLabel);
     }
 
@@ -3782,6 +3841,21 @@ uint16_t dimmedColor565(uint32_t color, bool dimColors) {
     return dma_display->color565((shown >> 16) & 0xFF, (shown >> 8) & 0xFF, shown & 0xFF);
 }
 
+// The segment printers dim the default colour only, so a dimmed screen has to hand them
+// segment colours already quartered. Returns the buffer it filled, or the segments untouched.
+const TextSegment* dimTextSegments(const TextSegment* segments, uint8_t segmentCount,
+                                   bool dimColors, TextSegment* dimmedBuffer) {
+    if (!dimColors || segmentCount == 0) {
+        return segments;
+    }
+
+    for (uint8_t i = 0; i < segmentCount; i++) {
+        dimmedBuffer[i] = segments[i];
+        dimmedBuffer[i].color = dimColorQuarter(segments[i].color);
+    }
+    return dimmedBuffer;
+}
+
 // The panel has no accented glyphs in either font, so an accented name is drawn as its
 // closest ASCII letter. Callers must pass both UTF-8 bytes: 'e' acute is C3 A9 and the
 // copyright sign is C2 A9, so the continuation byte alone does not identify the character.
@@ -4086,7 +4160,6 @@ void displayShowNotification(NotificationItem* notif) {
     }
 
     // 7. Draw text (full width, scrolls off-screen naturally - no clipping needed)
-    dma_display->setTextColor(lineColor);
     dma_display->setTextSize(1);
 
     int16_t textWidth = calculateTextWidth(notif->text);
@@ -4099,7 +4172,8 @@ void displayShowNotification(NotificationItem* notif) {
         xPos = textPadding - notifScrollState.scrollOffset;
     }
 
-    printTextWithSpecialChars(notif->text, xPos, textYPos);
+    printTextWithSegments(notif->text, xPos, textYPos, notif->textColor,
+                          notif->textSegments, notif->textSegmentCount);
 
     drawIndicators();
 
@@ -4466,18 +4540,31 @@ void drawCharacterWithinBounds(char character, int16_t x, int16_t y,
 // what overflows - leaves those pixels lit for as long as the rest of the row takes to draw,
 // which the DMA scans out as an artefact over whatever the row slides behind.
 void printTextWithinBounds(const char* text, int16_t x, int16_t y,
-                           int16_t boundLeft, int16_t boundRight, uint32_t color) {
-    uint16_t color565 = dma_display->color565((color >> 16) & 0xFF,
-                                              (color >> 8) & 0xFF,
-                                              color & 0xFF);
+                           int16_t boundLeft, int16_t boundRight, uint32_t color,
+                           const TextSegment* segments, uint8_t segmentCount) {
+    uint32_t currentColor = (segmentCount > 0) ? segments[0].color : color;
+    uint16_t color565 = dimmedColor565(currentColor, false);
     dma_display->setTextColor(color565);
 
     int16_t cursorX = x;
     const uint8_t* ptr = (const uint8_t*)text;
 
+    // Segment offsets are byte positions, as parseTextFieldWithSegments records them, and the
+    // counter runs over the whole string: a glyph scrolled off the left edge or clipped by the
+    // bounds still moves the next colour boundary to where the client asked for it
+    uint8_t byteIndex = 0;
+    uint8_t currentSegment = 0;
+
     // Advances exactly like printTextWithSpecialChars, so a scrolling string is drawn against
     // the width calculateTextWidth measured for it
     while (*ptr && cursorX < boundRight) {
+        if (currentSegment + 1 < segmentCount && byteIndex >= segments[currentSegment + 1].offset) {
+            currentSegment++;
+            currentColor = segments[currentSegment].color;
+            color565 = dimmedColor565(currentColor, false);
+            dma_display->setTextColor(color565);
+        }
+
         if ((*ptr == 0xC2 && *(ptr + 1) == 0xB0) || *ptr == 0xB0) {
             static const int8_t degreePixels[4][2] = {{1, 0}, {0, 1}, {2, 1}, {1, 2}};
             for (uint8_t i = 0; i < 4; i++) {
@@ -4486,7 +4573,9 @@ void printTextWithinBounds(const char* text, int16_t x, int16_t y,
                     dma_display->drawPixel(pixelX, y - 6 + degreePixels[i][1], color565);
                 }
             }
-            ptr += (*ptr == 0xB0) ? 1 : 2;
+            uint8_t degreeByteCount = (*ptr == 0xB0) ? 1 : 2;
+            ptr += degreeByteCount;
+            byteIndex += degreeByteCount;
             cursorX += 4;
             continue;
         }
@@ -4495,11 +4584,14 @@ void printTextWithinBounds(const char* text, int16_t x, int16_t y,
         if (*ptr == 0xC3 && *(ptr + 1)) {
             character = utf8FrenchToAscii(*ptr, *(ptr + 1));
             ptr += 2;
+            byteIndex += 2;
         } else if (*ptr >= 32 && *ptr <= 126) {
             character = (char)*ptr;
             ptr++;
+            byteIndex++;
         } else {
             ptr++;  // Dropped, and measured as dropped
+            byteIndex++;
             continue;
         }
 
@@ -5735,14 +5827,17 @@ void setupWebServer() {
 
         JsonDocument doc;
         doc["name"] = gauge->name;
-        doc["title"] = gauge->title;
+        JsonObject gaugeObject = doc.as<JsonObject>();
+        serializeTextField(gaugeObject, "title", gauge->title,
+                           gauge->titleSegments, gauge->titleSegmentCount);
         doc["icon"] = gauge->icon;
 
         JsonArray rowsArray = doc["rows"].to<JsonArray>();
         for (uint8_t i = 0; i < gauge->rowCount; i++) {
             const GaugeRow* row = &gauge->rows[i];
             JsonObject rowObject = rowsArray.add<JsonObject>();
-            rowObject["label"] = row->label;
+            serializeTextField(rowObject, "label", row->label,
+                               row->labelSegments, row->labelSegmentCount);
             rowObject["info"] = row->info;
             rowObject["value"] = row->value;
             rowObject["note"] = row->note;
@@ -5957,7 +6052,8 @@ void setupWebServer() {
             if (!notifications[i].active) continue;
             JsonObject obj = arr.add<JsonObject>();
             obj["id"] = notifications[i].id;
-            obj["text"] = notifications[i].text;
+            serializeTextField(obj, "text", notifications[i].text,
+                               notifications[i].textSegments, notifications[i].textSegmentCount);
             obj["icon"] = notifications[i].icon;
             obj["duration"] = notifications[i].duration;
             obj["hold"] = notifications[i].hold;
@@ -5983,24 +6079,12 @@ void setupWebServer() {
                 return;
             }
 
-            // Text is required
-            if (doc["text"].isNull() || strlen(doc["text"] | "") == 0) {
+            int8_t slot = notifAddFromJson(doc);
+
+            if (slot == NOTIF_ADD_MISSING_TEXT) {
                 request->send(400, "application/json", "{\"error\":\"Missing text\"}");
                 return;
             }
-
-            const char* text = doc["text"] | "";
-            const char* id = doc["id"] | "";
-            const char* icon = doc["icon"] | "";
-            uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
-            uint32_t bgColor = parseColorValue(doc["background"], 0x000000);
-            uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_NOTIF_DURATION;
-            bool hold = doc["hold"] | false;
-            bool urgent = doc["urgent"] | false;
-            bool stack = doc["stack"] | true;
-
-            int8_t slot = notifAdd(id, text, icon, textColor, bgColor,
-                                   duration, hold, urgent, stack);
 
             if (slot < 0) {
                 request->send(503, "application/json", "{\"error\":\"Notification queue full\"}");
@@ -6763,28 +6847,14 @@ void mqttHandleCustomDelete(const char* name) {
 }
 
 void mqttHandleNotify(JsonObject& doc) {
-    const char* text = doc["text"] | "";
-    if (strlen(text) == 0) {
+    int8_t slot = notifAddFromJson(doc);
+
+    if (slot == NOTIF_ADD_MISSING_TEXT) {
         Serial.println("[MQTT] /notify missing text");
-        return;
-    }
-
-    const char* id = doc["id"] | "";
-    const char* icon = doc["icon"] | "";
-    uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
-    uint32_t bgColor = parseColorValue(doc["background"], 0x000000);
-    uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_NOTIF_DURATION;
-    bool hold = doc["hold"] | false;
-    bool urgent = doc["urgent"] | false;
-    bool stack = doc["stack"] | true;
-
-    int8_t slot = notifAdd(id, text, icon, textColor, bgColor,
-                           duration, hold, urgent, stack);
-
-    if (slot >= 0) {
-        Serial.printf("[MQTT] Notification added: '%s'\n", text);
-    } else {
+    } else if (slot < 0) {
         Serial.println("[MQTT] Notification queue full");
+    } else {
+        Serial.printf("[MQTT] Notification added: '%s'\n", notifications[slot].text);
     }
 }
 

@@ -625,6 +625,32 @@ paths:
                       value: "97%"
                       percent: 97
                       color: "#F44336"
+              coloredLabels:
+                summary: Two-color title and labels split between a window and its reset
+                value:
+                  title:
+                    - t: "Claude "
+                      c: "#FFFFFF"
+                    - t: "Max"
+                      c: "#D97757"
+                  icon: "claude"
+                  rows:
+                    - label:
+                        - t: "5h"
+                          c: "#FFFFFF"
+                        - t: " reset"
+                          c: "#888888"
+                      value: "41%"
+                      percent: 41
+                      color: "#4CAF50"
+                    - label:
+                        - t: "7j"
+                          c: "#FFFFFF"
+                        - t: " reset"
+                          c: "#888888"
+                      value: "28%"
+                      percent: 28
+                      color: "#4CAF50"
       responses:
         "200":
           description: Gauge created or updated.
@@ -853,6 +879,17 @@ paths:
                   color: "#FF0000"
                   urgent: true
                   hold: true
+              segmentedAlert:
+                summary: Colored segments, with `color` still setting the separator lines
+                value:
+                  text:
+                    - t: "Build "
+                      c: "#FFFFFF"
+                    - t: "failed"
+                      c: "#FF0000"
+                  icon: "warning"
+                  color: "#FF0000"
+                  urgent: true
       responses:
         "200":
           description: Notification queued.

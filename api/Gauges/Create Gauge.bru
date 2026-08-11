@@ -20,13 +20,13 @@ params:query {
 
 body:json {
   {
-    "title": "Claude",
+    "title": [{ "t": "Claude ", "c": "#FFFFFF" }, { "t": "Max", "c": "#D97757" }],
     "icon": "claude",
     "duration": 10000,
     "staleAfter": 2700,
     "staleBehavior": "dim",
     "rows": [
-      { "label": "5h", "info": "14:50", "value": "41%", "percent": 41, "color": "#4CAF50", "note": "x1.2^", "noteColor": "#FFC107" },
+      { "label": [{ "t": "5h", "c": "#FFFFFF" }, { "t": " rst", "c": "#888888" }], "info": "14:50", "value": "41%", "percent": 41, "color": "#4CAF50", "note": "x1.2^", "noteColor": "#FFC107" },
       { "label": "7j", "info": "15/08 17h", "value": "28%", "percent": 28, "color": "#4CAF50", "note": "x1.1>", "noteColor": "#4CAF50" },
       { "label": "fable", "value": "3%", "percent": 3, "color": "#4CAF50" },
       { "label": "credits", "value": "1%", "percent": 1, "color": "#4CAF50" }
@@ -51,7 +51,12 @@ docs {
   Parameters:
   - title: Header text, max 31 chars (e.g. "Claude"). Scrolls when it is wider
     than the header. Latin-1 accents are shown as their closest ASCII letter;
-    anything else outside ASCII is dropped
+    anything else outside ASCII is dropped. Takes a plain string, a colored one
+    ({"text": "Claude", "color": "#D97757"}) or up to 4 colored segments
+    ([{"t": "Claude ", "c": "#FFFFFF"}, {"t": "Max", "c": "#D97757"}]); a fifth
+    segment keeps its text and runs on in the fourth one's color. The header band
+    clips what is painted, never the string, so a color boundary stays on its
+    character even mid-scroll
   - icon: Icon name from /icons folder (optional), drawn 8x8 in the header
   - rows: Up to 9 rows, three per page. More than 9 is refused with HTTP 400
     and the gauge keeps the rows it had. A last page holding one or two rows is
@@ -65,7 +70,10 @@ docs {
   Row fields:
   - label: Row name, max 11 chars, drawn on the left of the top line. It takes
     what the value, the info and their gutters leave and is the only field cut
-    short
+    short. Same three forms as the title, capped at 3 segments, to split one name
+    into two readings ("5h" then " rst" in a dimmer grey). The 11 chars are shared
+    by every segment and the first one that no longer fits is dropped whole, along
+    with everything after it; info, value and note stay plain strings
   - info: Optional context, max 15 chars (e.g. a reset time), centred in the gap
     between the end of the label and the start of the value, or between the
     label and the right margin when the row carries no value

@@ -1854,7 +1854,6 @@ paths:
                   allOf:
                     - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
                   maxLength: 128
-                  maxItems: 8
                   description: |
                     Notification text, required. Accepts the three forms of a colored text field - plain string, single colored string, or up to eight colored segments concatenated in display order. Segments color the text and nothing else: the two separator lines keep the color they already had, and `color` still colors any text sent without a color of its own. A text that ends up empty is refused with HTTP 400 `Missing text`, and that covers `""`, `{"text": ""}` and `[]` alike; over MQTT the message is dropped with a serial log. Accents are shown as their closest ASCII letter, and since segment boundaries are counted in bytes but applied glyph by glyph, a boundary that comes after an accented character or a degree sign in the same string is applied one glyph late for each of them.
                   examples:

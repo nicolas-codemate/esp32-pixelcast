@@ -1271,7 +1271,6 @@ channels:
                           - t: C
                             c: '#666666'
               maxLength: 128
-              maxItems: 8
               description: >
                 Notification text, required. Accepts the three forms of a
                 colored text field - plain string, single colored string, or up
@@ -4739,7 +4738,6 @@ components:
                         - t: C
                           c: '#666666'
             maxLength: 128
-            maxItems: 8
             description: >
               Notification text, required. Accepts the three forms of a colored
               text field - plain string, single colored string, or up to eight

@@ -335,9 +335,9 @@ struct GaugeData {
     // hold 31 characters whatever their encoding, an accented one taking two.
     char title[64];
     TextSegment titleSegments[MAX_GAUGE_TITLE_SEGMENTS];
-    uint8_t titleSegmentCount;
     char icon[32];            // Icon name (LittleFS)
     GaugeRow rows[MAX_GAUGE_ROWS];
+    uint8_t titleSegmentCount;
     uint8_t rowCount;
     unsigned long lastUpdate;
     bool valid;
@@ -373,11 +373,11 @@ struct NotificationItem {
     char id[24];              // Unique ID ("notif_<millis>" or user-provided)
     char text[128];           // Notification text (longer than app's 64 chars)
     TextSegment textSegments[MAX_TEXT_SEGMENTS];
-    uint8_t textSegmentCount;
     char icon[32];            // Icon filename
     uint32_t textColor;       // RGB color
     uint32_t backgroundColor; // RGB color for area outside card frame (0 = none)
     uint16_t duration;        // Display duration in ms (0 = hold mode)
+    uint8_t textSegmentCount;
     bool hold;                // Explicit hold flag (never auto-expires)
     bool urgent;              // Jumps to front of queue
     bool stack;               // Queue sequentially (true) vs replace current (false)
@@ -1630,8 +1630,7 @@ int8_t notifAdd(const char* id, const char* text,
     }
 
     strlcpy(notif->text, text, sizeof(notif->text));
-    if (textSegments && textSegmentCount > 0) {
-        if (textSegmentCount > MAX_TEXT_SEGMENTS) textSegmentCount = MAX_TEXT_SEGMENTS;
+    if (textSegmentCount > 0) {
         memcpy(notif->textSegments, textSegments, textSegmentCount * sizeof(TextSegment));
         notif->textSegmentCount = textSegmentCount;
     }
@@ -1658,6 +1657,29 @@ int8_t notifAdd(const char* id, const char* text,
     Serial.printf("[NOTIF] Added: %s (duration=%d, hold=%d, urgent=%d, stack=%d)\n",
                   notif->id, duration, hold, urgent, stack);
     return freeSlot;
+}
+
+// Refusals the two transports report their own way: -1 for a full queue, as notifAdd returns it.
+#define NOTIF_ADD_MISSING_TEXT (-2)
+
+int8_t notifAddFromJson(JsonObject doc) {
+    uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
+
+    char text[sizeof(NotificationItem::text)] = "";
+    TextSegment textSegments[MAX_TEXT_SEGMENTS];
+    uint8_t textSegmentCount = 0;
+    parseTextFieldWithSegments(doc["text"], text, sizeof(text),
+                               textSegments, &textSegmentCount, textColor);
+
+    if (text[0] == '\0') {
+        return NOTIF_ADD_MISSING_TEXT;
+    }
+
+    return notifAdd(doc["id"] | "", text, textSegments, textSegmentCount,
+                    doc["icon"] | "", textColor,
+                    parseColorValue(doc["background"], 0x000000),
+                    doc["duration"] | (uint16_t)DEFAULT_NOTIF_DURATION,
+                    doc["hold"] | false, doc["urgent"] | false, doc["stack"] | true);
 }
 
 bool notifDismiss() {
@@ -1851,13 +1873,7 @@ void serializeTextField(JsonObject& obj, const char* fieldName, const char* text
         if (start >= textLen) break;
         if (end > textLen) end = textLen;
 
-        // Copy substring, sized on the longest text field the device stores
-        char buf[sizeof(NotificationItem::text)];
-        size_t len = end - start;
-        if (len >= sizeof(buf)) len = sizeof(buf) - 1;
-        memcpy(buf, text + start, len);
-        buf[len] = '\0';
-        seg["t"] = (const char*)buf;
+        seg["t"] = JsonString(text + start, end - start);
 
         char colorHex[8];
         formatColorHex(segments[i].color, colorHex, sizeof(colorHex));
@@ -2400,8 +2416,7 @@ static_assert(sizeof(GAUGE_ID_PREFIX) - 1 + sizeof(GaugeData::name) <= sizeof(Ap
 void printGaugeRowField(const char* text, int16_t x, int16_t baselineY,
                         uint32_t color, bool dimColors,
                         const TextSegment* segments, uint8_t segmentCount) {
-    // The label is the only row field that carries segments, so the scratch is sized on its cap
-    TextSegment dimmedSegments[MAX_GAUGE_LABEL_SEGMENTS];
+    TextSegment dimmedSegments[MAX_TEXT_SEGMENTS];
     printLabelWithSegments(text, x, baselineY, dimColors ? dimColorQuarter(color) : color,
                            dimTextSegments(segments, segmentCount, dimColors, dimmedSegments),
                            segmentCount, false);
@@ -2480,7 +2495,7 @@ void displayDrawGaugeTitle(GaugeData* gauge, bool showBadge, bool dimColors) {
         titleX -= gaugeTitleScrollState.scrollOffset;
     }
 
-    TextSegment dimmedTitleSegments[MAX_GAUGE_TITLE_SEGMENTS];
+    TextSegment dimmedTitleSegments[MAX_TEXT_SEGMENTS];
     const TextSegment* titleSegments = dimTextSegments(gauge->titleSegments,
                                                        gauge->titleSegmentCount,
                                                        dimColors, dimmedTitleSegments);
@@ -4528,9 +4543,7 @@ void printTextWithinBounds(const char* text, int16_t x, int16_t y,
                            int16_t boundLeft, int16_t boundRight, uint32_t color,
                            const TextSegment* segments, uint8_t segmentCount) {
     uint32_t currentColor = (segmentCount > 0) ? segments[0].color : color;
-    uint16_t color565 = dma_display->color565((currentColor >> 16) & 0xFF,
-                                              (currentColor >> 8) & 0xFF,
-                                              currentColor & 0xFF);
+    uint16_t color565 = dimmedColor565(currentColor, false);
     dma_display->setTextColor(color565);
 
     int16_t cursorX = x;
@@ -4548,9 +4561,7 @@ void printTextWithinBounds(const char* text, int16_t x, int16_t y,
         if (currentSegment + 1 < segmentCount && byteIndex >= segments[currentSegment + 1].offset) {
             currentSegment++;
             currentColor = segments[currentSegment].color;
-            color565 = dma_display->color565((currentColor >> 16) & 0xFF,
-                                             (currentColor >> 8) & 0xFF,
-                                             currentColor & 0xFF);
+            color565 = dimmedColor565(currentColor, false);
             dma_display->setTextColor(color565);
         }
 
@@ -6068,30 +6079,12 @@ void setupWebServer() {
                 return;
             }
 
-            const char* id = doc["id"] | "";
-            const char* icon = doc["icon"] | "";
-            uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
-            uint32_t bgColor = parseColorValue(doc["background"], 0x000000);
-            uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_NOTIF_DURATION;
-            bool hold = doc["hold"] | false;
-            bool urgent = doc["urgent"] | false;
-            bool stack = doc["stack"] | true;
+            int8_t slot = notifAddFromJson(doc);
 
-            // Parse text field (may be string, {text,color} object, or [{t,c},...] array)
-            char text[sizeof(NotificationItem::text)] = "";
-            TextSegment textSegs[MAX_TEXT_SEGMENTS];
-            uint8_t textSegCount = 0;
-            parseTextFieldWithSegments(doc["text"], text, sizeof(text),
-                                       textSegs, &textSegCount, textColor);
-
-            // Text is required
-            if (text[0] == '\0') {
+            if (slot == NOTIF_ADD_MISSING_TEXT) {
                 request->send(400, "application/json", "{\"error\":\"Missing text\"}");
                 return;
             }
-
-            int8_t slot = notifAdd(id, text, textSegs, textSegCount, icon, textColor, bgColor,
-                                   duration, hold, urgent, stack);
 
             if (slot < 0) {
                 request->send(503, "application/json", "{\"error\":\"Notification queue full\"}");
@@ -6854,34 +6847,14 @@ void mqttHandleCustomDelete(const char* name) {
 }
 
 void mqttHandleNotify(JsonObject& doc) {
-    const char* id = doc["id"] | "";
-    const char* icon = doc["icon"] | "";
-    uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
-    uint32_t bgColor = parseColorValue(doc["background"], 0x000000);
-    uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_NOTIF_DURATION;
-    bool hold = doc["hold"] | false;
-    bool urgent = doc["urgent"] | false;
-    bool stack = doc["stack"] | true;
+    int8_t slot = notifAddFromJson(doc);
 
-    // Parse text field (may be string, {text,color} object, or [{t,c},...] array)
-    char text[sizeof(NotificationItem::text)] = "";
-    TextSegment textSegs[MAX_TEXT_SEGMENTS];
-    uint8_t textSegCount = 0;
-    parseTextFieldWithSegments(doc["text"], text, sizeof(text),
-                               textSegs, &textSegCount, textColor);
-
-    if (text[0] == '\0') {
+    if (slot == NOTIF_ADD_MISSING_TEXT) {
         Serial.println("[MQTT] /notify missing text");
-        return;
-    }
-
-    int8_t slot = notifAdd(id, text, textSegs, textSegCount, icon, textColor, bgColor,
-                           duration, hold, urgent, stack);
-
-    if (slot >= 0) {
-        Serial.printf("[MQTT] Notification added: '%s'\n", text);
-    } else {
+    } else if (slot < 0) {
         Serial.println("[MQTT] Notification queue full");
+    } else {
+        Serial.printf("[MQTT] Notification added: '%s'\n", notifications[slot].text);
     }
 }
 

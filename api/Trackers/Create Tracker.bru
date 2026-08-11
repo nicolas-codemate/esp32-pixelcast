@@ -26,13 +26,14 @@ body:json {
     "value": 98452.30,
     "change": 2.14,
     "sparkline": [92100, 89300, 93200, 91800, 95400, 94100, 97600, 96200, 98452],
+    "volumes": [3.2, 4.1, 3.8, 5.6, 4.9, 6.2, 5.1, 4.4, 6.0],
+    "sparklineRef": "open",
     "symbolColor": "#FF8800",
-    "sparklineColor": "#00D4FF",
     "bottomText": [
-      { "t": "Vol 24h: ", "c": "#888888" },
-      { "t": "42B", "c": "#00D4FF" }
+      { "t": "ATH ", "c": "#888888" },
+      { "t": "73.6K 03/24", "c": "#00D4FF" }
     ],
-    "sparklinePeriod": "7d",
+    "sparklinePeriod": "7D",
     "duration": 10000
   }
 }
@@ -41,8 +42,8 @@ docs {
   Creates or updates a tracker app (crypto, stock, currency, etc.).
 
   Each tracker is registered in the app rotation and displayed with a
-  dedicated layout: icon + symbol, price, change %, sparkline chart,
-  and optional bottom text.
+  dedicated layout: icon + symbol, price, change %, a 63-column chart with
+  volume bars behind a bicolor curve, and optional bottom text.
 
   The tracker name in the query param becomes the unique key.
   App ID in rotation is prefixed with "tracker_" (e.g. "tracker_btc").
@@ -55,13 +56,22 @@ docs {
   - currency: Currency label, max 7 chars (e.g. "USD", "EUR")
   - value: Current price/value (float)
   - change: Change percentage (float, positive or negative)
-  - sparkline: Array of float values (up to 24 points, auto-scaled)
+  - sparkline: Array of float values (up to 63 points, one per chart
+    column, auto-scaled; a shorter series is stretched over the columns)
+  - volumes: Optional array of float values (up to 63), drawn as midnight
+    blue bars behind the curve, scaled against their own largest value
+  - sparklineRef: "open" (default) or "last" - which price the curve is
+    green above and red below
   - symbolColor: Header color - hex "#FF8800", RGB [255,136,0], or uint32
-  - sparklineColor: Chart color - same formats as symbolColor
-  - bottomText: Optional footer text, max 31 chars. Scrolls when it is
-    wider than the panel. Accepts a plain string, a {"text","color"}
-    object, or an array of [{"t","c"}] colored segments
-  - sparklinePeriod: Label above the chart, max 4 chars (default: "24h")
+    (default: "#00DC3C")
+  - sparklineColor: Deprecated, no longer drawn - the curve takes its
+    colors from sparklineRef
+  - bottomText: Optional footer text, max 31 chars, ten of them visible.
+    Scrolls when it is wider than the panel. Accepts a plain string, a
+    {"text","color"} object, or an array of [{"t","c"}] colored segments.
+    Omit it and the chart takes its rows: 32 rows tall instead of 20
+  - sparklinePeriod: Label set into the rule above the chart, max 4 chars,
+    two read best - "7D", "1M", "3M", "1Y" (default: "24h")
   - duration: Display duration in ms (default: 10000)
 
   Stale behavior:

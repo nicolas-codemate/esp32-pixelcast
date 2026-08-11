@@ -123,7 +123,7 @@
 // Application Limits
 // ============================================================================
 #ifndef MAX_APPS
-    #define MAX_APPS 16
+    #define MAX_APPS 14
 #endif
 #ifndef MAX_NOTIFICATIONS
     #define MAX_NOTIFICATIONS 10

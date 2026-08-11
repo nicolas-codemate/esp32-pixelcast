@@ -264,7 +264,7 @@ Main options are configurable via `platformio.ini`:
 build_flags =
   -DPANEL_WIDTH=64
   -DPANEL_HEIGHT=64
-  -DMAX_APPS=16
+  -DMAX_APPS=14
   -DMAX_NOTIFICATIONS=10
 ```
 

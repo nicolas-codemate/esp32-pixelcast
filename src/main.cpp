@@ -273,6 +273,14 @@ struct WeatherData {
 };
 WeatherData weatherData;
 
+// Which price the chart compares every column against: the first point of the series, so
+// green means "up since the period opened", or the last one, so green means "higher than
+// the price is now".
+enum TrackerChartReference : uint8_t {
+    TRACKER_REF_OPEN = 0,
+    TRACKER_REF_LAST = 1
+};
+
 // Tracker Data (populated by POST /api/tracker)
 struct TrackerData {
     char name[16];            // Key: "btc", "eth", "aapl"
@@ -285,8 +293,13 @@ struct TrackerData {
     float changePercent;      // +2.14 or -1.5
     uint16_t sparkline[MAX_SPARKLINE_POINTS];  // Scaled 0-65535
     uint8_t sparklineCount;
+    // Bars behind the curve. Scaled against the largest value of the series rather than
+    // between its extremes, because a volume bar is read from zero.
+    uint8_t volumes[MAX_SPARKLINE_POINTS];     // Scaled 0-255
+    uint8_t volumeCount;
+    uint8_t sparklineRef;     // TrackerChartReference
     uint32_t symbolColor;     // Header color (0xRRGGBB)
-    uint32_t sparklineColor;  // Chart color
+    uint32_t sparklineColor;  // Deprecated: the curve now takes its colors from the reference
     // Same reasoning as symbol: 64 bytes hold 31 characters whatever their encoding
     char bottomText[64];      // Optional footer - scrolls when it overflows
     TextSegment bottomTextSegments[MAX_TEXT_SEGMENTS];
@@ -618,9 +631,11 @@ void displayDrawOtaProgress(uint8_t percent);
 void displaySetBrightness(uint8_t brightness);
 
 uint32_t dimColorQuarter(uint32_t color);
+uint16_t dimmedColor565(uint32_t color, bool dimColors);
 char utf8FrenchToAscii(uint8_t leadByte, uint8_t continuationByte);
 int16_t calculateTextWidth(const char* text);
 int16_t calculateTomThumbTextWidth(const char* text);
+int16_t tomThumbLeadingInkOffset(const char* text);
 void truncateTomThumbTextToWidth(const char* text, char* buffer, size_t bufferSize,
                                  int16_t maxWidth);
 void resetScrollState();
@@ -676,9 +691,11 @@ TrackerData* trackerAllocate(const char* name);
 bool trackerRemove(const char* name);
 void trackerInit();
 void trackerApplyJsonFields(TrackerData* tracker, JsonObject doc);
+void stripDegreeSign(char* text, TextSegment* segments, uint8_t segmentCount);
 void displayShowTracker(TrackerData* tracker, const AppItem* app);
 void displayDrawTrackerSymbol(TrackerData* tracker, bool showBadge, bool dimColors);
-void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
+void displayDrawTrackerChart(TrackerData* tracker, bool dimColors, int16_t chartBottom);
+void displayDrawTrackerPeriod(TrackerData* tracker, bool dimColors);
 void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color);
 void formatTrackerValue(float value, char* buffer, size_t bufSize, uint8_t maxChars);
 void insertThousandSeparators(const char* digits, char* buffer, size_t bufSize);
@@ -1232,6 +1249,16 @@ void weatherParseTodayBlock(JsonObjectConst todayBlock)
 
 #define TRACKER_BOTTOM_COLOR        0x969696
 #define TRACKER_BOTTOM_COLOR_STALE  0x3C3C3C
+#define TRACKER_SYMBOL_COLOR        0x00DC3C
+#define TRACKER_CURRENCY_COLOR      0x787878
+#define TRACKER_UP_COLOR            0x00E146
+#define TRACKER_DOWN_COLOR          0xFF2D23
+#define TRACKER_VOLUME_COLOR        0x242A48
+#define TRACKER_REFERENCE_LINE_COLOR 0x646464
+#define TRACKER_OTHER_LINE_COLOR    0x464646
+#define TRACKER_RULE_COLOR          0x3C3C3C
+#define TRACKER_PERIOD_COLOR        0x969696
+#define TRACKER_SEPARATOR_COLOR     0x282828
 
 TrackerData* trackerFind(const char* name) {
     for (uint8_t i = 0; i < MAX_TRACKERS; i++) {
@@ -1252,8 +1279,9 @@ TrackerData* trackerAllocate(const char* name) {
         if (!trackers[i].valid) {
             memset(&trackers[i], 0, sizeof(TrackerData));
             strlcpy(trackers[i].name, name, sizeof(trackers[i].name));
-            trackers[i].symbolColor = 0xFFFFFF;    // Default white
+            trackers[i].symbolColor = TRACKER_SYMBOL_COLOR;
             trackers[i].sparklineColor = 0x00D4FF;  // Default cyan
+            trackers[i].sparklineRef = TRACKER_REF_OPEN;
             strlcpy(trackers[i].sparklinePeriod, "24h", sizeof(trackers[i].sparklinePeriod));
             trackers[i].valid = true;
             trackerCount++;
@@ -1293,6 +1321,40 @@ const AppItem* trackerFindApp(const char* name) {
     return index >= 0 ? &apps[index] : nullptr;
 }
 
+// The footer font has no degree glyph, and the shared text printer draws the mark six rows
+// above the row it belongs to - inside the chart, where nothing erases it between two scroll
+// steps. It is dropped on the way in, which is what this field has always shown.
+void stripDegreeSign(char* text, TextSegment* segments, uint8_t segmentCount) {
+    char* readPosition = text;
+    char* writePosition = text;
+
+    while (*readPosition) {
+        uint8_t degreeBytes = 0;
+        if ((uint8_t)*readPosition == 0xC2 && (uint8_t)*(readPosition + 1) == 0xB0) {
+            degreeBytes = 2;
+        } else if ((uint8_t)*readPosition == 0xB0) {
+            degreeBytes = 1;
+        }
+
+        if (degreeBytes == 0) {
+            *writePosition++ = *readPosition++;
+            continue;
+        }
+
+        // Segment offsets are byte positions in the string as it arrived, so they move by the
+        // bytes removed ahead of them
+        uint8_t originalOffset = (uint8_t)(readPosition - text);
+        for (uint8_t i = 0; i < segmentCount; i++) {
+            if (segments[i].offset > originalOffset) {
+                segments[i].offset -= degreeBytes;
+            }
+        }
+        readPosition += degreeBytes;
+    }
+
+    *writePosition = '\0';
+}
+
 void trackerApplyJsonFields(TrackerData* tracker, JsonObject doc) {
     if (!doc["symbol"].isNull()) {
         strlcpy(tracker->symbol, doc["symbol"] | "", sizeof(tracker->symbol));
@@ -1315,9 +1377,19 @@ void trackerApplyJsonFields(TrackerData* tracker, JsonObject doc) {
                                    tracker->bottomTextSegments,
                                    &tracker->bottomTextSegmentCount,
                                    TRACKER_BOTTOM_COLOR);
+        stripDegreeSign(tracker->bottomText, tracker->bottomTextSegments,
+                        tracker->bottomTextSegmentCount);
     }
     if (!doc["sparklinePeriod"].isNull()) {
         strlcpy(tracker->sparklinePeriod, doc["sparklinePeriod"] | "", sizeof(tracker->sparklinePeriod));
+    }
+    if (!doc["sparklineRef"].isNull()) {
+        const char* reference = doc["sparklineRef"] | "";
+        if (strcmp(reference, "last") == 0) {
+            tracker->sparklineRef = TRACKER_REF_LAST;
+        } else if (strcmp(reference, "open") == 0) {
+            tracker->sparklineRef = TRACKER_REF_OPEN;
+        }
     }
 
     tracker->symbolColor = parseColorValue(doc["symbolColor"], tracker->symbolColor);
@@ -1339,14 +1411,35 @@ void trackerApplyJsonFields(TrackerData* tracker, JsonObject doc) {
             }
 
             float range = maxVal - minVal;
-            if (range < 0.0001f) range = 1.0f;
+            bool flatSeries = (range < 0.0001f);
 
             for (uint8_t i = 0; i < count; i++) {
-                float normalized = (sparkArr[i].as<float>() - minVal) / range;
+                // A series that never moves sits in the middle of its own range, and drawing
+                // it along the floor of the chart would read as a crash instead of as calm.
+                float normalized = flatSeries ? 0.5f
+                                              : (sparkArr[i].as<float>() - minVal) / range;
                 tracker->sparkline[i] = (uint16_t)(normalized * 65535.0f);
             }
             tracker->sparklineCount = count;
         }
+    }
+
+    if (doc["volumes"].is<JsonArray>()) {
+        JsonArray volumeArr = doc["volumes"];
+        uint8_t count = min((int)volumeArr.size(), (int)MAX_SPARKLINE_POINTS);
+
+        float maxVolume = 0.0f;
+        for (uint8_t i = 0; i < count; i++) {
+            float v = volumeArr[i].as<float>();
+            if (v > maxVolume) maxVolume = v;
+        }
+
+        for (uint8_t i = 0; i < count; i++) {
+            float v = volumeArr[i].as<float>();
+            if (v < 0.0f) v = 0.0f;
+            tracker->volumes[i] = (maxVolume > 0.0f) ? (uint8_t)(v / maxVolume * 255.0f + 0.5f) : 0;
+        }
+        tracker->volumeCount = count;
     }
 }
 
@@ -1734,60 +1827,24 @@ void serializeTextField(JsonObject& obj, const char* fieldName, const char* text
     }
 }
 
-// Draw sparkline chart from scaled uint16 data
-void drawSparkline(const uint16_t* data, uint8_t count, int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
-    if (count < 2) return;
-
-    // Find data min/max for vertical scaling
-    uint16_t dataMin = 65535;
-    uint16_t dataMax = 0;
-    for (uint8_t i = 0; i < count; i++) {
-        if (data[i] < dataMin) dataMin = data[i];
-        if (data[i] > dataMax) dataMax = data[i];
-    }
-
-    uint16_t dataRange = dataMax - dataMin;
-    if (dataRange == 0) dataRange = 1;
-
-    // Plot line segments between consecutive points
-    for (uint8_t i = 0; i < count - 1; i++) {
-        int16_t x0 = x + (int32_t)i * (w - 1) / (count - 1);
-        int16_t x1 = x + (int32_t)(i + 1) * (w - 1) / (count - 1);
-        // Invert Y: high value = top of chart
-        int16_t y0 = y + h - 1 - (int32_t)(data[i] - dataMin) * (h - 1) / dataRange;
-        int16_t y1 = y + h - 1 - (int32_t)(data[i + 1] - dataMin) * (h - 1) / dataRange;
-        dma_display->drawLine(x0, y0, x1, y1, color);
-    }
-}
-
-// Draw a small up/down arrow (5x5 pixels)
+// Sized to a 5x7 cell so the arrow stands as tall as the change it labels
 void drawTrackerArrow(int16_t x, int16_t y, bool up, uint16_t color) {
-    if (up) {
-        //   ..X..
-        //   .XXX.
-        //   XXXXX
-        //   ..X..
-        //   ..X..
-        dma_display->drawPixel(x + 2, y,     color);
-        dma_display->drawPixel(x + 1, y + 1, color);
-        dma_display->drawPixel(x + 2, y + 1, color);
-        dma_display->drawPixel(x + 3, y + 1, color);
-        for (int16_t i = 0; i < 5; i++) dma_display->drawPixel(x + i, y + 2, color);
-        dma_display->drawPixel(x + 2, y + 3, color);
-        dma_display->drawPixel(x + 2, y + 4, color);
-    } else {
-        //   ..X..
-        //   ..X..
-        //   XXXXX
-        //   .XXX.
-        //   ..X..
-        dma_display->drawPixel(x + 2, y,     color);
-        dma_display->drawPixel(x + 2, y + 1, color);
-        for (int16_t i = 0; i < 5; i++) dma_display->drawPixel(x + i, y + 2, color);
-        dma_display->drawPixel(x + 1, y + 3, color);
-        dma_display->drawPixel(x + 2, y + 3, color);
-        dma_display->drawPixel(x + 3, y + 3, color);
-        dma_display->drawPixel(x + 2, y + 4, color);
+    //   ..X..     ..X..
+    //   .XXX.     ..X..
+    //   X.X.X     ..X..
+    //   ..X..     ..X..
+    //   ..X..     X.X.X
+    //   ..X..     .XXX.
+    //   ..X..     ..X..
+    static const uint8_t upRows[7] = {0x04, 0x0E, 0x15, 0x04, 0x04, 0x04, 0x04};
+
+    for (uint8_t row = 0; row < 7; row++) {
+        uint8_t bits = up ? upRows[row] : upRows[6 - row];
+        for (uint8_t column = 0; column < 5; column++) {
+            if ((bits >> (4 - column)) & 1) {
+                dma_display->drawPixel(x + column, y + row, color);
+            }
+        }
     }
 }
 
@@ -1888,20 +1945,35 @@ void formatTrackerValue(float value, char* buffer, size_t bufSize, uint8_t maxCh
 
 // Tracker row geometry. The header and footer coordinates are shared by the full redraw and
 // the scroll repaints.
-#define TRACKER_HEADER_HEIGHT       12
-#define TRACKER_SYMBOL_X            13
-#define TRACKER_SYMBOL_X_NO_ICON    2
-#define TRACKER_SYMBOL_Y            4
+#define TRACKER_HEADER_HEIGHT       10
+#define TRACKER_ICON_X              1
+#define TRACKER_ICON_Y              1
+#define TRACKER_SYMBOL_X            12
+#define TRACKER_SYMBOL_X_NO_ICON    1
+#define TRACKER_SYMBOL_Y            2
 #define TRACKER_STALE_BADGE_X       42
-#define TRACKER_VALUE_X             2
-#define TRACKER_CURRENCY_RIGHT_X    62
+#define TRACKER_STALE_BADGE_BASELINE 7
+#define TRACKER_VALUE_X             1
+#define TRACKER_VALUE_Y             10
 // Without it the last digit sits one pixel from the currency, the same gap that separates two
 // digits, and the two read as one run: "1,234.57EUR".
 #define TRACKER_VALUE_GUTTER        2
-#define TRACKER_PERIOD_RIGHT_X      62
-#define TRACKER_BOTTOM_Y            56
+#define TRACKER_CHANGE_Y            19
+#define TRACKER_CHANGE_TEXT_X       8
+// TomThumb paints its glyphs on the five rows above the baseline it is given
+#define TRACKER_PERIOD_BASELINE     31
+#define TRACKER_CHART_RULE_Y        28
+// Dark columns between the end of the rule and the first lit column of the period label
+#define TRACKER_CHART_RULE_GAP      2
+#define TRACKER_CHART_TOP_Y         31
+#define TRACKER_CHART_BOTTOM_Y      50
+// A tracker with no footer has no separator to draw either, so the chart takes the rows both
+// would have used, one short of the bottom edge for the same air it has above the separator.
+#define TRACKER_CHART_BOTTOM_Y_TALL 62
+#define TRACKER_SEPARATOR_Y         52
+#define TRACKER_BOTTOM_Y            55
 
-// --- Row 1, the symbol alone (y=0..11) ---
+// --- Row 1, the symbol alone (y=0..9) ---
 // Runs every scroll step, and the DMA reads this framebuffer while it is being written, so it
 // touches nothing outside the strip the name moves in: clearing the icon to paint it back
 // identically twenty times a second is seen as flicker.
@@ -1925,7 +1997,7 @@ void displayDrawTrackerSymbol(TrackerData* tracker, bool showBadge, bool dimColo
 
         if (corner == 0 && trackerIconDrawn) {
             // Cache-only lookup: getIcon would fall back to a filesystem read, 20 times a second
-            drawIconAtScale(getCachedIcon(tracker->icon), 2, 2, 1);
+            drawIconAtScale(getCachedIcon(tracker->icon), TRACKER_ICON_X, TRACKER_ICON_Y, 1);
         }
     }
 
@@ -1945,20 +2017,20 @@ void displayDrawTrackerSymbol(TrackerData* tracker, bool showBadge, bool dimColo
                           symbolAreaX, symbolAreaEnd, symbolColor);
 }
 
-// --- Row 1: icon + symbol (y=0..11) ---
+// --- Row 1: icon + symbol (y=0..9) ---
 // The band starts at y=0 so a blinking indicator that went dark does not stay lit.
 void displayDrawTrackerHeader(TrackerData* tracker, bool showBadge, bool dimColors, CachedIcon* icon) {
     dma_display->fillRect(0, 0, DISPLAY_WIDTH, TRACKER_HEADER_HEIGHT, dma_display->color565(0, 0, 0));
 
     trackerIconDrawn = (icon && icon->valid);
     if (trackerIconDrawn) {
-        drawIconAtScale(icon, 2, 2, 1);
+        drawIconAtScale(icon, TRACKER_ICON_X, TRACKER_ICON_Y, 1);
     }
 
     if (showBadge) {
         dma_display->setFont(&TomThumb);
         dma_display->setTextColor(dma_display->color565(200, 0, 0));
-        dma_display->setCursor(TRACKER_STALE_BADGE_X, 6);
+        dma_display->setCursor(TRACKER_STALE_BADGE_X, TRACKER_STALE_BADGE_BASELINE);
         dma_display->print("STALE");
     }
 
@@ -1969,7 +2041,7 @@ void displayDrawTrackerHeader(TrackerData* tracker, bool showBadge, bool dimColo
     dma_display->setTextSize(1);
 }
 
-// --- Bottom text (y=56..63) ---
+// --- Bottom text (y=55..61) ---
 void displayDrawTrackerBottom(TrackerData* tracker, bool dimColors) {
     dma_display->fillRect(0, TRACKER_BOTTOM_Y, DISPLAY_WIDTH,
                           DISPLAY_HEIGHT - TRACKER_BOTTOM_Y, dma_display->color565(0, 0, 0));
@@ -1978,12 +2050,12 @@ void displayDrawTrackerBottom(TrackerData* tracker, bool dimColors) {
         return;
     }
 
-    int16_t textWidth = calculateTomThumbTextWidth(tracker->bottomText);
-    scrollStateArm(trackerBottomScrollState, textWidth, DISPLAY_WIDTH - 4);
+    int16_t textWidth = calculateTextWidth(tracker->bottomText);
+    scrollStateArm(trackerBottomScrollState, textWidth, DISPLAY_WIDTH - 2);
 
     int16_t textX;
     if (trackerBottomScrollState.needsScroll) {
-        textX = 2 - trackerBottomScrollState.scrollOffset;
+        textX = 1 - trackerBottomScrollState.scrollOffset;
     } else {
         textX = (DISPLAY_WIDTH - textWidth) / 2;
     }
@@ -1999,11 +2071,129 @@ void displayDrawTrackerBottom(TrackerData* tracker, bool dimColors) {
         segments = dimmedSegments;
     }
 
-    // dimDefault would apply a 3/4 factor that no input colour turns back into the grey this
-    // row has always used, so the grey is passed in directly
-    printLabelWithSegments(tracker->bottomText, textX, 62,
-                           dimColors ? TRACKER_BOTTOM_COLOR_STALE : TRACKER_BOTTOM_COLOR,
-                           segments, tracker->bottomTextSegmentCount, false);
+    dma_display->setFont(NULL);
+    dma_display->setTextSize(1);
+    printTextWithSegments(tracker->bottomText, textX, TRACKER_BOTTOM_Y,
+                          dimColors ? TRACKER_BOTTOM_COLOR_STALE : TRACKER_BOTTOM_COLOR,
+                          segments, tracker->bottomTextSegmentCount);
+}
+
+// The chart plots one point per column, so a series shorter than the 63 columns is stretched
+// over them: the shape and both endpoints are the same whether twelve points arrive or sixty.
+uint16_t trackerSampleSeries(const uint16_t* series, uint8_t count, int16_t column) {
+    if (count < 2) return series[0];
+
+    uint32_t position = (uint32_t)column * (count - 1) * 256 / (TRACKER_CHART_COLUMNS - 1);
+    uint8_t index = position >> 8;
+    if (index + 1 >= count) return series[count - 1];
+
+    int32_t step = (int32_t)series[index + 1] - (int32_t)series[index];
+    return (uint16_t)((int32_t)series[index] + step * (int32_t)(position & 0xFF) / 256);
+}
+
+// Volumes take the nearest point instead of an interpolation: a bar stands for a measured
+// volume, and averaging two of them would draw a bar nobody reported.
+uint8_t trackerSampleVolume(const uint8_t* volumes, uint8_t count, int16_t column) {
+    if (count < 2) return volumes[0];
+
+    uint16_t index = ((uint32_t)column * (count - 1) + (TRACKER_CHART_COLUMNS - 1) / 2) /
+                     (TRACKER_CHART_COLUMNS - 1);
+    return volumes[index];
+}
+
+int16_t trackerChartOrdinate(uint16_t value, int16_t chartBottom) {
+    const int16_t chartSpan = chartBottom - TRACKER_CHART_TOP_Y;
+    return chartBottom - (int16_t)(((uint32_t)value * chartSpan + 32767) / 65535);
+}
+
+// --- The chart (top at y=31, columns x=0..62) ---
+// Volumes first: they are a backdrop, and every line drawn after them stays readable over
+// them because midnight blue has almost nothing in the red and green channels.
+void displayDrawTrackerChart(TrackerData* tracker, bool dimColors, int16_t chartBottom) {
+    if (tracker->volumeCount > 0) {
+        // Three fifths of the chart, so the bars keep their share of it whatever its height
+        int16_t volumeMaxHeight = (chartBottom - TRACKER_CHART_TOP_Y + 1) * 3 / 5;
+        uint16_t volumeColor = dimmedColor565(TRACKER_VOLUME_COLOR, dimColors);
+        for (int16_t column = 0; column < TRACKER_CHART_COLUMNS; column++) {
+            uint8_t volume = trackerSampleVolume(tracker->volumes, tracker->volumeCount, column);
+            int16_t barHeight = ((int32_t)volume * volumeMaxHeight + 127) / 255;
+            if (barHeight < 1) barHeight = 1;
+            dma_display->drawFastVLine(column, chartBottom - barHeight + 1,
+                                       barHeight, volumeColor);
+        }
+    }
+
+    if (tracker->sparklineCount < 2) return;
+
+    uint16_t openValue = tracker->sparkline[0];
+    uint16_t lastValue = tracker->sparkline[tracker->sparklineCount - 1];
+    bool referenceIsLast = (tracker->sparklineRef == TRACKER_REF_LAST);
+    uint16_t referenceValue = referenceIsLast ? lastValue : openValue;
+    uint16_t otherValue = referenceIsLast ? openValue : lastValue;
+
+    int16_t referenceY = trackerChartOrdinate(referenceValue, chartBottom);
+    uint16_t referenceColor = dimmedColor565(TRACKER_REFERENCE_LINE_COLOR, dimColors);
+    for (int16_t column = 0; column < TRACKER_CHART_COLUMNS; column += 2) {
+        dma_display->drawPixel(column, referenceY, referenceColor);
+    }
+
+    // Where the two ends of the series meet, the second line would only thicken the first
+    int16_t otherY = trackerChartOrdinate(otherValue, chartBottom);
+    if (abs(otherY - referenceY) > 1) {
+        uint16_t otherColor = dimmedColor565(TRACKER_OTHER_LINE_COLOR, dimColors);
+        for (int16_t column = 0; column < TRACKER_CHART_COLUMNS; column += 4) {
+            dma_display->drawPixel(column, otherY, otherColor);
+            dma_display->drawPixel(column + 1, otherY, otherColor);
+        }
+    }
+
+    uint16_t upColor = dimmedColor565(TRACKER_UP_COLOR, dimColors);
+    uint16_t downColor = dimmedColor565(TRACKER_DOWN_COLOR, dimColors);
+
+    int16_t previousY = 0;
+    int16_t lastColumnY = 0;
+    for (int16_t column = 0; column < TRACKER_CHART_COLUMNS; column++) {
+        uint16_t value = trackerSampleSeries(tracker->sparkline, tracker->sparklineCount, column);
+        int16_t columnY = trackerChartOrdinate(value, chartBottom);
+        uint16_t columnColor = (value >= referenceValue) ? upColor : downColor;
+
+        // The vertical run joining two columns takes the colour of the column it lands on, so
+        // a curve crossing the reference changes colour on the crossing itself
+        if (column > 0) {
+            for (int16_t y = min(previousY, columnY) + 1; y < max(previousY, columnY); y++) {
+                dma_display->drawPixel(column, y, columnColor);
+            }
+        }
+
+        dma_display->drawPixel(column, columnY, columnColor);
+        previousY = columnY;
+        lastColumnY = columnY;
+    }
+
+    uint16_t todayColor = dimmedColor565(0xFFFFFF, dimColors);
+    dma_display->drawPixel(TRACKER_CHART_COLUMNS - 2, lastColumnY, todayColor);
+    dma_display->drawPixel(TRACKER_CHART_COLUMNS - 1, lastColumnY, todayColor);
+}
+
+// --- The period label set into the rule above the chart (y=26..30) ---
+void displayDrawTrackerPeriod(TrackerData* tracker, bool dimColors) {
+    bool hasPeriod = strlen(tracker->sparklinePeriod) > 0;
+    int16_t periodWidth = hasPeriod ? calculateTomThumbTextWidth(tracker->sparklinePeriod) : 0;
+
+    int16_t periodX = DISPLAY_WIDTH - periodWidth;
+    int16_t ruleEnd = hasPeriod
+        ? periodX + tomThumbLeadingInkOffset(tracker->sparklinePeriod) - TRACKER_CHART_RULE_GAP
+        : DISPLAY_WIDTH;
+    dma_display->drawFastHLine(0, TRACKER_CHART_RULE_Y, ruleEnd,
+                               dimmedColor565(TRACKER_RULE_COLOR, dimColors));
+
+    if (!hasPeriod) return;
+
+    dma_display->setFont(&TomThumb);
+    dma_display->setTextColor(dimmedColor565(TRACKER_PERIOD_COLOR, dimColors));
+    dma_display->setCursor(periodX, TRACKER_PERIOD_BASELINE);
+    dma_display->print(tracker->sparklinePeriod);
+    dma_display->setFont(NULL);
 }
 
 // Display tracker layout on 64x64 matrix
@@ -2044,81 +2234,52 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
 
     dma_display->clearScreen();
 
-    // Color helpers
-    uint16_t white = dma_display->color565(255, 255, 255);
-    uint16_t dimWhite = dimColors ? dma_display->color565(60, 60, 60) : dma_display->color565(150, 150, 150);
-    uint16_t dimGray = dma_display->color565(40, 40, 40);
-    uint16_t green = dimColors ? dma_display->color565(0, 60, 0) : dma_display->color565(0, 200, 0);
-    uint16_t red = dimColors ? dma_display->color565(60, 0, 0) : dma_display->color565(200, 0, 0);
-
-    uint8_t spkR = (tracker->sparklineColor >> 16) & 0xFF;
-    uint8_t spkG = (tracker->sparklineColor >> 8) & 0xFF;
-    uint8_t spkB = tracker->sparklineColor & 0xFF;
-    uint16_t sparklineColor565 = dimColors
-        ? dma_display->color565(spkR / 4, spkG / 4, spkB / 4)
-        : dma_display->color565(spkR, spkG, spkB);
-
-    uint16_t valueColor = dimColors ? dma_display->color565(60, 60, 60) : white;
-
     displayDrawTrackerHeader(tracker, showBadge, dimColors, getIcon(tracker->icon));
 
-    // --- Row 2: Price value (y=14..22) ---
+    // --- Row 2: price and currency (y=10..16) ---
     bool hasCurrency = strlen(tracker->currencySymbol) > 0;
-    int16_t currencyX = TRACKER_CURRENCY_RIGHT_X - calculateTomThumbTextWidth(tracker->currencySymbol);
+    // Right-aligned so the last glyph column lands on x=62
+    int16_t currencyX = DISPLAY_WIDTH - calculateTextWidth(tracker->currencySymbol);
     int16_t valueAreaEnd = hasCurrency ? currencyX - TRACKER_VALUE_GUTTER : DISPLAY_WIDTH;
     uint8_t valueMaxChars = (valueAreaEnd - TRACKER_VALUE_X) / TEXT_CELL_WIDTH;
 
     char valueBuf[24];
     formatTrackerValue(tracker->currentValue, valueBuf, sizeof(valueBuf), valueMaxChars);
-    dma_display->setTextColor(valueColor);
-    dma_display->setCursor(TRACKER_VALUE_X, 16);
+    dma_display->setTextColor(dimmedColor565(0xFFFFFF, dimColors));
+    dma_display->setCursor(TRACKER_VALUE_X, TRACKER_VALUE_Y);
     dma_display->print(valueBuf);
 
-    // Currency symbol right-aligned in TomThumb
     if (hasCurrency) {
-        dma_display->setFont(&TomThumb);
-        dma_display->setTextColor(dimWhite);
-        dma_display->setCursor(currencyX, 22);
+        dma_display->setTextColor(dimmedColor565(TRACKER_CURRENCY_COLOR, dimColors));
+        dma_display->setCursor(currencyX, TRACKER_VALUE_Y);
         dma_display->print(tracker->currencySymbol);
-        dma_display->setFont(NULL);  // Reset to default
     }
 
-    // --- Row 3: Arrow + Change % (y=25..33) ---
+    // --- Row 3: arrow and change (y=19..25) ---
     bool isPositive = (tracker->changePercent >= 0.0f);
-    uint16_t changeColor = isPositive ? green : red;
+    uint16_t changeColor = dimmedColor565(isPositive ? TRACKER_UP_COLOR : TRACKER_DOWN_COLOR,
+                                           dimColors);
 
-    drawTrackerArrow(2, 27, isPositive, changeColor);
+    drawTrackerArrow(TRACKER_VALUE_X, TRACKER_CHANGE_Y, isPositive, changeColor);
 
     char changeBuf[16];
     snprintf(changeBuf, sizeof(changeBuf), "%s%.2f%%",
              isPositive ? "+" : "", tracker->changePercent);
     dma_display->setTextColor(changeColor);
-    dma_display->setCursor(9, 27);
+    dma_display->setCursor(TRACKER_CHANGE_TEXT_X, TRACKER_CHANGE_Y);
     dma_display->print(changeBuf);
 
-    // --- Separator line (y=37) ---
-    drawSeparatorLine(37, dimGray);
+    bool hasBottomText = strlen(tracker->bottomText) > 0;
 
-    // --- Sparkline period label right-aligned (y=39) ---
-    if (strlen(tracker->sparklinePeriod) > 0) {
-        dma_display->setFont(&TomThumb);
-        dma_display->setTextColor(dimWhite);
-        int16_t periodWidth = calculateTomThumbTextWidth(tracker->sparklinePeriod);
-        dma_display->setCursor(TRACKER_PERIOD_RIGHT_X - periodWidth, 43);
-        dma_display->print(tracker->sparklinePeriod);
-        dma_display->setFont(NULL);
+    displayDrawTrackerPeriod(tracker, dimColors);
+    displayDrawTrackerChart(tracker, dimColors,
+                            hasBottomText ? TRACKER_CHART_BOTTOM_Y : TRACKER_CHART_BOTTOM_Y_TALL);
+
+    if (hasBottomText) {
+        dma_display->drawFastHLine(0, TRACKER_SEPARATOR_Y, DISPLAY_WIDTH,
+                                   dimmedColor565(TRACKER_SEPARATOR_COLOR, dimColors));
+        displayDrawTrackerBottom(tracker, dimColors);
     }
-
-    // --- Sparkline chart (y=40..53, x=2..61) ---
-    if (tracker->sparklineCount >= 2) {
-        drawSparkline(tracker->sparkline, tracker->sparklineCount,
-                      2, 40, 60, 14, sparklineColor565);
-    }
-
-    // --- Separator line (y=55) ---
-    drawSeparatorLine(55, dimGray);
-
-    displayDrawTrackerBottom(tracker, dimColors);
 
     drawIndicators();
 
@@ -2199,11 +2360,6 @@ static_assert(MAX_GAUGE_ROWS <= GAUGE_ROWS_PER_PAGE * MAX_CAROUSEL_PAGES,
 // whole must reach that id whole too, or the gauge can no longer be found, drawn or deleted.
 static_assert(sizeof(GAUGE_ID_PREFIX) - 1 + sizeof(GaugeData::name) <= sizeof(AppItem::id),
               "GAUGE_ID_PREFIX plus a full-length gauge name must fit AppItem::id");
-
-uint16_t gaugeColor565(uint32_t color, bool dimColors) {
-    uint32_t shown = dimColors ? dimColorQuarter(color) : color;
-    return dma_display->color565((shown >> 16) & 0xFF, (shown >> 8) & 0xFF, shown & 0xFF);
-}
 
 // Goes through the shared label primitive rather than print(): TomThumb has no glyph past 0x7E,
 // and GFX drops such a byte without advancing the cursor, so a plain print() of an accented
@@ -2363,14 +2519,14 @@ void displayDrawGaugeRow(const GaugeRow* row, int16_t topY, bool dimColors) {
     int16_t barWidth = row->note[0] ? GAUGE_BAR_WIDTH_WITH_NOTE : GAUGE_BAR_WIDTH_FULL;
 
     dma_display->drawRect(GAUGE_BAR_X, barY, barWidth, GAUGE_BAR_HEIGHT,
-                          gaugeColor565(GAUGE_BAR_OUTLINE_COLOR, dimColors));
+                          dimmedColor565(GAUGE_BAR_OUTLINE_COLOR, dimColors));
 
     // Rounded to the nearest pixel, with a floor of one so that any share above zero is visible
     // at all - the same arithmetic the hourly rain bars use.
     if (row->percent > 0) {
         int16_t fillWidth = (int16_t)max(1, (row->percent * (barWidth - 2) + 50) / 100);
         dma_display->fillRect(GAUGE_BAR_X + 1, barY + 1, fillWidth, GAUGE_BAR_HEIGHT - 2,
-                              gaugeColor565(row->barColor, dimColors));
+                              dimmedColor565(row->barColor, dimColors));
     }
 
     if (row->note[0]) {
@@ -2414,7 +2570,7 @@ void displayDrawGaugePage(GaugeData* gauge, uint8_t page, uint8_t pageCount, boo
             // Never dimmed: a quarter of the idle grey is (8,8,8), which the panel does not
             // show, and stale data is exactly when the reader needs to know pages exist.
             dma_display->fillRect(startX + dot * dotPitch, GAUGE_DOT_Y, dotSize, dotSize,
-                                  gaugeColor565(dotColor, false));
+                                  dimmedColor565(dotColor, false));
         }
     }
 }
@@ -2501,7 +2657,7 @@ void displayShowGauge(GaugeData* gauge, const AppItem* app) {
 
     displayDrawGaugeHeader(gauge, showBadge, dimColors, getIcon(gauge->icon));
     // Undimmed for the same reason as the dots: it frames the screen instead of carrying data
-    drawSeparatorLine(GAUGE_SEPARATOR_Y, gaugeColor565(GAUGE_SEPARATOR_COLOR, false));
+    drawSeparatorLine(GAUGE_SEPARATOR_Y, dimmedColor565(GAUGE_SEPARATOR_COLOR, false));
     displayDrawGaugePage(gauge, currentPage, pageCount, dimColors);
 
     drawIndicators();
@@ -3621,6 +3777,11 @@ uint32_t dimColorQuarter(uint32_t color)
     return (color >> 2) & 0x3F3F3F;
 }
 
+uint16_t dimmedColor565(uint32_t color, bool dimColors) {
+    uint32_t shown = dimColors ? dimColorQuarter(color) : color;
+    return dma_display->color565((shown >> 16) & 0xFF, (shown >> 8) & 0xFF, shown & 0xFF);
+}
+
 // The panel has no accented glyphs in either font, so an accented name is drawn as its
 // closest ASCII letter. Callers must pass both UTF-8 bytes: 'e' acute is C3 A9 and the
 // copyright sign is C2 A9, so the continuation byte alone does not identify the character.
@@ -3711,6 +3872,26 @@ int16_t calculateTomThumbTextWidth(const char* text)
     }
 
     return totalWidth;
+}
+
+// TomThumb insets some glyphs by a column: '1' starts one column right of the cursor where
+// '7' starts on it. Anything measuring a gap in front of a label has to add this, or the gap
+// is a column wider before some labels than before others.
+int16_t tomThumbLeadingInkOffset(const char* text)
+{
+    uint8_t characterCode = (uint8_t)text[0];
+
+    if (characterCode == 0xC3 && text[1])
+    {
+        characterCode = (uint8_t)utf8FrenchToAscii(characterCode, (uint8_t)text[1]);
+    }
+
+    if (characterCode < 0x20 || characterCode > 0x7E)
+    {
+        return 0;
+    }
+
+    return (int16_t)(int8_t)pgm_read_byte(&TomThumbGlyphs[characterCode - 0x20].xOffset);
 }
 
 // TomThumb advances differ per glyph, so text that overruns its column is cut on the last
@@ -5398,6 +5579,7 @@ void setupWebServer() {
         serializeTextField(trackerObj, "bottomText", tracker->bottomText,
                            tracker->bottomTextSegments, tracker->bottomTextSegmentCount);
         doc["sparklinePeriod"] = tracker->sparklinePeriod;
+        doc["sparklineRef"] = (tracker->sparklineRef == TRACKER_REF_LAST) ? "last" : "open";
 
         unsigned long ageMs = millis() - tracker->lastUpdate;
         const AppItem* trackerApp = trackerFindApp(tracker->name);
@@ -5412,6 +5594,13 @@ void setupWebServer() {
             JsonArray sparkArr = doc["sparkline"].to<JsonArray>();
             for (uint8_t i = 0; i < tracker->sparklineCount; i++) {
                 sparkArr.add(tracker->sparkline[i]);
+            }
+        }
+
+        if (tracker->volumeCount > 0) {
+            JsonArray volumeArr = doc["volumes"].to<JsonArray>();
+            for (uint8_t i = 0; i < tracker->volumeCount; i++) {
+                volumeArr.add(tracker->volumes[i]);
             }
         }
 

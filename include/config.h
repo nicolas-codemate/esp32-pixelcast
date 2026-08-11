@@ -20,13 +20,13 @@
     #define VERSION_MAJOR 1
 #endif
 #ifndef VERSION_MINOR
-    #define VERSION_MINOR 7
+    #define VERSION_MINOR 8
 #endif
 #ifndef VERSION_PATCH
     #define VERSION_PATCH 0
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.7.0"
+    #define VERSION_STRING "1.8.0"
 #endif
 
 // ============================================================================
@@ -148,9 +148,12 @@
 #ifndef MAX_TRACKERS
     #define MAX_TRACKERS 8
 #endif
+// The chart plots one point per column over the 63 columns x=0..62, so a series of that
+// length is drawn as sent; a shorter one is stretched across the same columns.
 #ifndef MAX_SPARKLINE_POINTS
-    #define MAX_SPARKLINE_POINTS 24
+    #define MAX_SPARKLINE_POINTS 63
 #endif
+#define TRACKER_CHART_COLUMNS 63
 #define TRACKER_ID_PREFIX "tracker_"
 #define LAMETRIC_API_HOST "developer.lametric.com"
 #define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"

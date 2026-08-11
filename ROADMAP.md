@@ -127,12 +127,18 @@ This document details the development phases of the ESP32-PixelCast project, fro
 - [x] REST API: `POST /api/tracker`, `GET /api/tracker`, `GET /api/trackers`, `DELETE /api/tracker`
 - [x] Dynamic app registration (auto-creates app in rotation on first POST)
 - [x] App IDs prefixed with `tracker_` (e.g. `tracker_btc`)
-- [x] Sparkline chart (24 points, float array scaled to uint16)
-- [x] Layout: icon+symbol / price+currency / arrow+change% / separator / period+sparkline / separator / bottomText
+- [x] Chart of 63 columns, one point per column (float array scaled to uint16, a shorter
+      series stretched over the columns)
+- [x] Volume bars behind the curve, and a curve green above / red below a reference line
+      the client picks with `sparklineRef` (period open or last price)
+- [x] A tracker with no `bottomText` gives the footer's rows to the chart: 32 rows instead of 20
+- [x] Layout: icon+symbol / price+currency / arrow+change% / period set into a rule / chart /
+      separator / bottomText
 - [x] Symbol and bottomText scroll when they overflow their row, so a fund name fits
 - [x] Symbol row runs the full width when the tracker carries no icon
 - [x] bottomText accepts colored segments, dimmed with the rest of the screen under `dim`
-- [x] Customizable colors (text, price, sparkline, change, bottomText)
+- [x] Customizable colors (text, price, bottomText); the curve and the change row take the
+      screen's gain/loss green and red
 - [x] Stale rendering driven by the client: `dim` (default) dims colors to 1/4 and shows a
       "STALE" badge, `badge` keeps full colors, `none` shows nothing, over a `staleAfter`
       window the client sets (default 1h)

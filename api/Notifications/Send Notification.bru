@@ -38,7 +38,10 @@ docs {
     colored one ({"text": "Build failed", "color": "#FF0000"}) or up to 8 colored
     segments ([{"t": "Build ", "c": "#FFFFFF"}, {"t": "failed", "c": "#FF0000"}]),
     concatenated in display order. A text that ends up empty - "", {"text": ""}
-    or [] - is refused with HTTP 400 ("Missing text"). Accents are shown as their
+    or [] - is refused with HTTP 400 ("Missing text"). The 127 chars are shared by
+    every segment: a plain string is cut at the last one that fits, while the first
+    segment that no longer fits is dropped whole, text included, along with
+    everything after it. Accents are shown as their
     closest ASCII letter, and a color boundary placed after an accented character
     or a degree sign in the same string lands one glyph late for each of them
   - id: Unique ID, auto-generated "notif_<millis>" if omitted (optional)

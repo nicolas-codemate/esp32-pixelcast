@@ -1547,6 +1547,32 @@ paths:
                       value: 97%
                       percent: 97
                       color: '#F44336'
+              coloredLabels:
+                summary: Two-color title and labels split between a window and its reset
+                value:
+                  title:
+                    - t: 'Claude '
+                      c: '#FFFFFF'
+                    - t: Max
+                      c: '#D97757'
+                  icon: claude
+                  rows:
+                    - label:
+                        - t: 5h
+                          c: '#FFFFFF'
+                        - t: ' reset'
+                          c: '#888888'
+                      value: 41%
+                      percent: 41
+                      color: '#4CAF50'
+                    - label:
+                        - t: 7j
+                          c: '#FFFFFF'
+                        - t: ' reset'
+                          c: '#888888'
+                      value: 28%
+                      percent: 28
+                      color: '#4CAF50'
       responses:
         '200':
           description: Gauge created or updated.
@@ -1855,7 +1881,7 @@ paths:
                     - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
                   maxLength: 128
                   description: |
-                    Notification text, required. Accepts the three forms of a colored text field - plain string, single colored string, or up to eight colored segments concatenated in display order. Segments color the text and nothing else: the two separator lines keep the color they already had, and `color` still colors any text sent without a color of its own. A text that ends up empty is refused with HTTP 400 `Missing text`, and that covers `""`, `{"text": ""}` and `[]` alike; over MQTT the message is dropped with a serial log. Accents are shown as their closest ASCII letter, and since segment boundaries are counted in bytes but applied glyph by glyph, a boundary that comes after an accented character or a degree sign in the same string is applied one glyph late for each of them.
+                    Notification text, required. Accepts the three forms of a colored text field - plain string, single colored string, or up to eight colored segments concatenated in display order. Segments color the text and nothing else: the two separator lines keep the color they already had, and `color` still colors any text sent without a color of its own. A text that ends up empty is refused with HTTP 400 `Missing text`, and that covers `""`, `{"text": ""}` and `[]` alike; over MQTT the message is dropped with a serial log. The 127 characters are shared by every segment, and the two forms overflow differently: a plain string is cut at the last character that fits, while the first segment that no longer fits is dropped whole, text included, along with everything after it. Accents are shown as their closest ASCII letter, and since segment boundaries are counted in bytes but applied glyph by glyph, a boundary that comes after an accented character or a degree sign in the same string is applied one glyph late for each of them.
                   examples:
                     - Build passed
                     - - t: 'Build '
@@ -1911,6 +1937,17 @@ paths:
                   color: '#FF0000'
                   urgent: true
                   hold: true
+              segmentedAlert:
+                summary: 'Colored segments, with `color` still setting the separator lines'
+                value:
+                  text:
+                    - t: 'Build '
+                      c: '#FFFFFF'
+                    - t: failed
+                      c: '#FF0000'
+                  icon: warning
+                  color: '#FF0000'
+                  urgent: true
       responses:
         '200':
           description: Notification queued.

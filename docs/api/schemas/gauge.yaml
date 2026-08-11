@@ -13,15 +13,30 @@ GaugeRow:
     cut on the last glyph that fits rather than on a character count.
   properties:
     label:
-      type: string
+      allOf:
+        - $ref: "common.yaml#/PolymorphicTextField"
       maxLength: 11
+      maxItems: 3
       description: >
         Row name, drawn on the left of the top line (e.g. "5h", "credits"). It gets
         whatever width `info` and `value` did not take, and is cut on the last glyph
         that fits - an `info` long enough to reach the left margin leaves nothing of it.
+        Accepts the three forms of a colored text field - plain string, single colored
+        string, or colored segments, three of them here - so one name can carry two
+        readings in two greys ("5h" then " reset"). The 11 characters are shared by every
+        segment and the first one that no longer fits in them is dropped whole, text
+        included, along with everything after it; a fourth segment keeps its text but not
+        its color, running on in the third one's.
+        The width cut comes after all that, so a later segment can end up off screen while
+        the row still stores it. `info`, `value` and `note` stay plain strings: they carry
+        one reading each, and `color` and `noteColor` already own the bar and the pace.
       examples:
         - "5h"
         - "credits"
+        - - t: "5h"
+            c: "#FFFFFF"
+          - t: " reset"
+            c: "#888888"
     info:
       type: string
       maxLength: 15
@@ -93,8 +108,10 @@ GaugeUpdateRequest:
       examples:
         - "claude"
     title:
-      type: string
+      allOf:
+        - $ref: "common.yaml#/PolymorphicTextField"
       maxLength: 31
+      maxItems: 4
       description: >
         Headline shown on the 12-pixel header (e.g. "Claude", "Disques"). Longer than the
         header is wide is fine: the display scrolls it, pausing at each end. The header
@@ -104,8 +121,18 @@ GaugeUpdateRequest:
         characters wide.
         The panel has no accented glyphs, so Latin-1 accents are shown as their closest
         ASCII letter - "Santé" reads "Sante". Anything else outside ASCII is dropped.
+        Accepts the three forms of a colored text field - plain string, single colored
+        string, or colored segments, four of them here; a fifth segment keeps its text but
+        not its color, running on in the fourth one's. The header band clips what is
+        painted and never the string, so a color boundary stays on the character the client
+        put it on, accents included, even mid-scroll. A gauge left on the default
+        `staleBehavior` of `dim` dims these colors along with the rest of the screen.
       examples:
         - "Claude"
+        - - t: "Claude "
+            c: "#FFFFFF"
+          - t: "Max"
+            c: "#D97757"
     icon:
       type: string
       description: >
@@ -144,7 +171,11 @@ GaugeResponse:
     name:
       type: string
     title:
-      type: string
+      allOf:
+        - $ref: "common.yaml#/PolymorphicTextField"
+      description: >
+        Echoed in the form it was stored: a plain string unless the title was written with
+        color segments, in which case it comes back as the segment array.
     icon:
       type: string
     rows:
@@ -153,7 +184,11 @@ GaugeResponse:
         type: object
         properties:
           label:
-            type: string
+            allOf:
+              - $ref: "common.yaml#/PolymorphicTextField"
+            description: >
+              Echoed in the form it was stored, like the title: a plain string, or the
+              segment array the client sent, trimmed to the segments that fitted.
           info:
             type: string
           value:
@@ -202,6 +237,9 @@ GaugeListResponse:
             type: string
           title:
             type: string
+            description: >
+              Always the plain text, colors dropped, as a colored title also reads in
+              `GET /api/apps`. Ask `GET /api/gauge` for the form the gauge stores.
           rowCount:
             type: integer
             description: Number of rows currently stored.

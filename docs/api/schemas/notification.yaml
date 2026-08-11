@@ -5,9 +5,28 @@ NotificationRequest:
   required: [text]
   properties:
     text:
-      type: string
-      description: Notification text (required, max 128 chars).
+      allOf:
+        - $ref: "common.yaml#/PolymorphicTextField"
       maxLength: 128
+      maxItems: 8
+      description: >
+        Notification text, required. Accepts the three forms of a colored text field -
+        plain string, single colored string, or up to eight colored segments concatenated
+        in display order. Segments color the text and nothing else: the two separator lines
+        keep the color they already had, and `color` still colors any text sent without a
+        color of its own.
+        A text that ends up empty is refused with HTTP 400 `Missing text`, and that covers
+        `""`, `{"text": ""}` and `[]` alike; over MQTT the message is dropped with a serial
+        log. Accents are shown as their closest ASCII letter, and since segment boundaries
+        are counted in bytes but applied glyph by glyph, a boundary that comes after an
+        accented character or a degree sign in the same string is applied one glyph late
+        for each of them.
+      examples:
+        - "Build passed"
+        - - t: "Build "
+            c: "#FFFFFF"
+          - t: "failed"
+            c: "#FF0000"
     id:
       type: string
       description: >
@@ -16,7 +35,14 @@ NotificationRequest:
       type: string
       description: Icon name (without extension).
     color:
-      $ref: "common.yaml#/Color"
+      allOf:
+        - $ref: "common.yaml#/Color"
+      default: "#FFFFFF"
+      description: >
+        Two roles. It is the color the text takes wherever `text` carries none of its own,
+        and it paints the two separator lines - unless `background` is set, which takes the
+        lines over. A `text` written entirely in segments therefore still needs `color` set
+        if the lines are meant to match it.
     background:
       $ref: "common.yaml#/Color"
     duration:
@@ -55,7 +81,11 @@ NotificationItem:
     id:
       type: string
     text:
-      type: string
+      allOf:
+        - $ref: "common.yaml#/PolymorphicTextField"
+      description: >
+        Echoed in the form it was stored: a plain string unless the notification was sent
+        with color segments, in which case it comes back as the segment array.
     icon:
       type: string
     duration:

@@ -933,7 +933,8 @@ paths:
                   sparklineColor:
                     type: string
                     pattern: '^#[0-9a-fA-F]{6}$'
-                    description: Hex color string.
+                    deprecated: true
+                    description: 'Hex color string. Stored and echoed, but no longer drawn.'
                     examples:
                       - '#00D4FF'
                   bottomText:
@@ -943,6 +944,11 @@ paths:
                       Echoed in the form it was stored: a plain string unless the value was written with color segments, in which case it comes back as the segment array. A client that only ever sends plain strings only ever reads plain strings - but a tracker fed by several producers can come back as an array to a client that did not send one.
                   sparklinePeriod:
                     type: string
+                  sparklineRef:
+                    type: string
+                    enum:
+                      - open
+                      - last
                   age:
                     type: integer
                     description: Seconds since last update.
@@ -959,6 +965,12 @@ paths:
                     items:
                       type: integer
                     description: Sparkline data as scaled uint16 values (0-65535).
+                  volumes:
+                    type: array
+                    items:
+                      type: integer
+                    description: |
+                      Volume data as values scaled against the largest one of the series (0-255). Absent when the tracker was never sent any.
         '400':
           description: Missing tracker name.
           content:
@@ -975,7 +987,7 @@ paths:
       operationId: createOrUpdateTracker
       summary: Create or update a tracker
       description: |
-        Push tracker data (price, change%, sparkline). The tracker is automatically registered as an app in the rotation with ID `tracker_{name}`. Name can be in query param or JSON body.
+        Push tracker data (price, change%, sparkline, volumes). The tracker is automatically registered as an app in the rotation with ID `tracker_{name}`. Name can be in query param or JSON body.
       tags:
         - Tracker
       parameters:
@@ -1032,9 +1044,9 @@ paths:
                   items:
                     type: number
                     format: float
-                  maxItems: 24
+                  maxItems: 63
                   description: |
-                    Up to 24 data points for the sparkline chart. Values are auto-scaled to fit the chart area (min/max normalization to uint16 0-65535).
+                    Price series for the chart. The chart is 63 columns wide and plots one point per column, so 63 points are drawn as sent and a shorter series is stretched across the same columns, keeping its shape and both its endpoints. It is 20 rows tall, or 32 when the tracker sends no `bottomText`. Values are auto-scaled to fit the chart area (min/max normalization to uint16 0-65535); a series that never moves is drawn along the middle of the chart rather than along its floor. The curve is green above the reference line and red below it - see `sparklineRef`. Over MQTT the whole payload has to fit the 2 KB broker buffer, which a 63-point series plus 63 volumes fills at about 1.5 KB; the REST endpoint accepts up to 16 KB.
                   examples:
                     - - 92100
                       - 89300
@@ -1045,18 +1057,51 @@ paths:
                       - 97600
                       - 96200
                       - 98452
+                volumes:
+                  type: array
+                  items:
+                    type: number
+                    format: float
+                  maxItems: 63
+                  description: |
+                    Optional volume series, drawn as midnight blue bars behind the curve. It keeps its own length and is stretched over the 63 columns like `sparkline`, taking the nearest point rather than interpolating. It is scaled against its own largest value, not between its extremes, so a bar is read from zero. Bars are at least one pixel tall and at most three fifths of the chart. Omit the field to leave the chart without bars.
+                  examples:
+                    - - 3.2
+                      - 4.1
+                      - 3.8
+                      - 5.6
+                      - 4.9
+                      - 6.2
+                      - 5.1
+                      - 4.4
+                      - 6
+                sparklineRef:
+                  type: string
+                  enum:
+                    - open
+                    - last
+                  default: open
+                  description: |
+                    Which price the chart compares every column against. `open` (the default) takes the first point of the series, so green means "up since the period opened". `last` takes the final point, so green means "the price was higher then than it is now" - which turns a rising week mostly red, the opposite of the usual reading. Both ends are marked: the reference is a dashed line every other pixel, the other end a darker dashed line, hidden when the two ends land within a pixel of each other.
                 symbolColor:
-                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                  allOf:
+                    - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                  default: '#00DC3C'
+                  description: Headline color on the top row. Defaults to the green of the tracker screen.
                 sparklineColor:
-                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                  allOf:
+                    - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                  deprecated: true
+                  description: |
+                    No longer drawn. The curve takes its two colors from its position against `sparklineRef`. Still accepted and echoed back so existing clients keep working.
                 bottomText:
                   allOf:
                     - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
                   maxLength: 31
                   description: |
-                    Optional footer text on the bottom row. Scrolls when it is wider than the panel. Accepts the same three forms as a custom app's text: plain string, single colored string, or colored segments - `maxLength` bounds the plain form, and the other two are cut at the same 31 characters, a segment that no longer fits being dropped whole. Accents are transliterated as they are in `symbol`, and the degree sign is dropped, the footer font carrying no glyph for it. A tracker left on the default `staleBehavior` of `dim` dims these colors along with the rest of the screen.
+                    Optional footer text on the bottom row, in the same font as the price: ten characters fit, and anything longer scrolls, pausing at each end. Leaving it out hands its rows, and those of the separator above it, to the chart, which grows from 20 rows to 32. Accepts the same three forms as a custom app's text: plain string, single colored string, or colored segments - `maxLength` bounds the plain form, and the other two are cut at the same 31 characters, a segment that no longer fits being dropped whole. Accents are transliterated as they are in `symbol`, and the degree sign is dropped. A tracker left on the default `staleBehavior` of `dim` dims these colors along with the rest of the screen.
                   examples:
-                    - 'Vol 24h: 42B'
+                    - ATH 73.6K 03/24
                     - - t: 'Vol '
                         c: '#888888'
                       - t: 42B
@@ -1066,9 +1111,9 @@ paths:
                   maxLength: 4
                   default: 24h
                   description: |
-                    Period covered by the sparkline series, displayed as a short label above the chart (e.g. "24h", "7d", "30d"). Send an empty string to hide it.
+                    Period covered by the sparkline series, set into the rule above the chart, which stops short of it. Two characters read best - "7D", "1M", "3M", "1Y" - a longer label only shortens the rule. Send an empty string to hide it and run the rule the full width.
                   examples:
-                    - 7d
+                    - 7D
                 duration:
                   type: integer
                   description: Display duration in milliseconds.
@@ -1081,7 +1126,7 @@ paths:
                   default: dim
             examples:
               btcTracker:
-                summary: BTC tracker with sparkline
+                summary: BTC tracker with sparkline and volumes
                 value:
                   symbol: BTC
                   icon: bitcoin
@@ -1098,10 +1143,20 @@ paths:
                     - 97600
                     - 96200
                     - 98452
+                  volumes:
+                    - 3.2
+                    - 4.1
+                    - 3.8
+                    - 5.6
+                    - 4.9
+                    - 6.2
+                    - 5.1
+                    - 4.4
+                    - 6
+                  sparklineRef: open
                   symbolColor: '#FF8800'
-                  sparklineColor: '#00D4FF'
-                  bottomText: 'Vol 24h: 42B'
-                  sparklinePeriod: 7d
+                  bottomText: ATH 73.6K 03/24
+                  sparklinePeriod: 7D
               fundTracker:
                 summary: Fund with a scrolling name and a colored footer
                 value:
@@ -1119,6 +1174,7 @@ paths:
                     - 34600
                     - 34820
                   symbolColor: '#4CAF50'
+                  sparklinePeriod: 1M
                   bottomText:
                     - t: 'MSCI '
                       c: '#888888'
@@ -1198,6 +1254,8 @@ paths:
                           type: string
                         title:
                           type: string
+                          description: |
+                            Always the plain text, colors dropped, as a colored title also reads in `GET /api/apps`. Ask `GET /api/gauge` for the form the gauge stores.
                         rowCount:
                           type: integer
                           description: Number of rows currently stored.
@@ -1236,7 +1294,10 @@ paths:
                   name:
                     type: string
                   title:
-                    type: string
+                    allOf:
+                      - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                    description: |
+                      Echoed in the form it was stored: a plain string unless the title was written with color segments, in which case it comes back as the segment array.
                   icon:
                     type: string
                   rows:
@@ -1245,7 +1306,10 @@ paths:
                       type: object
                       properties:
                         label:
-                          type: string
+                          allOf:
+                            - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                          description: |
+                            Echoed in the form it was stored, like the title: a plain string, or the segment array the client sent, trimmed to the segments that fitted.
                         info:
                           type: string
                         value:
@@ -1344,12 +1408,18 @@ paths:
                   examples:
                     - claude
                 title:
-                  type: string
+                  allOf:
+                    - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
                   maxLength: 31
+                  maxItems: 4
                   description: |
-                    Headline shown on the 12-pixel header (e.g. "Claude", "Disques"). Longer than the header is wide is fine: the display scrolls it, pausing at each end. The header holds eight characters beside an icon and ten without one, since a gauge with no `icon` gives its title the full width. While a STALE badge is up the icon steps aside, the title restarts from the left margin and the band it gets is six characters wide. The panel has no accented glyphs, so Latin-1 accents are shown as their closest ASCII letter - "Santé" reads "Sante". Anything else outside ASCII is dropped.
+                    Headline shown on the 12-pixel header (e.g. "Claude", "Disques"). Longer than the header is wide is fine: the display scrolls it, pausing at each end. The header holds eight characters beside an icon and ten without one, since a gauge with no `icon` gives its title the full width. While a STALE badge is up the icon steps aside, the title restarts from the left margin and the band it gets is six characters wide. The panel has no accented glyphs, so Latin-1 accents are shown as their closest ASCII letter - "Santé" reads "Sante". Anything else outside ASCII is dropped. Accepts the three forms of a colored text field - plain string, single colored string, or colored segments, four of them here; a fifth segment keeps its text but not its color, running on in the fourth one's. The header band clips what is painted and never the string, so a color boundary stays on the character the client put it on, accents included, even mid-scroll. A gauge left on the default `staleBehavior` of `dim` dims these colors along with the rest of the screen.
                   examples:
                     - Claude
+                    - - t: 'Claude '
+                        c: '#FFFFFF'
+                      - t: Max
+                        c: '#D97757'
                 icon:
                   type: string
                   description: |
@@ -1364,13 +1434,19 @@ paths:
                       One 14-pixel row: `label` / `info` / `value` on the top line, the progress bar and its `note` on the line below. The top line is laid out value first: `value` owns the right edge, `label` gets what is left once `value`, `info` and their two-pixel gutters are reserved and is the only field cut short, then `info` is centred in the gap those two actually leave open. Every field is drawn in TomThumb over the 61 pixels between the left margin and the right edge; most glyphs advance four pixels and the narrow ones (`1`, `:`, `.`, `i`, space) two or three, so a field too wide for its column is cut on the last glyph that fits rather than on a character count.
                     properties:
                       label:
-                        type: string
+                        allOf:
+                          - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
                         maxLength: 11
+                        maxItems: 3
                         description: |
-                          Row name, drawn on the left of the top line (e.g. "5h", "credits"). It gets whatever width `info` and `value` did not take, and is cut on the last glyph that fits - an `info` long enough to reach the left margin leaves nothing of it.
+                          Row name, drawn on the left of the top line (e.g. "5h", "credits"). It gets whatever width `info` and `value` did not take, and is cut on the last glyph that fits - an `info` long enough to reach the left margin leaves nothing of it. Accepts the three forms of a colored text field - plain string, single colored string, or colored segments, three of them here - so one name can carry two readings in two greys ("5h" then " reset"). The 11 characters are shared by every segment and the first one that no longer fits in them is dropped whole, text included, along with everything after it; a fourth segment keeps its text but not its color, running on in the third one's. The width cut comes after all that, so a later segment can end up off screen while the row still stores it. `info`, `value` and `note` stay plain strings: they carry one reading each, and `color` and `noteColor` already own the bar and the pace.
                         examples:
                           - 5h
                           - credits
+                          - - t: 5h
+                              c: '#FFFFFF'
+                            - t: ' reset'
+                              c: '#888888'
                       info:
                         type: string
                         maxLength: 15
@@ -1775,9 +1851,18 @@ paths:
                 - text
               properties:
                 text:
-                  type: string
-                  description: 'Notification text (required, max 128 chars).'
+                  allOf:
+                    - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
                   maxLength: 128
+                  maxItems: 8
+                  description: |
+                    Notification text, required. Accepts the three forms of a colored text field - plain string, single colored string, or up to eight colored segments concatenated in display order. Segments color the text and nothing else: the two separator lines keep the color they already had, and `color` still colors any text sent without a color of its own. A text that ends up empty is refused with HTTP 400 `Missing text`, and that covers `""`, `{"text": ""}` and `[]` alike; over MQTT the message is dropped with a serial log. Accents are shown as their closest ASCII letter, and since segment boundaries are counted in bytes but applied glyph by glyph, a boundary that comes after an accented character or a degree sign in the same string is applied one glyph late for each of them.
+                  examples:
+                    - Build passed
+                    - - t: 'Build '
+                        c: '#FFFFFF'
+                      - t: failed
+                        c: '#FF0000'
                 id:
                   type: string
                   description: |
@@ -1786,7 +1871,11 @@ paths:
                   type: string
                   description: Icon name (without extension).
                 color:
-                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                  allOf:
+                    - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                  default: '#FFFFFF'
+                  description: |
+                    Two roles. It is the color the text takes wherever `text` carries none of its own, and it paints the two separator lines - unless `background` is set, which takes the lines over. A `text` written entirely in segments therefore still needs `color` set if the lines are meant to match it.
                 background:
                   $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
                 duration:
@@ -1877,7 +1966,10 @@ paths:
                         id:
                           type: string
                         text:
-                          type: string
+                          allOf:
+                            - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                          description: |
+                            Echoed in the form it was stored: a plain string unless the notification was sent with color segments, in which case it comes back as the segment array.
                         icon:
                           type: string
                         duration:

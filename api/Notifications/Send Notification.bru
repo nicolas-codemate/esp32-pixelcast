@@ -34,10 +34,19 @@ docs {
   after their duration. App rotation resumes when the queue is empty.
 
   Parameters:
-  - text: Notification text, max 127 chars (required)
+  - text: Notification text, max 127 chars (required). Takes a plain string, a
+    colored one ({"text": "Build failed", "color": "#FF0000"}) or up to 8 colored
+    segments ([{"t": "Build ", "c": "#FFFFFF"}, {"t": "failed", "c": "#FF0000"}]),
+    concatenated in display order. A text that ends up empty - "", {"text": ""}
+    or [] - is refused with HTTP 400 ("Missing text"). Accents are shown as their
+    closest ASCII letter, and a color boundary placed after an accented character
+    or a degree sign in the same string lands one glyph late for each of them
   - id: Unique ID, auto-generated "notif_<millis>" if omitted (optional)
   - icon: Icon name from /icons folder (optional)
-  - color: Text color and separator lines - hex "#FF0000", RGB [255,0,0], or uint32 (default: white)
+  - color: Two roles - the color of any text sent without one of its own, and the
+    color of the two separator lines unless background takes them over. Hex
+    "#FF0000", RGB [255,0,0], or uint32 (default: white). Segments color the text
+    only, so a fully segmented text still needs color set for the lines to match
   - background: Margin strip color above/below separators (default: black/none)
   - duration: Display duration in ms, 0 = hold indefinitely (default: 5000)
   - hold: If true, never auto-expires (default: false)

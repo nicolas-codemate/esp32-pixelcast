@@ -372,6 +372,8 @@ IndicatorAnimState indicatorAnimState[NUM_INDICATORS];
 struct NotificationItem {
     char id[24];              // Unique ID ("notif_<millis>" or user-provided)
     char text[128];           // Notification text (longer than app's 64 chars)
+    TextSegment textSegments[MAX_TEXT_SEGMENTS];
+    uint8_t textSegmentCount;
     char icon[32];            // Icon filename
     uint32_t textColor;       // RGB color
     uint32_t backgroundColor; // RGB color for area outside card frame (0 = none)
@@ -740,9 +742,10 @@ void displayDrawGaugeTitle(GaugeData* gauge, bool showBadge, bool dimColors);
 
 // Notification management
 void notifInit();
-int8_t notifAdd(const char* id, const char* text, const char* icon,
-                uint32_t textColor, uint32_t bgColor, uint16_t duration,
-                bool hold, bool urgent, bool stack);
+int8_t notifAdd(const char* id, const char* text,
+                const TextSegment* textSegments, uint8_t textSegmentCount,
+                const char* icon, uint32_t textColor, uint32_t bgColor,
+                uint16_t duration, bool hold, bool urgent, bool stack);
 bool notifDismiss();
 void notifClearAll();
 NotificationItem* notifGetCurrent();
@@ -1593,9 +1596,10 @@ void notifInit() {
     Serial.println("[NOTIF] Initialized");
 }
 
-int8_t notifAdd(const char* id, const char* text, const char* icon,
-                uint32_t textColor, uint32_t bgColor, uint16_t duration,
-                bool hold, bool urgent, bool stack) {
+int8_t notifAdd(const char* id, const char* text,
+                const TextSegment* textSegments, uint8_t textSegmentCount,
+                const char* icon, uint32_t textColor, uint32_t bgColor,
+                uint16_t duration, bool hold, bool urgent, bool stack) {
     // Replace mode: clear all existing notifications first
     if (!stack) {
         notifClearAll();
@@ -1626,6 +1630,11 @@ int8_t notifAdd(const char* id, const char* text, const char* icon,
     }
 
     strlcpy(notif->text, text, sizeof(notif->text));
+    if (textSegments && textSegmentCount > 0) {
+        if (textSegmentCount > MAX_TEXT_SEGMENTS) textSegmentCount = MAX_TEXT_SEGMENTS;
+        memcpy(notif->textSegments, textSegments, textSegmentCount * sizeof(TextSegment));
+        notif->textSegmentCount = textSegmentCount;
+    }
     if (icon) {
         strlcpy(notif->icon, icon, sizeof(notif->icon));
     }
@@ -1842,8 +1851,8 @@ void serializeTextField(JsonObject& obj, const char* fieldName, const char* text
         if (start >= textLen) break;
         if (end > textLen) end = textLen;
 
-        // Copy substring
-        char buf[64];
+        // Copy substring, sized on the longest text field the device stores
+        char buf[sizeof(NotificationItem::text)];
         size_t len = end - start;
         if (len >= sizeof(buf)) len = sizeof(buf) - 1;
         memcpy(buf, text + start, len);
@@ -4136,7 +4145,6 @@ void displayShowNotification(NotificationItem* notif) {
     }
 
     // 7. Draw text (full width, scrolls off-screen naturally - no clipping needed)
-    dma_display->setTextColor(lineColor);
     dma_display->setTextSize(1);
 
     int16_t textWidth = calculateTextWidth(notif->text);
@@ -4149,7 +4157,8 @@ void displayShowNotification(NotificationItem* notif) {
         xPos = textPadding - notifScrollState.scrollOffset;
     }
 
-    printTextWithSpecialChars(notif->text, xPos, textYPos);
+    printTextWithSegments(notif->text, xPos, textYPos, notif->textColor,
+                          notif->textSegments, notif->textSegmentCount);
 
     drawIndicators();
 
@@ -6032,7 +6041,8 @@ void setupWebServer() {
             if (!notifications[i].active) continue;
             JsonObject obj = arr.add<JsonObject>();
             obj["id"] = notifications[i].id;
-            obj["text"] = notifications[i].text;
+            serializeTextField(obj, "text", notifications[i].text,
+                               notifications[i].textSegments, notifications[i].textSegmentCount);
             obj["icon"] = notifications[i].icon;
             obj["duration"] = notifications[i].duration;
             obj["hold"] = notifications[i].hold;
@@ -6058,13 +6068,6 @@ void setupWebServer() {
                 return;
             }
 
-            // Text is required
-            if (doc["text"].isNull() || strlen(doc["text"] | "") == 0) {
-                request->send(400, "application/json", "{\"error\":\"Missing text\"}");
-                return;
-            }
-
-            const char* text = doc["text"] | "";
             const char* id = doc["id"] | "";
             const char* icon = doc["icon"] | "";
             uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
@@ -6074,7 +6077,20 @@ void setupWebServer() {
             bool urgent = doc["urgent"] | false;
             bool stack = doc["stack"] | true;
 
-            int8_t slot = notifAdd(id, text, icon, textColor, bgColor,
+            // Parse text field (may be string, {text,color} object, or [{t,c},...] array)
+            char text[sizeof(NotificationItem::text)] = "";
+            TextSegment textSegs[MAX_TEXT_SEGMENTS];
+            uint8_t textSegCount = 0;
+            parseTextFieldWithSegments(doc["text"], text, sizeof(text),
+                                       textSegs, &textSegCount, textColor);
+
+            // Text is required
+            if (text[0] == '\0') {
+                request->send(400, "application/json", "{\"error\":\"Missing text\"}");
+                return;
+            }
+
+            int8_t slot = notifAdd(id, text, textSegs, textSegCount, icon, textColor, bgColor,
                                    duration, hold, urgent, stack);
 
             if (slot < 0) {
@@ -6838,12 +6854,6 @@ void mqttHandleCustomDelete(const char* name) {
 }
 
 void mqttHandleNotify(JsonObject& doc) {
-    const char* text = doc["text"] | "";
-    if (strlen(text) == 0) {
-        Serial.println("[MQTT] /notify missing text");
-        return;
-    }
-
     const char* id = doc["id"] | "";
     const char* icon = doc["icon"] | "";
     uint32_t textColor = parseColorValue(doc["color"], 0xFFFFFF);
@@ -6853,7 +6863,19 @@ void mqttHandleNotify(JsonObject& doc) {
     bool urgent = doc["urgent"] | false;
     bool stack = doc["stack"] | true;
 
-    int8_t slot = notifAdd(id, text, icon, textColor, bgColor,
+    // Parse text field (may be string, {text,color} object, or [{t,c},...] array)
+    char text[sizeof(NotificationItem::text)] = "";
+    TextSegment textSegs[MAX_TEXT_SEGMENTS];
+    uint8_t textSegCount = 0;
+    parseTextFieldWithSegments(doc["text"], text, sizeof(text),
+                               textSegs, &textSegCount, textColor);
+
+    if (text[0] == '\0') {
+        Serial.println("[MQTT] /notify missing text");
+        return;
+    }
+
+    int8_t slot = notifAdd(id, text, textSegs, textSegCount, icon, textColor, bgColor,
                            duration, hold, urgent, stack);
 
     if (slot >= 0) {

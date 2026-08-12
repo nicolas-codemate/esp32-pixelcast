@@ -1,11 +1,13 @@
 openapi: 3.1.0
 info:
   title: ESP32-PixelCast REST API
-  version: 0.2.0
+  version: 1.9.1
   description: |
     REST API for controlling a HUB75 LED matrix panel (64x64) running on ESP32 Trinity. Manages custom apps, notifications, weather, trackers, indicators, icons, and system settings.
 
-    **BREAKING (v0.2.0)**: sleep `sleep_until` / `until` epoch semantics changed from the device's local frame to UTC Unix timestamps. Clients that previously added the device's NTP offset before sending must stop doing so.
+    This version is the firmware version: the specs and the firmware they describe carry the same number, so `version` from `GET /api/stats` tells a client which spec the device in front of it speaks.
+
+    **BREAKING (v1.0.0)**: sleep `sleep_until` / `until` epoch semantics changed from the device's local frame to UTC Unix timestamps. Clients that previously added the device's NTP offset before sending must stop doing so.
   license:
     name: MIT
     identifier: MIT

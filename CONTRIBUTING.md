@@ -73,30 +73,41 @@ Before submitting:
 The firmware follows semantic versioning. The version is printed on the boot screen and
 returned by `/api/stats`, so a wrong number is visible to users on the panel itself.
 
-It lives in two files that must always agree:
+One number covers the firmware and the API specs that describe it, so a client can compare
+the `version` it reads from `/api/stats` against the specs it vendored and know whether the
+two match. It lives in four files that must always agree:
 
 - `platformio.ini` - the `VERSION_MAJOR`, `VERSION_MINOR`, `VERSION_PATCH` and
   `VERSION_STRING` build flags. Authoritative: they override the header.
 - `include/config.h` - the same four macros as `#ifndef` fallbacks.
+- `docs/api/openapi.yaml` - `info.version`.
+- `docs/api/asyncapi.yaml` - `info.version`.
 
 When to bump:
 
-- `PATCH` - bug fix with no change to the API or the display contract
+- `PATCH` - bug fix with no change to the API or the display contract, or a correction to
+  what the specs say about behaviour the firmware already had
 - `MINOR` - backward-compatible addition: new optional API field, new app type, new endpoint
 - `MAJOR` - breaking change to the REST/MQTT contract or to the stored settings format
+
+A specs-only change bumps the version too, and ships as a release whose binaries are
+identical to the previous one - the release carries the corrected contract. The cost of one
+number is that a firmware-only fix also moves the specs' version without the contract having
+changed; read the release notes, not the number, to know what moved.
 
 Bump in the same pull request as the change that warrants it. A pull request that adds an
 API field and leaves the version untouched is incomplete.
 
 ## Releases
 
-1. Make sure both files carry the new version, and merge to `main`
+1. Make sure the four files carry the new version, and merge to `main`
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`
-3. `.github/workflows/release.yml` checks that the tag, `VERSION_STRING` and the
-   `MAJOR.MINOR.PATCH` triple all agree, then builds `trinity`, `devkit` and `esp32s3`
+3. `.github/workflows/release.yml` checks that the tag, `VERSION_STRING`, the
+   `MAJOR.MINOR.PATCH` triple, the `include/config.h` fallback and both specs'
+   `info.version` all agree, then builds `trinity`, `devkit` and `esp32s3`
 
 The workflow refuses to publish on any mismatch. Do not work around it by moving the tag:
-correct the version in the two files and tag again.
+correct the version in the four files and tag again.
 
 ### What ships
 

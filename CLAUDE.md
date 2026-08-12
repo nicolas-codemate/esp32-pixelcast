@@ -87,10 +87,13 @@ number or cutting a release.
 
 The two things to remember while working on a change:
 
-- The version lives in **both** `platformio.ini` (build flags, authoritative) and
-  `include/config.h` (`#ifndef` fallbacks). They must always agree.
+- The version lives in **four** places that must always agree: `platformio.ini` (build
+  flags, authoritative), `include/config.h` (`#ifndef` fallbacks), and `info.version` in
+  both `docs/api/openapi.yaml` and `docs/api/asyncapi.yaml`. One number covers the firmware
+  and the specs describing it.
 - Bump it in the same PR as the change that warrants it. A PR that adds an API field and
-  leaves the version untouched is incomplete.
+  leaves the version untouched is incomplete - and so does a specs-only PR that corrects
+  the published contract.
 
 Releases are cut by pushing a `vX.Y.Z` tag; `.github/workflows/release.yml` refuses to
 publish when the tag and the version in those files disagree.

@@ -1,11 +1,16 @@
 asyncapi: 3.0.0
 info:
   title: ESP32-PixelCast MQTT API
-  version: 0.2.0
+  version: 1.9.1
   description: >
     MQTT interface for controlling a HUB75 LED matrix panel (64x64) running
     on ESP32 Trinity. JSON payloads mirror the REST API. MQTT must be enabled
     via `POST /api/settings` or the settings file.
+
+
+    This version is the firmware version: the specs and the firmware they
+    describe carry the same number, so `version` from the stats payload tells
+    a client which spec the device in front of it speaks.
 
 
     **Key differences from REST:**
@@ -18,7 +23,7 @@ info:
 
     - No icon management over MQTT.
 
-    **BREAKING (v0.2.0)**: sleep `until` epoch semantics changed from the
+    **BREAKING (v1.0.0)**: sleep `until` epoch semantics changed from the
     device's local frame to UTC Unix timestamps. Clients that previously
     added the device's NTP offset before sending must stop doing so.
   license:

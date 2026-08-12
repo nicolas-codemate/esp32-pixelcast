@@ -6,7 +6,7 @@ NotificationRequest:
   properties:
     text:
       allOf:
-        - $ref: "common.yaml#/PolymorphicTextField128x8"
+        - $ref: "common.yaml#/PolymorphicTextField127x8"
       description: >
         Notification text, required. Accepts the three forms of a colored text field -
         plain string, single colored string, or up to eight colored segments concatenated

@@ -120,21 +120,46 @@ PolymorphicTextField11x3:
       maxItems: 3
       description: "Array of colored segments (concatenated in display order)."
 
-PolymorphicTextField128x8:
+PolymorphicTextField63x8:
   description: >
-    Polymorphic text field bounded to 128 characters and 8 segments. Each bound sits in
+    Polymorphic text field bounded to 63 characters and 8 segments. Each bound sits in
     the form it applies to, so a plain string is only measured in characters and a
     segment array only in segments. The character budget is shared by every segment.
   oneOf:
     - type: string
-      maxLength: 128
+      maxLength: 63
       description: Plain text (uses default color).
     - type: object
       required: [text, color]
       properties:
         text:
           type: string
-          maxLength: 128
+          maxLength: 63
+        color:
+          $ref: "#/Color"
+      description: "Single string with explicit color override."
+    - type: array
+      items:
+        $ref: "#/TextSegment"
+      minItems: 1
+      maxItems: 8
+      description: "Array of colored segments (concatenated in display order)."
+
+PolymorphicTextField127x8:
+  description: >
+    Polymorphic text field bounded to 127 characters and 8 segments. Each bound sits in
+    the form it applies to, so a plain string is only measured in characters and a
+    segment array only in segments. The character budget is shared by every segment.
+  oneOf:
+    - type: string
+      maxLength: 127
+      description: Plain text (uses default color).
+    - type: object
+      required: [text, color]
+      properties:
+        text:
+          type: string
+          maxLength: 127
         color:
           $ref: "#/Color"
       description: "Single string with explicit color override."

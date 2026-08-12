@@ -11,14 +11,14 @@ CustomAppRequest:
       description: >
         App name (identifier). Can also be passed as `?name=` query parameter.
     text:
-      $ref: "common.yaml#/PolymorphicTextField"
+      $ref: "common.yaml#/PolymorphicTextField63x8"
     icon:
       type: string
       description: Icon name (without extension).
       examples:
         - "smiley"
     label:
-      $ref: "common.yaml#/PolymorphicTextField"
+      $ref: "common.yaml#/PolymorphicTextField31x8"
     color:
       $ref: "common.yaml#/Color"
     duration:

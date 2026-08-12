@@ -4,14 +4,14 @@ Zone:
   type: object
   properties:
     text:
-      $ref: "common.yaml#/PolymorphicTextField"
+      $ref: "common.yaml#/PolymorphicTextField31x8"
     icon:
       type: string
       description: Icon name (without extension) from the device filesystem.
       examples:
         - "thermo"
     label:
-      $ref: "common.yaml#/PolymorphicTextField"
+      $ref: "common.yaml#/PolymorphicTextField31x8"
     color:
       $ref: "common.yaml#/Color"
   description: >

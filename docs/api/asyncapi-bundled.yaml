@@ -69,13 +69,14 @@ channels:
                 parameter.
             text:
               description: >
-                Text field accepting three formats: plain string, colored string
-                object, or array of colored segments (max 8).
+                Polymorphic text field bounded to 63 characters and 8 segments.
+                Each bound sits in the form it applies to, so a plain string is
+                only measured in characters and a segment array only in
+                segments. The character budget is shared by every segment.
               oneOf:
                 - type: string
+                  maxLength: 63
                   description: Plain text (uses default color).
-                  examples:
-                    - 22.5C
                 - type: object
                   required:
                     - text
@@ -83,6 +84,7 @@ channels:
                   properties:
                     text:
                       type: string
+                      maxLength: 63
                     color:
                       description: >
                         Color value. Accepts RGB array, hex string, or unsigned
@@ -112,9 +114,6 @@ channels:
                           examples:
                             - 16746496
                   description: Single string with explicit color override.
-                  examples:
-                    - text: CRITICAL
-                      color: '#FF0000'
                 - type: array
                   items:
                     type: object
@@ -157,11 +156,6 @@ channels:
                   minItems: 1
                   maxItems: 8
                   description: Array of colored segments (concatenated in display order).
-                  examples:
-                    - - t: '22.5'
-                        c: '#FF8800'
-                      - t: C
-                        c: '#666666'
             icon:
               type: string
               description: Icon name (without extension).
@@ -169,13 +163,14 @@ channels:
                 - smiley
             label:
               description: >
-                Text field accepting three formats: plain string, colored string
-                object, or array of colored segments (max 8).
+                Polymorphic text field bounded to 31 characters and 8 segments.
+                Each bound sits in the form it applies to, so a plain string is
+                only measured in characters and a segment array only in
+                segments. The character budget is shared by every segment.
               oneOf:
                 - type: string
+                  maxLength: 31
                   description: Plain text (uses default color).
-                  examples:
-                    - 22.5C
                 - type: object
                   required:
                     - text
@@ -183,6 +178,7 @@ channels:
                   properties:
                     text:
                       type: string
+                      maxLength: 31
                     color:
                       description: >
                         Color value. Accepts RGB array, hex string, or unsigned
@@ -212,9 +208,6 @@ channels:
                           examples:
                             - 16746496
                   description: Single string with explicit color override.
-                  examples:
-                    - text: CRITICAL
-                      color: '#FF0000'
                 - type: array
                   items:
                     type: object
@@ -257,11 +250,6 @@ channels:
                   minItems: 1
                   maxItems: 8
                   description: Array of colored segments (concatenated in display order).
-                  examples:
-                    - - t: '22.5'
-                        c: '#FF8800'
-                      - t: C
-                        c: '#666666'
             color:
               description: >
                 Color value. Accepts RGB array, hex string, or unsigned 32-bit
@@ -342,13 +330,15 @@ channels:
                 properties:
                   text:
                     description: >
-                      Text field accepting three formats: plain string, colored
-                      string object, or array of colored segments (max 8).
+                      Polymorphic text field bounded to 31 characters and 8
+                      segments. Each bound sits in the form it applies to, so a
+                      plain string is only measured in characters and a segment
+                      array only in segments. The character budget is shared by
+                      every segment.
                     oneOf:
                       - type: string
+                        maxLength: 31
                         description: Plain text (uses default color).
-                        examples:
-                          - 22.5C
                       - type: object
                         required:
                           - text
@@ -356,6 +346,7 @@ channels:
                         properties:
                           text:
                             type: string
+                            maxLength: 31
                           color:
                             description: >
                               Color value. Accepts RGB array, hex string, or
@@ -385,9 +376,6 @@ channels:
                                 examples:
                                   - 16746496
                         description: Single string with explicit color override.
-                        examples:
-                          - text: CRITICAL
-                            color: '#FF0000'
                       - type: array
                         items:
                           type: object
@@ -432,11 +420,6 @@ channels:
                         description: >-
                           Array of colored segments (concatenated in display
                           order).
-                        examples:
-                          - - t: '22.5'
-                              c: '#FF8800'
-                            - t: C
-                              c: '#666666'
                   icon:
                     type: string
                     description: Icon name (without extension) from the device filesystem.
@@ -444,13 +427,15 @@ channels:
                       - thermo
                   label:
                     description: >
-                      Text field accepting three formats: plain string, colored
-                      string object, or array of colored segments (max 8).
+                      Polymorphic text field bounded to 31 characters and 8
+                      segments. Each bound sits in the form it applies to, so a
+                      plain string is only measured in characters and a segment
+                      array only in segments. The character budget is shared by
+                      every segment.
                     oneOf:
                       - type: string
+                        maxLength: 31
                         description: Plain text (uses default color).
-                        examples:
-                          - 22.5C
                       - type: object
                         required:
                           - text
@@ -458,6 +443,7 @@ channels:
                         properties:
                           text:
                             type: string
+                            maxLength: 31
                           color:
                             description: >
                               Color value. Accepts RGB array, hex string, or
@@ -487,9 +473,6 @@ channels:
                                 examples:
                                   - 16746496
                         description: Single string with explicit color override.
-                        examples:
-                          - text: CRITICAL
-                            color: '#FF0000'
                       - type: array
                         items:
                           type: object
@@ -534,11 +517,6 @@ channels:
                         description: >-
                           Array of colored segments (concatenated in display
                           order).
-                        examples:
-                          - - t: '22.5'
-                              c: '#FF8800'
-                            - t: C
-                              c: '#666666'
                   color:
                     description: >
                       Color value. Accepts RGB array, hex string, or unsigned
@@ -627,13 +605,14 @@ channels:
                 parameter.
             text:
               description: >
-                Text field accepting three formats: plain string, colored string
-                object, or array of colored segments (max 8).
+                Polymorphic text field bounded to 63 characters and 8 segments.
+                Each bound sits in the form it applies to, so a plain string is
+                only measured in characters and a segment array only in
+                segments. The character budget is shared by every segment.
               oneOf:
                 - type: string
+                  maxLength: 63
                   description: Plain text (uses default color).
-                  examples:
-                    - 22.5C
                 - type: object
                   required:
                     - text
@@ -641,6 +620,7 @@ channels:
                   properties:
                     text:
                       type: string
+                      maxLength: 63
                     color:
                       description: >
                         Color value. Accepts RGB array, hex string, or unsigned
@@ -670,9 +650,6 @@ channels:
                           examples:
                             - 16746496
                   description: Single string with explicit color override.
-                  examples:
-                    - text: CRITICAL
-                      color: '#FF0000'
                 - type: array
                   items:
                     type: object
@@ -715,11 +692,6 @@ channels:
                   minItems: 1
                   maxItems: 8
                   description: Array of colored segments (concatenated in display order).
-                  examples:
-                    - - t: '22.5'
-                        c: '#FF8800'
-                      - t: C
-                        c: '#666666'
             icon:
               type: string
               description: Icon name (without extension).
@@ -727,13 +699,14 @@ channels:
                 - smiley
             label:
               description: >
-                Text field accepting three formats: plain string, colored string
-                object, or array of colored segments (max 8).
+                Polymorphic text field bounded to 31 characters and 8 segments.
+                Each bound sits in the form it applies to, so a plain string is
+                only measured in characters and a segment array only in
+                segments. The character budget is shared by every segment.
               oneOf:
                 - type: string
+                  maxLength: 31
                   description: Plain text (uses default color).
-                  examples:
-                    - 22.5C
                 - type: object
                   required:
                     - text
@@ -741,6 +714,7 @@ channels:
                   properties:
                     text:
                       type: string
+                      maxLength: 31
                     color:
                       description: >
                         Color value. Accepts RGB array, hex string, or unsigned
@@ -770,9 +744,6 @@ channels:
                           examples:
                             - 16746496
                   description: Single string with explicit color override.
-                  examples:
-                    - text: CRITICAL
-                      color: '#FF0000'
                 - type: array
                   items:
                     type: object
@@ -815,11 +786,6 @@ channels:
                   minItems: 1
                   maxItems: 8
                   description: Array of colored segments (concatenated in display order).
-                  examples:
-                    - - t: '22.5'
-                        c: '#FF8800'
-                      - t: C
-                        c: '#666666'
             color:
               description: >
                 Color value. Accepts RGB array, hex string, or unsigned 32-bit
@@ -900,13 +866,15 @@ channels:
                 properties:
                   text:
                     description: >
-                      Text field accepting three formats: plain string, colored
-                      string object, or array of colored segments (max 8).
+                      Polymorphic text field bounded to 31 characters and 8
+                      segments. Each bound sits in the form it applies to, so a
+                      plain string is only measured in characters and a segment
+                      array only in segments. The character budget is shared by
+                      every segment.
                     oneOf:
                       - type: string
+                        maxLength: 31
                         description: Plain text (uses default color).
-                        examples:
-                          - 22.5C
                       - type: object
                         required:
                           - text
@@ -914,6 +882,7 @@ channels:
                         properties:
                           text:
                             type: string
+                            maxLength: 31
                           color:
                             description: >
                               Color value. Accepts RGB array, hex string, or
@@ -943,9 +912,6 @@ channels:
                                 examples:
                                   - 16746496
                         description: Single string with explicit color override.
-                        examples:
-                          - text: CRITICAL
-                            color: '#FF0000'
                       - type: array
                         items:
                           type: object
@@ -990,11 +956,6 @@ channels:
                         description: >-
                           Array of colored segments (concatenated in display
                           order).
-                        examples:
-                          - - t: '22.5'
-                              c: '#FF8800'
-                            - t: C
-                              c: '#666666'
                   icon:
                     type: string
                     description: Icon name (without extension) from the device filesystem.
@@ -1002,13 +963,15 @@ channels:
                       - thermo
                   label:
                     description: >
-                      Text field accepting three formats: plain string, colored
-                      string object, or array of colored segments (max 8).
+                      Polymorphic text field bounded to 31 characters and 8
+                      segments. Each bound sits in the form it applies to, so a
+                      plain string is only measured in characters and a segment
+                      array only in segments. The character budget is shared by
+                      every segment.
                     oneOf:
                       - type: string
+                        maxLength: 31
                         description: Plain text (uses default color).
-                        examples:
-                          - 22.5C
                       - type: object
                         required:
                           - text
@@ -1016,6 +979,7 @@ channels:
                         properties:
                           text:
                             type: string
+                            maxLength: 31
                           color:
                             description: >
                               Color value. Accepts RGB array, hex string, or
@@ -1045,9 +1009,6 @@ channels:
                                 examples:
                                   - 16746496
                         description: Single string with explicit color override.
-                        examples:
-                          - text: CRITICAL
-                            color: '#FF0000'
                       - type: array
                         items:
                           type: object
@@ -1092,11 +1053,6 @@ channels:
                         description: >-
                           Array of colored segments (concatenated in display
                           order).
-                        examples:
-                          - - t: '22.5'
-                              c: '#FF8800'
-                            - t: C
-                              c: '#666666'
                   color:
                     description: >
                       Color value. Accepts RGB array, hex string, or unsigned
@@ -1175,14 +1131,14 @@ channels:
             text:
               allOf:
                 - description: >
-                    Polymorphic text field bounded to 128 characters and 8
+                    Polymorphic text field bounded to 127 characters and 8
                     segments. Each bound sits in the form it applies to, so a
                     plain string is only measured in characters and a segment
                     array only in segments. The character budget is shared by
                     every segment.
                   oneOf:
                     - type: string
-                      maxLength: 128
+                      maxLength: 127
                       description: Plain text (uses default color).
                     - type: object
                       required:
@@ -1191,7 +1147,7 @@ channels:
                       properties:
                         text:
                           type: string
-                          maxLength: 128
+                          maxLength: 127
                         color:
                           description: >
                             Color value. Accepts RGB array, hex string, or
@@ -4057,13 +4013,14 @@ components:
               parameter.
           text:
             description: >
-              Text field accepting three formats: plain string, colored string
-              object, or array of colored segments (max 8).
+              Polymorphic text field bounded to 63 characters and 8 segments.
+              Each bound sits in the form it applies to, so a plain string is
+              only measured in characters and a segment array only in segments.
+              The character budget is shared by every segment.
             oneOf:
               - type: string
+                maxLength: 63
                 description: Plain text (uses default color).
-                examples:
-                  - 22.5C
               - type: object
                 required:
                   - text
@@ -4071,6 +4028,7 @@ components:
                 properties:
                   text:
                     type: string
+                    maxLength: 63
                   color:
                     description: >
                       Color value. Accepts RGB array, hex string, or unsigned
@@ -4100,9 +4058,6 @@ components:
                         examples:
                           - 16746496
                 description: Single string with explicit color override.
-                examples:
-                  - text: CRITICAL
-                    color: '#FF0000'
               - type: array
                 items:
                   type: object
@@ -4145,11 +4100,6 @@ components:
                 minItems: 1
                 maxItems: 8
                 description: Array of colored segments (concatenated in display order).
-                examples:
-                  - - t: '22.5'
-                      c: '#FF8800'
-                    - t: C
-                      c: '#666666'
           icon:
             type: string
             description: Icon name (without extension).
@@ -4157,13 +4107,14 @@ components:
               - smiley
           label:
             description: >
-              Text field accepting three formats: plain string, colored string
-              object, or array of colored segments (max 8).
+              Polymorphic text field bounded to 31 characters and 8 segments.
+              Each bound sits in the form it applies to, so a plain string is
+              only measured in characters and a segment array only in segments.
+              The character budget is shared by every segment.
             oneOf:
               - type: string
+                maxLength: 31
                 description: Plain text (uses default color).
-                examples:
-                  - 22.5C
               - type: object
                 required:
                   - text
@@ -4171,6 +4122,7 @@ components:
                 properties:
                   text:
                     type: string
+                    maxLength: 31
                   color:
                     description: >
                       Color value. Accepts RGB array, hex string, or unsigned
@@ -4200,9 +4152,6 @@ components:
                         examples:
                           - 16746496
                 description: Single string with explicit color override.
-                examples:
-                  - text: CRITICAL
-                    color: '#FF0000'
               - type: array
                 items:
                   type: object
@@ -4245,11 +4194,6 @@ components:
                 minItems: 1
                 maxItems: 8
                 description: Array of colored segments (concatenated in display order).
-                examples:
-                  - - t: '22.5'
-                      c: '#FF8800'
-                    - t: C
-                      c: '#666666'
           color:
             description: >
               Color value. Accepts RGB array, hex string, or unsigned 32-bit
@@ -4330,13 +4274,15 @@ components:
               properties:
                 text:
                   description: >
-                    Text field accepting three formats: plain string, colored
-                    string object, or array of colored segments (max 8).
+                    Polymorphic text field bounded to 31 characters and 8
+                    segments. Each bound sits in the form it applies to, so a
+                    plain string is only measured in characters and a segment
+                    array only in segments. The character budget is shared by
+                    every segment.
                   oneOf:
                     - type: string
+                      maxLength: 31
                       description: Plain text (uses default color).
-                      examples:
-                        - 22.5C
                     - type: object
                       required:
                         - text
@@ -4344,6 +4290,7 @@ components:
                       properties:
                         text:
                           type: string
+                          maxLength: 31
                         color:
                           description: >
                             Color value. Accepts RGB array, hex string, or
@@ -4373,9 +4320,6 @@ components:
                               examples:
                                 - 16746496
                       description: Single string with explicit color override.
-                      examples:
-                        - text: CRITICAL
-                          color: '#FF0000'
                     - type: array
                       items:
                         type: object
@@ -4420,11 +4364,6 @@ components:
                       description: >-
                         Array of colored segments (concatenated in display
                         order).
-                      examples:
-                        - - t: '22.5'
-                            c: '#FF8800'
-                          - t: C
-                            c: '#666666'
                 icon:
                   type: string
                   description: Icon name (without extension) from the device filesystem.
@@ -4432,13 +4371,15 @@ components:
                     - thermo
                 label:
                   description: >
-                    Text field accepting three formats: plain string, colored
-                    string object, or array of colored segments (max 8).
+                    Polymorphic text field bounded to 31 characters and 8
+                    segments. Each bound sits in the form it applies to, so a
+                    plain string is only measured in characters and a segment
+                    array only in segments. The character budget is shared by
+                    every segment.
                   oneOf:
                     - type: string
+                      maxLength: 31
                       description: Plain text (uses default color).
-                      examples:
-                        - 22.5C
                     - type: object
                       required:
                         - text
@@ -4446,6 +4387,7 @@ components:
                       properties:
                         text:
                           type: string
+                          maxLength: 31
                         color:
                           description: >
                             Color value. Accepts RGB array, hex string, or
@@ -4475,9 +4417,6 @@ components:
                               examples:
                                 - 16746496
                       description: Single string with explicit color override.
-                      examples:
-                        - text: CRITICAL
-                          color: '#FF0000'
                     - type: array
                       items:
                         type: object
@@ -4522,11 +4461,6 @@ components:
                       description: >-
                         Array of colored segments (concatenated in display
                         order).
-                      examples:
-                        - - t: '22.5'
-                            c: '#FF8800'
-                          - t: C
-                            c: '#666666'
                 color:
                   description: >
                     Color value. Accepts RGB array, hex string, or unsigned
@@ -4598,14 +4532,14 @@ components:
           text:
             allOf:
               - description: >
-                  Polymorphic text field bounded to 128 characters and 8
+                  Polymorphic text field bounded to 127 characters and 8
                   segments. Each bound sits in the form it applies to, so a
                   plain string is only measured in characters and a segment
                   array only in segments. The character budget is shared by
                   every segment.
                 oneOf:
                   - type: string
-                    maxLength: 128
+                    maxLength: 127
                     description: Plain text (uses default color).
                   - type: object
                     required:
@@ -4614,7 +4548,7 @@ components:
                     properties:
                       text:
                         type: string
-                        maxLength: 128
+                        maxLength: 127
                       color:
                         description: >
                           Color value. Accepts RGB array, hex string, or

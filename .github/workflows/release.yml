@@ -22,8 +22,21 @@ jobs:
           MAJOR=$(sed -n 's/.*-D VERSION_MAJOR=\([0-9]*\).*/\1/p' platformio.ini)
           MINOR=$(sed -n 's/.*-D VERSION_MINOR=\([0-9]*\).*/\1/p' platformio.ini)
           PATCH=$(sed -n 's/.*-D VERSION_PATCH=\([0-9]*\).*/\1/p' platformio.ini)
+          HEADER=$(sed -n 's/.*#define VERSION_STRING "\(.*\)".*/\1/p' include/config.h)
 
-          echo "tag=$TAG platformio=$STRING triple=$MAJOR.$MINOR.$PATCH"
+          # info.version of each spec, read from the info block so a version field
+          # elsewhere in the document cannot be picked up instead.
+          spec_version() {
+            awk '
+              /^info:/ { in_info = 1; next }
+              /^[^[:space:]]/ { in_info = 0 }
+              in_info && $1 == "version:" { gsub(/"/, "", $2); print $2; exit }
+            ' "$1"
+          }
+          OPENAPI=$(spec_version docs/api/openapi.yaml)
+          ASYNCAPI=$(spec_version docs/api/asyncapi.yaml)
+
+          echo "tag=$TAG platformio=$STRING triple=$MAJOR.$MINOR.$PATCH header=$HEADER openapi=$OPENAPI asyncapi=$ASYNCAPI"
 
           if [ -z "$STRING" ]; then
             echo "::error::VERSION_STRING not found in platformio.ini"
@@ -35,6 +48,18 @@ jobs:
           fi
           if [ "$STRING" != "$MAJOR.$MINOR.$PATCH" ]; then
             echo "::error::VERSION_STRING=$STRING disagrees with VERSION_MAJOR/MINOR/PATCH=$MAJOR.$MINOR.$PATCH"
+            exit 1
+          fi
+          if [ "$STRING" != "$HEADER" ]; then
+            echo "::error::VERSION_STRING=$STRING disagrees with VERSION_STRING=$HEADER in include/config.h"
+            exit 1
+          fi
+          if [ "$STRING" != "$OPENAPI" ]; then
+            echo "::error::VERSION_STRING=$STRING disagrees with info.version=$OPENAPI in docs/api/openapi.yaml"
+            exit 1
+          fi
+          if [ "$STRING" != "$ASYNCAPI" ]; then
+            echo "::error::VERSION_STRING=$STRING disagrees with info.version=$ASYNCAPI in docs/api/asyncapi.yaml"
             exit 1
           fi
 

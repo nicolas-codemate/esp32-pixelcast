@@ -162,18 +162,18 @@ struct CachedIcon {
     unsigned long lastUsed;
 };
 CachedIcon iconCache[MAX_ICON_CACHE];
-PNG png;
 
-// Failed icon download blacklist (prevents retry every frame)
-#define MAX_FAILED_ICON_DOWNLOADS 8
+// Failed icon load blacklist: a download or decode failure must not be retried every
+// frame, especially since a decode costs a 46 KB transient allocation.
+#define MAX_FAILED_ICON_LOADS 8
 #define FAILED_ICON_RETRY_DELAY 300000  // 5 minutes
 
-struct FailedIconDownload {
+struct FailedIconLoad {
     char name[32];
     unsigned long failedAt;
 };
 
-FailedIconDownload failedIconDownloads[MAX_FAILED_ICON_DOWNLOADS];
+FailedIconLoad failedIconLoads[MAX_FAILED_ICON_LOADS];
 
 // Temporary buffer for PNG decode callback
 uint16_t* pngDecodeTarget = nullptr;
@@ -664,6 +664,9 @@ int8_t findLRUSlot();
 void drawIcon(CachedIcon* icon, int16_t x, int16_t y);
 void initIconCache();
 void invalidateCachedIcon(const char* name);
+bool isFailedIconLoad(const char* name);
+void addFailedIconLoad(const char* name);
+void clearFailedIconLoad(const char* name);
 bool validatePngHeader(const uint8_t* data, size_t len);
 bool validateGifHeader(const uint8_t* data, size_t len);
 bool downloadLaMetricIcon(uint32_t iconId, const char* saveName);
@@ -1000,6 +1003,7 @@ void setupDisplay() {
 
     mxconfig.clkphase = false;
     mxconfig.driver = HUB75_I2S_CFG::SHIFTREG;
+    mxconfig.setPixelColorDepthBits(COLOR_DEPTH);
 
     #if DOUBLE_BUFFER
         mxconfig.double_buff = true;
@@ -4768,9 +4772,15 @@ int8_t findLRUSlot() {
     return lruIndex;
 }
 
+uint32_t readBigEndianUint32(const uint8_t* bytes) {
+    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
+           ((uint32_t)bytes[2] << 8) | bytes[3];
+}
+
 CachedIcon* loadIcon(const char* name) {
     if (!name || strlen(name) == 0) return nullptr;
     if (!filesystemReady) return nullptr;
+    if (isFailedIconLoad(name)) return nullptr;
 
     // Build file path
     char filePath[64];
@@ -4809,42 +4819,61 @@ CachedIcon* loadIcon(const char* name) {
     file.read(fileBuffer, fileSize);
     file.close();
 
-    // Initialize PNG decoder
-    int rc = png.openRAM(fileBuffer, fileSize, pngDrawCallback);
-    if (rc != PNG_SUCCESS) {
+    // Dimensions come straight from the IHDR chunk (big-endian, right after the 8-byte
+    // signature and the 8-byte chunk header) so the pixel buffer, which lives until cache
+    // eviction, is allocated before the decoder workspace: freeing the workspace then
+    // leaves the hole it occupied unpolluted for the next decode.
+    bool headerValid = fileSize >= 24 && validatePngHeader(fileBuffer, fileSize) &&
+                       memcmp(fileBuffer + 12, "IHDR", 4) == 0;
+    uint32_t pngWidth = headerValid ? readBigEndianUint32(fileBuffer + 16) : 0;
+    uint32_t pngHeight = headerValid ? readBigEndianUint32(fileBuffer + 20) : 0;
+    if (pngWidth == 0 || pngHeight == 0) {
         free(fileBuffer);
-        Serial.printf("[ICON] PNG open failed: %d\n", rc);
+        addFailedIconLoad(name);
+        Serial.printf("[ICON] Not a decodable PNG: %s\n", filePath);
         return nullptr;
     }
 
-    // Get dimensions (limit to 32x32 to preserve RAM)
-    uint8_t width = min((int)png.getWidth(), 32);
-    uint8_t height = min((int)png.getHeight(), 32);
+    // Limit to 32x32 to preserve RAM
+    uint8_t width = min((int)pngWidth, 32);
+    uint8_t height = min((int)pngHeight, 32);
 
     // Allocate pixel buffer
     cached->pixels = (uint16_t*)malloc(width * height * sizeof(uint16_t));
     if (!cached->pixels) {
-        png.close();
         free(fileBuffer);
         Serial.println("[ICON] Failed to allocate pixel buffer");
         return nullptr;
     }
 
-    // Set up decode target
-    pngDecodeTarget = cached->pixels;
-    pngDecodeWidth = width;
+    // The decoder needs a ~46 KB workspace (mostly the zlib window mandated by the PNG
+    // format), so it only exists for the duration of the decode instead of squatting
+    // in .bss for the whole uptime. An allocation failure is not a verdict on the file,
+    // so it does not blacklist - same policy as the pixel buffer above.
+    PNG* pngDecoder = new (std::nothrow) PNG();
+    if (!pngDecoder) {
+        free(cached->pixels);
+        cached->pixels = nullptr;
+        free(fileBuffer);
+        Serial.println("[ICON] Failed to allocate PNG decoder");
+        return nullptr;
+    }
 
-    // Clear buffer
-    memset(cached->pixels, 0, width * height * sizeof(uint16_t));
-
-    // Decode PNG
-    rc = png.decode(NULL, 0);
-    png.close();
+    int rc = pngDecoder->openRAM(fileBuffer, fileSize, pngDrawCallback);
+    if (rc == PNG_SUCCESS) {
+        pngDecodeTarget = cached->pixels;
+        pngDecodeWidth = width;
+        memset(cached->pixels, 0, width * height * sizeof(uint16_t));
+        rc = pngDecoder->decode(NULL, 0);
+        pngDecoder->close();
+    }
+    delete pngDecoder;
     free(fileBuffer);
 
     if (rc != PNG_SUCCESS) {
         free(cached->pixels);
         cached->pixels = nullptr;
+        addFailedIconLoad(name);
         Serial.printf("[ICON] PNG decode failed: %d\n", rc);
         return nullptr;
     }
@@ -4860,34 +4889,42 @@ CachedIcon* loadIcon(const char* name) {
     return cached;
 }
 
-bool isFailedIconDownload(const char* name) {
+bool isFailedIconLoad(const char* name) {
     unsigned long now = millis();
-    for (uint8_t i = 0; i < MAX_FAILED_ICON_DOWNLOADS; i++) {
-        if (failedIconDownloads[i].name[0] != '\0' &&
-            strcmp(failedIconDownloads[i].name, name) == 0 &&
-            (now - failedIconDownloads[i].failedAt) < FAILED_ICON_RETRY_DELAY) {
+    for (uint8_t i = 0; i < MAX_FAILED_ICON_LOADS; i++) {
+        if (failedIconLoads[i].name[0] != '\0' &&
+            strcmp(failedIconLoads[i].name, name) == 0 &&
+            (now - failedIconLoads[i].failedAt) < FAILED_ICON_RETRY_DELAY) {
             return true;
         }
     }
     return false;
 }
 
-void addFailedIconDownload(const char* name) {
+void addFailedIconLoad(const char* name) {
     // Find oldest entry to evict
     uint8_t oldestIndex = 0;
     unsigned long oldestTime = ULONG_MAX;
-    for (uint8_t i = 0; i < MAX_FAILED_ICON_DOWNLOADS; i++) {
-        if (failedIconDownloads[i].name[0] == '\0') {
+    for (uint8_t i = 0; i < MAX_FAILED_ICON_LOADS; i++) {
+        if (failedIconLoads[i].name[0] == '\0') {
             oldestIndex = i;
             break;
         }
-        if (failedIconDownloads[i].failedAt < oldestTime) {
-            oldestTime = failedIconDownloads[i].failedAt;
+        if (failedIconLoads[i].failedAt < oldestTime) {
+            oldestTime = failedIconLoads[i].failedAt;
             oldestIndex = i;
         }
     }
-    strlcpy(failedIconDownloads[oldestIndex].name, name, sizeof(failedIconDownloads[oldestIndex].name));
-    failedIconDownloads[oldestIndex].failedAt = millis();
+    strlcpy(failedIconLoads[oldestIndex].name, name, sizeof(failedIconLoads[oldestIndex].name));
+    failedIconLoads[oldestIndex].failedAt = millis();
+}
+
+void clearFailedIconLoad(const char* name) {
+    for (uint8_t i = 0; i < MAX_FAILED_ICON_LOADS; i++) {
+        if (strcmp(failedIconLoads[i].name, name) == 0) {
+            failedIconLoads[i].name[0] = '\0';
+        }
+    }
 }
 
 // Cache-only lookup, for callers that run every frame: a miss must not cost a filesystem
@@ -4924,13 +4961,13 @@ CachedIcon* getIcon(const char* name) {
         for (const char* p = idStr; *p; p++) {
             if (*p < '0' || *p > '9') { isNumeric = false; break; }
         }
-        if (isNumeric && !isFailedIconDownload(name)) {
+        if (isNumeric && !isFailedIconLoad(name)) {
             uint32_t iconId = strtoul(idStr, nullptr, 10);
             Serial.printf("[ICON] Auto-downloading LaMetric icon: %s (id=%u)\n", name, iconId);
             if (downloadLaMetricIcon(iconId, name)) {
                 return loadIcon(name);
             } else {
-                addFailedIconDownload(name);
+                addFailedIconLoad(name);
                 Serial.printf("[ICON] Download failed, blacklisted for %ds: %s\n",
                               FAILED_ICON_RETRY_DELAY / 1000, name);
             }
@@ -4968,6 +5005,10 @@ void drawIcon(CachedIcon* icon, int16_t x, int16_t y) {
 
 void invalidateCachedIcon(const char* name) {
     if (!name || strlen(name) == 0) return;
+
+    // The file just changed on disk, so a previous download or decode failure no longer
+    // says anything about it
+    clearFailedIconLoad(name);
 
     for (uint8_t i = 0; i < MAX_ICON_CACHE; i++) {
         if (iconCache[i].valid && strcmp(iconCache[i].name, name) == 0) {

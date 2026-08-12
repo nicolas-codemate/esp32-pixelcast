@@ -14,9 +14,7 @@ GaugeRow:
   properties:
     label:
       allOf:
-        - $ref: "common.yaml#/PolymorphicTextField"
-      maxLength: 11
-      maxItems: 3
+        - $ref: "common.yaml#/PolymorphicTextField11x3"
       description: >
         Row name, drawn on the left of the top line (e.g. "5h", "credits"). It gets
         whatever width `info` and `value` did not take, and is cut on the last glyph
@@ -109,9 +107,7 @@ GaugeUpdateRequest:
         - "claude"
     title:
       allOf:
-        - $ref: "common.yaml#/PolymorphicTextField"
-      maxLength: 31
-      maxItems: 4
+        - $ref: "common.yaml#/PolymorphicTextField31x4"
       description: >
         Headline shown on the 12-pixel header (e.g. "Claude", "Disques"). Longer than the
         header is wide is fine: the display scrolls it, pausing at each end. The header

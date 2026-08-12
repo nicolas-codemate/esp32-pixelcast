@@ -106,15 +106,14 @@ TrackerUpdateRequest:
         `sparklineRef`. Still accepted and echoed back so existing clients keep working.
     bottomText:
       allOf:
-        - $ref: "common.yaml#/PolymorphicTextField"
-      maxLength: 31
+        - $ref: "common.yaml#/PolymorphicTextField31x8"
       description: >
         Optional footer text on the bottom row, in the same font as the price: ten characters
         fit, and anything longer scrolls, pausing at each end. Leaving it out hands its rows,
         and those of the separator above it, to the chart, which grows from 20 rows to 32.
         Accepts the same three forms as a custom app's text: plain string, single colored
-        string, or colored segments - `maxLength` bounds the plain form, and the other two
-        are cut at the same 31 characters, a segment that no longer fits being dropped whole.
+        string, or colored segments - the 31 characters are shared by every segment, a
+        segment that no longer fits being dropped whole.
         Accents are transliterated as they are in `symbol`, and the degree sign is dropped.
         A tracker left on the default `staleBehavior` of `dim` dims these colors along with
         the rest of the screen.

@@ -318,11 +318,11 @@ paths:
                           type: string
                           description: App identifier.
                         text:
-                          $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                          $ref: '#/paths/~1gauge/get/responses/200/content/application~1json/schema/properties/title/allOf/0'
                         icon:
                           type: string
                         label:
-                          $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                          $ref: '#/paths/~1gauge/get/responses/200/content/application~1json/schema/properties/title/allOf/0'
                         color:
                           type: string
                           pattern: '^#[0-9a-fA-F]{6}$'
@@ -388,12 +388,11 @@ paths:
                     App name (identifier). Can also be passed as `?name=` query parameter.
                 text:
                   description: |
-                    Text field accepting three formats: plain string, colored string object, or array of colored segments (max 8).
+                    Polymorphic text field bounded to 63 characters and 8 segments. Each bound sits in the form it applies to, so a plain string is only measured in characters and a segment array only in segments. The character budget is shared by every segment.
                   oneOf:
                     - type: string
+                      maxLength: 63
                       description: Plain text (uses default color).
-                      examples:
-                        - 22.5C
                     - type: object
                       required:
                         - text
@@ -401,12 +400,10 @@ paths:
                       properties:
                         text:
                           type: string
+                          maxLength: 63
                         color:
                           $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
                       description: Single string with explicit color override.
-                      examples:
-                        - text: CRITICAL
-                          color: '#FF0000'
                     - type: array
                       items:
                         type: object
@@ -423,18 +420,35 @@ paths:
                       minItems: 1
                       maxItems: 8
                       description: Array of colored segments (concatenated in display order).
-                      examples:
-                        - - t: '22.5'
-                            c: '#FF8800'
-                          - t: C
-                            c: '#666666'
                 icon:
                   type: string
                   description: Icon name (without extension).
                   examples:
                     - smiley
                 label:
-                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                  description: |
+                    Polymorphic text field bounded to 31 characters and 8 segments. Each bound sits in the form it applies to, so a plain string is only measured in characters and a segment array only in segments. The character budget is shared by every segment.
+                  oneOf:
+                    - type: string
+                      maxLength: 31
+                      description: Plain text (uses default color).
+                    - type: object
+                      required:
+                        - text
+                        - color
+                      properties:
+                        text:
+                          type: string
+                          maxLength: 31
+                        color:
+                          $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                      description: Single string with explicit color override.
+                    - type: array
+                      items:
+                        $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text/oneOf/2/items'
+                      minItems: 1
+                      maxItems: 8
+                      description: Array of colored segments (concatenated in display order).
                 color:
                   description: |
                     Color value. Accepts RGB array, hex string, or unsigned 32-bit integer.
@@ -486,14 +500,14 @@ paths:
                     type: object
                     properties:
                       text:
-                        $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                        $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/label'
                       icon:
                         type: string
                         description: Icon name (without extension) from the device filesystem.
                         examples:
                           - thermo
                       label:
-                        $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                        $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/label'
                       color:
                         $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
                     description: |
@@ -939,7 +953,7 @@ paths:
                       - '#00D4FF'
                   bottomText:
                     allOf:
-                      - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                      - $ref: '#/paths/~1gauge/get/responses/200/content/application~1json/schema/properties/title/allOf/0'
                     description: |
                       Echoed in the form it was stored: a plain string unless the value was written with color segments, in which case it comes back as the segment array. A client that only ever sends plain strings only ever reads plain strings - but a tracker fed by several producers can come back as an array to a client that did not send one.
                   sparklinePeriod:
@@ -1096,10 +1110,9 @@ paths:
                     No longer drawn. The curve takes its two colors from its position against `sparklineRef`. Still accepted and echoed back so existing clients keep working.
                 bottomText:
                   allOf:
-                    - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
-                  maxLength: 31
+                    - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/label'
                   description: |
-                    Optional footer text on the bottom row, in the same font as the price: ten characters fit, and anything longer scrolls, pausing at each end. Leaving it out hands its rows, and those of the separator above it, to the chart, which grows from 20 rows to 32. Accepts the same three forms as a custom app's text: plain string, single colored string, or colored segments - `maxLength` bounds the plain form, and the other two are cut at the same 31 characters, a segment that no longer fits being dropped whole. Accents are transliterated as they are in `symbol`, and the degree sign is dropped. A tracker left on the default `staleBehavior` of `dim` dims these colors along with the rest of the screen.
+                    Optional footer text on the bottom row, in the same font as the price: ten characters fit, and anything longer scrolls, pausing at each end. Leaving it out hands its rows, and those of the separator above it, to the chart, which grows from 20 rows to 32. Accepts the same three forms as a custom app's text: plain string, single colored string, or colored segments - the 31 characters are shared by every segment, a segment that no longer fits being dropped whole. Accents are transliterated as they are in `symbol`, and the degree sign is dropped. A tracker left on the default `staleBehavior` of `dim` dims these colors along with the rest of the screen.
                   examples:
                     - ATH 73.6K 03/24
                     - - t: 'Vol '
@@ -1295,7 +1308,37 @@ paths:
                     type: string
                   title:
                     allOf:
-                      - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                      - description: |
+                          Text field accepting three formats: plain string, colored string object, or array of colored segments (max 8).
+                        oneOf:
+                          - type: string
+                            description: Plain text (uses default color).
+                            examples:
+                              - 22.5C
+                          - type: object
+                            required:
+                              - text
+                              - color
+                            properties:
+                              text:
+                                type: string
+                              color:
+                                $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                            description: Single string with explicit color override.
+                            examples:
+                              - text: CRITICAL
+                                color: '#FF0000'
+                          - type: array
+                            items:
+                              $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text/oneOf/2/items'
+                            minItems: 1
+                            maxItems: 8
+                            description: Array of colored segments (concatenated in display order).
+                            examples:
+                              - - t: '22.5'
+                                  c: '#FF8800'
+                                - t: C
+                                  c: '#666666'
                     description: |
                       Echoed in the form it was stored: a plain string unless the title was written with color segments, in which case it comes back as the segment array.
                   icon:
@@ -1307,7 +1350,7 @@ paths:
                       properties:
                         label:
                           allOf:
-                            - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                            - $ref: '#/paths/~1gauge/get/responses/200/content/application~1json/schema/properties/title/allOf/0'
                           description: |
                             Echoed in the form it was stored, like the title: a plain string, or the segment array the client sent, trimmed to the segments that fitted.
                         info:
@@ -1409,9 +1452,29 @@ paths:
                     - claude
                 title:
                   allOf:
-                    - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
-                  maxLength: 31
-                  maxItems: 4
+                    - description: |
+                        Polymorphic text field bounded to 31 characters and 4 segments. Each bound sits in the form it applies to, so a plain string is only measured in characters and a segment array only in segments. The character budget is shared by every segment.
+                      oneOf:
+                        - type: string
+                          maxLength: 31
+                          description: Plain text (uses default color).
+                        - type: object
+                          required:
+                            - text
+                            - color
+                          properties:
+                            text:
+                              type: string
+                              maxLength: 31
+                            color:
+                              $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                          description: Single string with explicit color override.
+                        - type: array
+                          items:
+                            $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text/oneOf/2/items'
+                          minItems: 1
+                          maxItems: 4
+                          description: Array of colored segments (concatenated in display order).
                   description: |
                     Headline shown on the 12-pixel header (e.g. "Claude", "Disques"). Longer than the header is wide is fine: the display scrolls it, pausing at each end. The header holds eight characters beside an icon and ten without one, since a gauge with no `icon` gives its title the full width. While a STALE badge is up the icon steps aside, the title restarts from the left margin and the band it gets is six characters wide. The panel has no accented glyphs, so Latin-1 accents are shown as their closest ASCII letter - "Santé" reads "Sante". Anything else outside ASCII is dropped. Accepts the three forms of a colored text field - plain string, single colored string, or colored segments, four of them here; a fifth segment keeps its text but not its color, running on in the fourth one's. The header band clips what is painted and never the string, so a color boundary stays on the character the client put it on, accents included, even mid-scroll. A gauge left on the default `staleBehavior` of `dim` dims these colors along with the rest of the screen.
                   examples:
@@ -1435,9 +1498,29 @@ paths:
                     properties:
                       label:
                         allOf:
-                          - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
-                        maxLength: 11
-                        maxItems: 3
+                          - description: |
+                              Polymorphic text field bounded to 11 characters and 3 segments. Each bound sits in the form it applies to, so a plain string is only measured in characters and a segment array only in segments. The character budget is shared by every segment.
+                            oneOf:
+                              - type: string
+                                maxLength: 11
+                                description: Plain text (uses default color).
+                              - type: object
+                                required:
+                                  - text
+                                  - color
+                                properties:
+                                  text:
+                                    type: string
+                                    maxLength: 11
+                                  color:
+                                    $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                                description: Single string with explicit color override.
+                              - type: array
+                                items:
+                                  $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text/oneOf/2/items'
+                                minItems: 1
+                                maxItems: 3
+                                description: Array of colored segments (concatenated in display order).
                         description: |
                           Row name, drawn on the left of the top line (e.g. "5h", "credits"). It gets whatever width `info` and `value` did not take, and is cut on the last glyph that fits - an `info` long enough to reach the left margin leaves nothing of it. Accepts the three forms of a colored text field - plain string, single colored string, or colored segments, three of them here - so one name can carry two readings in two greys ("5h" then " reset"). The 11 characters are shared by every segment and the first one that no longer fits in them is dropped whole, text included, along with everything after it; a fourth segment keeps its text but not its color, running on in the third one's. The width cut comes after all that, so a later segment can end up off screen while the row still stores it. `info`, `value` and `note` stay plain strings: they carry one reading each, and `color` and `noteColor` already own the bar and the pace.
                         examples:
@@ -1878,8 +1961,29 @@ paths:
               properties:
                 text:
                   allOf:
-                    - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
-                  maxLength: 128
+                    - description: |
+                        Polymorphic text field bounded to 127 characters and 8 segments. Each bound sits in the form it applies to, so a plain string is only measured in characters and a segment array only in segments. The character budget is shared by every segment.
+                      oneOf:
+                        - type: string
+                          maxLength: 127
+                          description: Plain text (uses default color).
+                        - type: object
+                          required:
+                            - text
+                            - color
+                          properties:
+                            text:
+                              type: string
+                              maxLength: 127
+                            color:
+                              $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/color'
+                          description: Single string with explicit color override.
+                        - type: array
+                          items:
+                            $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text/oneOf/2/items'
+                          minItems: 1
+                          maxItems: 8
+                          description: Array of colored segments (concatenated in display order).
                   description: |
                     Notification text, required. Accepts the three forms of a colored text field - plain string, single colored string, or up to eight colored segments concatenated in display order. Segments color the text and nothing else: the two separator lines keep the color they already had, and `color` still colors any text sent without a color of its own. A text that ends up empty is refused with HTTP 400 `Missing text`, and that covers `""`, `{"text": ""}` and `[]` alike; over MQTT the message is dropped with a serial log. The 127 characters are shared by every segment, and the two forms overflow differently: a plain string is cut at the last character that fits, while the first segment that no longer fits is dropped whole, text included, along with everything after it. Accents are shown as their closest ASCII letter, and since segment boundaries are counted in bytes but applied glyph by glyph, a boundary that comes after an accented character or a degree sign in the same string is applied one glyph late for each of them.
                   examples:
@@ -2003,7 +2107,7 @@ paths:
                           type: string
                         text:
                           allOf:
-                            - $ref: '#/paths/~1custom/post/requestBody/content/application~1json/schema/properties/text'
+                            - $ref: '#/paths/~1gauge/get/responses/200/content/application~1json/schema/properties/title/allOf/0'
                           description: |
                             Echoed in the form it was stored: a plain string unless the notification was sent with color segments, in which case it comes back as the segment array.
                         icon:

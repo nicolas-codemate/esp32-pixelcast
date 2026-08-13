@@ -40,7 +40,7 @@
 
 ### Media
 - PNG/GIF icons (8x8 to 64x64)
-- GIF animations
+- GIF icons: first frame only (no animation)
 - Text with scrolling
 - Progress bars
 - Bar charts

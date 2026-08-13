@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: ESP32-PixelCast MQTT API
-  version: 1.9.4
+  version: 1.9.5
   description: >
     MQTT interface for controlling a HUB75 LED matrix panel (64x64) running
     on ESP32 Trinity. JSON payloads mirror the REST API. MQTT must be enabled

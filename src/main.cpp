@@ -38,6 +38,13 @@
 // PNG decoding
 #include <PNGdec.h>
 
+// GIF decoding (first frame only, for static icons)
+// PNGdec and AnimatedGIF both define these two with different bodies; neither is used here,
+// so the later header is allowed to win
+#undef INTELSHORT
+#undef INTELLONG
+#include <AnimatedGIF.h>
+
 // Compact font for small text (IP address, status)
 #include <Fonts/TomThumb.h>
 
@@ -172,6 +179,12 @@ enum LaMetricDownloadResult : uint8_t {
     LAMETRIC_DOWNLOAD_LOCAL_FAILED = 2      // Filesystem not ready, or the file could not be written
 };
 
+enum IconDecodeResult : uint8_t {
+    ICON_DECODE_OK = 0,
+    ICON_DECODE_FAILED = 1,     // The file itself is not decodable
+    ICON_DECODE_NO_MEMORY = 2   // No verdict on the file, do not blacklist
+};
+
 // Failed icon load blacklist: a download or decode failure must not be retried every
 // frame, especially since a decode costs a 46 KB transient allocation.
 #define MAX_FAILED_ICON_LOADS 8
@@ -188,6 +201,12 @@ FailedIconLoad failedIconLoads[MAX_FAILED_ICON_LOADS];
 uint16_t* pngDecodeTarget = nullptr;
 uint8_t pngDecodeWidth = 0;
 uint8_t pngDecodeHeight = 0;
+
+// Temporary buffer for GIF decode callback
+uint16_t* gifDecodeTarget = nullptr;
+uint8_t gifDecodeWidth = 0;
+uint8_t gifDecodeHeight = 0;
+uint16_t gifDecodeLinesDrawn = 0;
 
 struct SleepSlot {
     uint8_t startHour;
@@ -667,6 +686,11 @@ void scrollStateArm(ScrollState& state, int16_t textWidth, int16_t availableWidt
 void scrollStateReset(ScrollState& state);
 
 int pngDrawCallback(PNGDRAW *pDraw);
+void gifDrawCallback(GIFDRAW *pDraw);
+static IconDecodeResult decodePngIntoBuffer(uint8_t* fileBuffer, size_t fileSize,
+                                            uint16_t* target, uint8_t width, uint8_t height);
+static IconDecodeResult decodeGifIntoBuffer(uint8_t* fileBuffer, size_t fileSize,
+                                            uint16_t* target, uint8_t width, uint8_t height);
 CachedIcon* loadIcon(const char* name);
 CachedIcon* getIcon(const char* name);
 CachedIcon* getCachedIcon(const char* name);
@@ -4759,6 +4783,29 @@ int pngDrawCallback(PNGDRAW *pDraw) {
     return 1;
 }
 
+void gifDrawCallback(GIFDRAW *pDraw) {
+    if (!gifDecodeTarget || !pDraw->pPalette) return;
+
+    // pDraw->y is relative to the frame, which can sit anywhere on the canvas and can be
+    // larger than the 32x32 the cache allocates
+    int destY = pDraw->iY + pDraw->y;
+    if (destY < 0 || destY >= gifDecodeHeight) return;
+
+    uint16_t* dest = gifDecodeTarget + (destY * gifDecodeWidth);
+
+    for (int x = 0; x < pDraw->iWidth; x++) {
+        int destX = pDraw->iX + x;
+        if (destX < 0 || destX >= gifDecodeWidth) continue;
+
+        uint8_t colorIndex = pDraw->pPixels[x];
+        if (pDraw->ucHasTransparency && colorIndex == pDraw->ucTransparent) continue;
+
+        dest[destX] = pDraw->pPalette[colorIndex];
+    }
+
+    gifDecodeLinesDrawn++;
+}
+
 int8_t findLRUSlot() {
     int8_t lruIndex = -1;
     unsigned long oldestTime = UINT32_MAX;
@@ -4791,6 +4838,81 @@ uint32_t readBigEndianUint32(const uint8_t* bytes) {
            ((uint32_t)bytes[2] << 8) | bytes[3];
 }
 
+uint16_t readLittleEndianUint16(const uint8_t* bytes) {
+    return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
+}
+
+static IconDecodeResult decodePngIntoBuffer(uint8_t* fileBuffer, size_t fileSize,
+                                            uint16_t* target, uint8_t width, uint8_t height) {
+    // The decoder needs a ~46 KB workspace (mostly the zlib window mandated by the PNG
+    // format), so it only exists for the duration of the decode instead of squatting
+    // in .bss for the whole uptime. An allocation failure is not a verdict on the file,
+    // so it does not blacklist.
+    PNG* pngDecoder = new (std::nothrow) PNG();
+    if (!pngDecoder) {
+        Serial.println("[ICON] Failed to allocate PNG decoder");
+        return ICON_DECODE_NO_MEMORY;
+    }
+
+    int rc = pngDecoder->openRAM(fileBuffer, fileSize, pngDrawCallback);
+    if (rc == PNG_SUCCESS) {
+        pngDecodeTarget = target;
+        pngDecodeWidth = width;
+        pngDecodeHeight = height;
+        memset(target, 0, (size_t)width * height * sizeof(uint16_t));
+        rc = pngDecoder->decode(NULL, 0);
+        pngDecoder->close();
+    }
+    delete pngDecoder;
+
+    if (rc != PNG_SUCCESS) {
+        Serial.printf("[ICON] PNG decode failed: %d\n", rc);
+        return ICON_DECODE_FAILED;
+    }
+    return ICON_DECODE_OK;
+}
+
+static IconDecodeResult decodeGifIntoBuffer(uint8_t* fileBuffer, size_t fileSize,
+                                            uint16_t* target, uint8_t width, uint8_t height) {
+    // Only the first frame is read, so the ~24 KB workspace exists for one decode instead of
+    // staying resident the way an animation player would need
+    AnimatedGIF* gifDecoder = new (std::nothrow) AnimatedGIF();
+    if (!gifDecoder) {
+        Serial.println("[ICON] Failed to allocate GIF decoder");
+        return ICON_DECODE_NO_MEMORY;
+    }
+
+    // begin() zeroes the decoder state, so it has to run before open() fills it in
+    gifDecoder->begin(GIF_PALETTE_RGB565_LE);
+
+    IconDecodeResult result = ICON_DECODE_FAILED;
+
+    if (gifDecoder->open(fileBuffer, (int)fileSize, gifDrawCallback)) {
+        gifDecodeTarget = target;
+        gifDecodeWidth = width;
+        gifDecodeHeight = height;
+        gifDecodeLinesDrawn = 0;
+        memset(target, 0, (size_t)width * height * sizeof(uint16_t));
+
+        int frameDelayMs = 0;
+        // playFrame answers 0 when no further frame exists, which is the normal answer for a
+        // static icon, so only -1 is a failure
+        if (gifDecoder->playFrame(false, &frameDelayMs) >= 0 && gifDecodeLinesDrawn > 0) {
+            result = ICON_DECODE_OK;
+        } else {
+            Serial.printf("[ICON] GIF decode failed: %d\n", gifDecoder->getLastError());
+        }
+
+        gifDecoder->close();
+        gifDecodeTarget = nullptr;
+    } else {
+        Serial.printf("[ICON] GIF open failed: %d\n", gifDecoder->getLastError());
+    }
+
+    delete gifDecoder;
+    return result;
+}
+
 CachedIcon* loadIcon(const char* name) {
     if (!name || strlen(name) == 0) return nullptr;
     if (!filesystemReady) return nullptr;
@@ -4799,11 +4921,15 @@ CachedIcon* loadIcon(const char* name) {
     // Build file path
     char filePath[64];
     snprintf(filePath, sizeof(filePath), "%s/%s.png", FS_ICONS_PATH, name);
+    bool isGif = false;
 
-    // Check if file exists
     if (!LittleFS.exists(filePath)) {
-        Serial.printf("[ICON] File not found: %s\n", filePath);
-        return nullptr;
+        snprintf(filePath, sizeof(filePath), "%s/%s.gif", FS_ICONS_PATH, name);
+        if (!LittleFS.exists(filePath)) {
+            Serial.printf("[ICON] File not found: %s/%s (.png or .gif)\n", FS_ICONS_PATH, name);
+            return nullptr;
+        }
+        isGif = true;
     }
 
     // Find a cache slot
@@ -4824,6 +4950,13 @@ CachedIcon* loadIcon(const char* name) {
 
     // Read file into buffer
     size_t fileSize = file.size();
+    if (isGif && (fileSize == 0 || fileSize > MAX_ICON_SIZE)) {
+        file.close();
+        addFailedIconLoad(name);
+        Serial.printf("[ICON] GIF size out of range: %s (%u bytes)\n",
+                      filePath, (unsigned)fileSize);
+        return nullptr;
+    }
     uint8_t* fileBuffer = (uint8_t*)malloc(fileSize);
     if (!fileBuffer) {
         file.close();
@@ -4833,24 +4966,36 @@ CachedIcon* loadIcon(const char* name) {
     file.read(fileBuffer, fileSize);
     file.close();
 
-    // Dimensions come straight from the IHDR chunk (big-endian, right after the 8-byte
-    // signature and the 8-byte chunk header) so the pixel buffer, which lives until cache
-    // eviction, is allocated before the decoder workspace: freeing the workspace then
-    // leaves the hole it occupied unpolluted for the next decode.
-    bool headerValid = fileSize >= 24 && validatePngHeader(fileBuffer, fileSize) &&
-                       memcmp(fileBuffer + 12, "IHDR", 4) == 0;
-    uint32_t pngWidth = headerValid ? readBigEndianUint32(fileBuffer + 16) : 0;
-    uint32_t pngHeight = headerValid ? readBigEndianUint32(fileBuffer + 20) : 0;
-    if (pngWidth == 0 || pngHeight == 0) {
+    // Dimensions come from the container header - the IHDR chunk for PNG, the logical screen
+    // descriptor for GIF - so the pixel buffer, which lives until cache eviction, is allocated
+    // before the decoder workspace: freeing the workspace then leaves the hole it occupied
+    // unpolluted for the next decode.
+    uint32_t imageWidth = 0;
+    uint32_t imageHeight = 0;
+
+    if (isGif) {
+        if (fileSize >= 10 && validateGifHeader(fileBuffer, fileSize)) {
+            imageWidth = readLittleEndianUint16(fileBuffer + 6);
+            imageHeight = readLittleEndianUint16(fileBuffer + 8);
+        }
+    } else {
+        if (fileSize >= 24 && validatePngHeader(fileBuffer, fileSize) &&
+            memcmp(fileBuffer + 12, "IHDR", 4) == 0) {
+            imageWidth = readBigEndianUint32(fileBuffer + 16);
+            imageHeight = readBigEndianUint32(fileBuffer + 20);
+        }
+    }
+
+    if (imageWidth == 0 || imageHeight == 0) {
         free(fileBuffer);
         addFailedIconLoad(name);
-        Serial.printf("[ICON] Not a decodable PNG: %s\n", filePath);
+        Serial.printf("[ICON] Not a decodable %s: %s\n", isGif ? "GIF" : "PNG", filePath);
         return nullptr;
     }
 
     // Limit to 32x32 to preserve RAM
-    uint8_t width = min((int)pngWidth, 32);
-    uint8_t height = min((int)pngHeight, 32);
+    uint8_t width = min((int)imageWidth, 32);
+    uint8_t height = min((int)imageHeight, 32);
 
     // Allocate pixel buffer
     cached->pixels = (uint16_t*)malloc(width * height * sizeof(uint16_t));
@@ -4860,36 +5005,18 @@ CachedIcon* loadIcon(const char* name) {
         return nullptr;
     }
 
-    // The decoder needs a ~46 KB workspace (mostly the zlib window mandated by the PNG
-    // format), so it only exists for the duration of the decode instead of squatting
-    // in .bss for the whole uptime. An allocation failure is not a verdict on the file,
-    // so it does not blacklist - same policy as the pixel buffer above.
-    PNG* pngDecoder = new (std::nothrow) PNG();
-    if (!pngDecoder) {
-        free(cached->pixels);
-        cached->pixels = nullptr;
-        free(fileBuffer);
-        Serial.println("[ICON] Failed to allocate PNG decoder");
-        return nullptr;
-    }
+    IconDecodeResult decodeResult = isGif
+        ? decodeGifIntoBuffer(fileBuffer, fileSize, cached->pixels, width, height)
+        : decodePngIntoBuffer(fileBuffer, fileSize, cached->pixels, width, height);
 
-    int rc = pngDecoder->openRAM(fileBuffer, fileSize, pngDrawCallback);
-    if (rc == PNG_SUCCESS) {
-        pngDecodeTarget = cached->pixels;
-        pngDecodeWidth = width;
-        pngDecodeHeight = height;
-        memset(cached->pixels, 0, width * height * sizeof(uint16_t));
-        rc = pngDecoder->decode(NULL, 0);
-        pngDecoder->close();
-    }
-    delete pngDecoder;
     free(fileBuffer);
 
-    if (rc != PNG_SUCCESS) {
+    if (decodeResult != ICON_DECODE_OK) {
         free(cached->pixels);
         cached->pixels = nullptr;
-        addFailedIconLoad(name);
-        Serial.printf("[ICON] PNG decode failed: %d\n", rc);
+        if (decodeResult == ICON_DECODE_FAILED) {
+            addFailedIconLoad(name);
+        }
         return nullptr;
     }
 

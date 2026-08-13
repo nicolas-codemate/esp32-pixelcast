@@ -875,6 +875,8 @@ void setup() {
         ArduinoOTA.onEnd([]() {
             Serial.println("[OTA] Update complete!");
             dma_display->fillScreen(0);
+            dma_display->setFont(NULL);
+            dma_display->setTextSize(1);
             dma_display->setTextColor(dma_display->color565(0, 255, 0));
             dma_display->setCursor(13, 24);
             dma_display->print("DONE");
@@ -890,6 +892,8 @@ void setup() {
         ArduinoOTA.onError([](ota_error_t error) {
             Serial.printf("[OTA] Error[%u]\n", error);
             dma_display->fillScreen(0);
+            dma_display->setFont(NULL);
+            dma_display->setTextSize(1);
             dma_display->setTextColor(dma_display->color565(255, 0, 0));
             dma_display->setCursor(7, 28);
             dma_display->print("OTA ERR");
@@ -3813,18 +3817,14 @@ void displayDrawOtaProgress(uint8_t percent) {
         dma_display->fillRect(5, 47, barWidth, 5, dma_display->color565(255, 165, 0));
     }
 
-    // Percentage in the band left free between "UPDATE" and the bar, at twice the default
-    // size so it stays readable at a normal viewing distance.
     char percentText[8];
     snprintf(percentText, sizeof(percentText), "%d%%", percent);
-    const int16_t doubleSizeCharWidth = 12;
-    int16_t percentTextWidth = (int16_t)(strlen(percentText) * doubleSizeCharWidth);
     dma_display->setTextSize(2);
     dma_display->setTextColor(dma_display->color565(255, 255, 255));
+    int16_t percentTextWidth = calculateTextWidth(percentText) * 2;
+    // y=28 puts the digits in the band left free between "UPDATE" and the bar frame.
     dma_display->setCursor((DISPLAY_WIDTH - percentTextWidth) / 2, 28);
     dma_display->print(percentText);
-    // The OTA end and error screens print without picking a size of their own.
-    dma_display->setTextSize(1);
 
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();

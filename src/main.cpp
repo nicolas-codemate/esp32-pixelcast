@@ -4917,6 +4917,15 @@ bool isFailedIconLoad(const char* name) {
 }
 
 void addFailedIconLoad(const char* name) {
+    // Refresh an existing entry rather than take a second slot: one name can be reported
+    // twice for the same failure, once by the decode and once by the caller that asked for it
+    for (uint8_t i = 0; i < MAX_FAILED_ICON_LOADS; i++) {
+        if (failedIconLoads[i].name[0] != '\0' && strcmp(failedIconLoads[i].name, name) == 0) {
+            failedIconLoads[i].failedAt = millis();
+            return;
+        }
+    }
+
     // Find oldest entry to evict
     uint8_t oldestIndex = 0;
     unsigned long oldestTime = ULONG_MAX;
@@ -4980,7 +4989,15 @@ CachedIcon* getIcon(const char* name) {
             uint32_t iconId = strtoul(idStr, nullptr, 10);
             Serial.printf("[ICON] Auto-downloading LaMetric icon: %s (id=%u)\n", name, iconId);
             if (downloadLaMetricIcon(iconId, name) == LAMETRIC_DOWNLOAD_OK) {
-                return loadIcon(name);
+                CachedIcon* downloaded = loadIcon(name);
+                if (downloaded) return downloaded;
+
+                // The bytes landed but nothing loadable came out of them, and the download
+                // cleared the blacklist on its way in, so without this the next frame fetches
+                // the same file again over TLS
+                addFailedIconLoad(name);
+                Serial.printf("[ICON] Downloaded but not loadable, blacklisted for %ds: %s\n",
+                              FAILED_ICON_RETRY_DELAY / 1000, name);
             } else {
                 addFailedIconLoad(name);
                 Serial.printf("[ICON] Download failed, blacklisted for %ds: %s\n",

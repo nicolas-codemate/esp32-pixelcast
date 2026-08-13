@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ESP32-PixelCast REST API
-  version: 1.9.2
+  version: 1.9.3
   description: >
     REST API for controlling a HUB75 LED matrix panel (64x64) running on
     ESP32 Trinity. Manages custom apps, notifications, weather, trackers,
@@ -1214,7 +1214,9 @@ paths:
       summary: Download icon from LaMetric
       description: >
         Downloads an icon from the LaMetric icon database and saves it to
-        the device filesystem.
+        the device filesystem. The download is bounded by connect, read and
+        handshake timeouts and by an overall budget, so a slow or unreachable
+        LaMetric ends as an error response instead of restarting the device.
       tags: [Icons]
       requestBody:
         required: true
@@ -1236,7 +1238,15 @@ paths:
               schema:
                 $ref: "schemas/common.yaml#/ErrorResponse"
         "500":
-          description: Download failed.
+          description: The device could not store the icon.
+          content:
+            application/json:
+              schema:
+                $ref: "schemas/common.yaml#/ErrorResponse"
+        "502":
+          description: >
+            LaMetric was unreachable, answered something other than 200, or sent a body
+            that is not a PNG or GIF. The device stores nothing and keeps running.
           content:
             application/json:
               schema:

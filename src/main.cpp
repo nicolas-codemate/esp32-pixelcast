@@ -187,6 +187,7 @@ FailedIconLoad failedIconLoads[MAX_FAILED_ICON_LOADS];
 // Temporary buffer for PNG decode callback
 uint16_t* pngDecodeTarget = nullptr;
 uint8_t pngDecodeWidth = 0;
+uint8_t pngDecodeHeight = 0;
 
 struct SleepSlot {
     uint8_t startHour;
@@ -4696,7 +4697,7 @@ void initIconCache() {
 }
 
 int pngDrawCallback(PNGDRAW *pDraw) {
-    if (!pngDecodeTarget || pDraw->y >= 16) return 1;
+    if (!pngDecodeTarget || pDraw->y >= pngDecodeHeight) return 1;
 
     // Debug: log pixel type on first line
     if (pDraw->y == 0) {
@@ -4876,6 +4877,7 @@ CachedIcon* loadIcon(const char* name) {
     if (rc == PNG_SUCCESS) {
         pngDecodeTarget = cached->pixels;
         pngDecodeWidth = width;
+        pngDecodeHeight = height;
         memset(cached->pixels, 0, width * height * sizeof(uint16_t));
         rc = pngDecoder->decode(NULL, 0);
         pngDecoder->close();

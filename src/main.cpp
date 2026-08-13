@@ -875,6 +875,8 @@ void setup() {
         ArduinoOTA.onEnd([]() {
             Serial.println("[OTA] Update complete!");
             dma_display->fillScreen(0);
+            dma_display->setFont(NULL);
+            dma_display->setTextSize(1);
             dma_display->setTextColor(dma_display->color565(0, 255, 0));
             dma_display->setCursor(13, 24);
             dma_display->print("DONE");
@@ -890,6 +892,8 @@ void setup() {
         ArduinoOTA.onError([](ota_error_t error) {
             Serial.printf("[OTA] Error[%u]\n", error);
             dma_display->fillScreen(0);
+            dma_display->setFont(NULL);
+            dma_display->setTextSize(1);
             dma_display->setTextColor(dma_display->color565(255, 0, 0));
             dma_display->setCursor(7, 28);
             dma_display->print("OTA ERR");
@@ -3815,12 +3819,12 @@ void displayDrawOtaProgress(uint8_t percent) {
 
     char percentText[8];
     snprintf(percentText, sizeof(percentText), "%d%%", percent);
-    dma_display->setFont(&TomThumb);
-    dma_display->setTextColor(dma_display->color565(150, 150, 150));
-    int16_t textWidth = calculateTomThumbTextWidth(percentText);
-    dma_display->setCursor((DISPLAY_WIDTH - textWidth) / 2, 60);
+    dma_display->setTextSize(2);
+    dma_display->setTextColor(dma_display->color565(255, 255, 255));
+    int16_t percentTextWidth = calculateTextWidth(percentText) * 2;
+    // y=28 puts the digits in the band left free between "UPDATE" and the bar frame.
+    dma_display->setCursor((DISPLAY_WIDTH - percentTextWidth) / 2, 28);
     dma_display->print(percentText);
-    dma_display->setFont(NULL);
 
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();

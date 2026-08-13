@@ -3813,14 +3813,18 @@ void displayDrawOtaProgress(uint8_t percent) {
         dma_display->fillRect(5, 47, barWidth, 5, dma_display->color565(255, 165, 0));
     }
 
+    // Percentage in the band left free between "UPDATE" and the bar, at twice the default
+    // size so it stays readable at a normal viewing distance.
     char percentText[8];
     snprintf(percentText, sizeof(percentText), "%d%%", percent);
-    dma_display->setFont(&TomThumb);
-    dma_display->setTextColor(dma_display->color565(150, 150, 150));
-    int16_t textWidth = calculateTomThumbTextWidth(percentText);
-    dma_display->setCursor((DISPLAY_WIDTH - textWidth) / 2, 60);
+    const int16_t doubleSizeCharWidth = 12;
+    int16_t percentTextWidth = (int16_t)(strlen(percentText) * doubleSizeCharWidth);
+    dma_display->setTextSize(2);
+    dma_display->setTextColor(dma_display->color565(255, 255, 255));
+    dma_display->setCursor((DISPLAY_WIDTH - percentTextWidth) / 2, 28);
     dma_display->print(percentText);
-    dma_display->setFont(NULL);
+    // The OTA end and error screens print without picking a size of their own.
+    dma_display->setTextSize(1);
 
     #if DOUBLE_BUFFER
         dma_display->flipDMABuffer();

@@ -206,7 +206,7 @@ uint8_t pngDecodeHeight = 0;
 uint16_t* gifDecodeTarget = nullptr;
 uint8_t gifDecodeWidth = 0;
 uint8_t gifDecodeHeight = 0;
-uint16_t gifDecodeLinesDrawn = 0;
+bool gifDecodeDrewAnyLine = false;
 
 struct SleepSlot {
     uint8_t startHour;
@@ -4803,7 +4803,7 @@ void gifDrawCallback(GIFDRAW *pDraw) {
         dest[destX] = pDraw->pPalette[colorIndex];
     }
 
-    gifDecodeLinesDrawn++;
+    gifDecodeDrewAnyLine = true;
 }
 
 int8_t findLRUSlot() {
@@ -4876,7 +4876,7 @@ static IconDecodeResult decodeGifIntoBuffer(uint8_t* fileBuffer, size_t fileSize
                                             uint16_t* target, uint8_t width, uint8_t height) {
     // Only the first frame is read, so the ~24 KB workspace exists for one decode instead of
     // staying resident the way an animation player would need
-    AnimatedGIF* gifDecoder = new (std::nothrow) AnimatedGIF();
+    AnimatedGIF* gifDecoder = new (std::nothrow) AnimatedGIF;
     if (!gifDecoder) {
         Serial.println("[ICON] Failed to allocate GIF decoder");
         return ICON_DECODE_NO_MEMORY;
@@ -4891,13 +4891,13 @@ static IconDecodeResult decodeGifIntoBuffer(uint8_t* fileBuffer, size_t fileSize
         gifDecodeTarget = target;
         gifDecodeWidth = width;
         gifDecodeHeight = height;
-        gifDecodeLinesDrawn = 0;
+        gifDecodeDrewAnyLine = false;
         memset(target, 0, (size_t)width * height * sizeof(uint16_t));
 
         int frameDelayMs = 0;
         // playFrame answers 0 when no further frame exists, which is the normal answer for a
         // static icon, so only -1 is a failure
-        if (gifDecoder->playFrame(false, &frameDelayMs) >= 0 && gifDecodeLinesDrawn > 0) {
+        if (gifDecoder->playFrame(false, &frameDelayMs) >= 0 && gifDecodeDrewAnyLine) {
             result = ICON_DECODE_OK;
         } else {
             Serial.printf("[ICON] GIF decode failed: %d\n", gifDecoder->getLastError());
@@ -4931,15 +4931,6 @@ CachedIcon* loadIcon(const char* name) {
         }
         isGif = true;
     }
-
-    // Find a cache slot
-    int8_t slot = findLRUSlot();
-    if (slot < 0) {
-        Serial.println("[ICON] No cache slots available");
-        return nullptr;
-    }
-
-    CachedIcon* cached = &iconCache[slot];
 
     // Open file
     File file = LittleFS.open(filePath, "r");
@@ -4997,6 +4988,17 @@ CachedIcon* loadIcon(const char* name) {
     uint8_t width = min((int)imageWidth, 32);
     uint8_t height = min((int)imageHeight, 32);
 
+    // Find a cache slot only once the file is known to be usable: the slot is taken by evicting
+    // whatever icon holds it, so an earlier failure would throw away a live entry for nothing
+    int8_t slot = findLRUSlot();
+    if (slot < 0) {
+        free(fileBuffer);
+        Serial.println("[ICON] No cache slots available");
+        return nullptr;
+    }
+
+    CachedIcon* cached = &iconCache[slot];
+
     // Allocate pixel buffer
     cached->pixels = (uint16_t*)malloc(width * height * sizeof(uint16_t));
     if (!cached->pixels) {
@@ -5045,7 +5047,7 @@ bool isFailedIconLoad(const char* name) {
 
 void addFailedIconLoad(const char* name) {
     // Refresh an existing entry rather than take a second slot: one name can be reported
-    // twice for the same failure, once by the decode and once by the caller that asked for it
+    // twice for the same failure
     for (uint8_t i = 0; i < MAX_FAILED_ICON_LOADS; i++) {
         if (failedIconLoads[i].name[0] != '\0' && strcmp(failedIconLoads[i].name, name) == 0) {
             failedIconLoads[i].failedAt = millis();

@@ -24,10 +24,10 @@
     #define VERSION_MINOR 9
 #endif
 #ifndef VERSION_PATCH
-    #define VERSION_PATCH 3
+    #define VERSION_PATCH 4
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.9.3"
+    #define VERSION_STRING "1.9.4"
 #endif
 
 // ============================================================================

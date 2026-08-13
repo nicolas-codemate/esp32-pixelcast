@@ -1216,7 +1216,8 @@ paths:
         Downloads an icon from the LaMetric icon database and saves it to
         the device filesystem. A slow or unreachable LaMetric ends as a 502
         instead of restarting the device, so the request may take a few tens
-        of seconds before it fails.
+        of seconds before it fails. Other API requests are served only once
+        this one completes.
       tags: [Icons]
       requestBody:
         required: true

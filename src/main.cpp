@@ -51,6 +51,9 @@
 // OTA updates
 #include <ArduinoOTA.h>
 
+// Task watchdog
+#include "esp_task_wdt.h"
+
 // ============================================================================
 // Application System - Structures
 // ============================================================================
@@ -162,6 +165,12 @@ struct CachedIcon {
     unsigned long lastUsed;
 };
 CachedIcon iconCache[MAX_ICON_CACHE];
+
+enum LaMetricDownloadResult : uint8_t {
+    LAMETRIC_DOWNLOAD_OK = 0,
+    LAMETRIC_DOWNLOAD_UPSTREAM_FAILED = 1,  // Unreachable, non-200, truncated, or not an image
+    LAMETRIC_DOWNLOAD_LOCAL_FAILED = 2      // Filesystem not ready, or the file could not be written
+};
 
 // Failed icon load blacklist: a download or decode failure must not be retried every
 // frame, especially since a decode costs a 46 KB transient allocation.
@@ -669,7 +678,7 @@ void addFailedIconLoad(const char* name);
 void clearFailedIconLoad(const char* name);
 bool validatePngHeader(const uint8_t* data, size_t len);
 bool validateGifHeader(const uint8_t* data, size_t len);
-bool downloadLaMetricIcon(uint32_t iconId, const char* saveName);
+LaMetricDownloadResult downloadLaMetricIcon(uint32_t iconId, const char* saveName);
 void handleApiIconsList(AsyncWebServerRequest *request);
 void handleApiIconsServe(AsyncWebServerRequest *request, const String& name);
 void handleApiIconsDelete(AsyncWebServerRequest *request);
@@ -4968,7 +4977,7 @@ CachedIcon* getIcon(const char* name) {
         if (isNumeric && !isFailedIconLoad(name)) {
             uint32_t iconId = strtoul(idStr, nullptr, 10);
             Serial.printf("[ICON] Auto-downloading LaMetric icon: %s (id=%u)\n", name, iconId);
-            if (downloadLaMetricIcon(iconId, name)) {
+            if (downloadLaMetricIcon(iconId, name) == LAMETRIC_DOWNLOAD_OK) {
                 return loadIcon(name);
             } else {
                 addFailedIconLoad(name);
@@ -5042,98 +5051,197 @@ bool validateGifHeader(const uint8_t* data, size_t len) {
             data[3] == '8' && (data[4] == '7' || data[4] == '9') && data[5] == 'a');
 }
 
-bool downloadLaMetricIcon(uint32_t iconId, const char* saveName) {
-    if (!filesystemReady) {
-        Serial.println("[LAMETRIC] Filesystem not ready");
-        return false;
+static LaMetricDownloadResult writeLaMetricIconBody(HTTPClient& https, File& file, bool isPng,
+                                                    unsigned long downloadStart, size_t& totalWritten)
+{
+    WiFiClient* stream = https.getStreamPtr();
+    uint8_t buffer[256];
+    int remainingBytes = https.getSize();
+
+    totalWritten = 0;
+
+    while (https.connected() && remainingBytes != 0)
+    {
+        if ((millis() - downloadStart) > LAMETRIC_DOWNLOAD_BUDGET)
+        {
+            Serial.printf("[LAMETRIC] Budget spent after %d bytes\n", totalWritten);
+            return LAMETRIC_DOWNLOAD_UPSTREAM_FAILED;
+        }
+
+        size_t available = stream->available();
+        // The magic bytes below are checked on the first chunk, which needs 8 bytes at once.
+        if (available == 0 || (totalWritten == 0 && available < 8))
+        {
+            delay(1);
+            continue;
+        }
+
+        size_t toRead = min(available, sizeof(buffer));
+        size_t bytesRead = stream->readBytes(buffer, toRead);
+
+        if (totalWritten + bytesRead > MAX_ICON_SIZE)
+        {
+            Serial.println("[LAMETRIC] Body exceeded the icon size limit");
+            return LAMETRIC_DOWNLOAD_UPSTREAM_FAILED;
+        }
+
+        if (totalWritten == 0)
+        {
+            bool headerValid = isPng ? validatePngHeader(buffer, bytesRead)
+                                     : validateGifHeader(buffer, bytesRead);
+            if (!headerValid)
+            {
+                Serial.printf("[LAMETRIC] Body is not a %s\n", isPng ? "PNG" : "GIF");
+                return LAMETRIC_DOWNLOAD_UPSTREAM_FAILED;
+            }
+        }
+
+        if (file.write(buffer, bytesRead) != bytesRead)
+        {
+            Serial.println("[LAMETRIC] Write failed, filesystem may be full");
+            return LAMETRIC_DOWNLOAD_LOCAL_FAILED;
+        }
+
+        totalWritten += bytesRead;
+        if (remainingBytes > 0)
+        {
+            remainingBytes -= bytesRead;
+        }
     }
+
+    if (remainingBytes > 0)
+    {
+        Serial.printf("[LAMETRIC] Body truncated, %d bytes missing\n", remainingBytes);
+        return LAMETRIC_DOWNLOAD_UPSTREAM_FAILED;
+    }
+
+    if (totalWritten == 0)
+    {
+        Serial.println("[LAMETRIC] Empty body");
+        return LAMETRIC_DOWNLOAD_UPSTREAM_FAILED;
+    }
+
+    return LAMETRIC_DOWNLOAD_OK;
+}
+
+static LaMetricDownloadResult downloadLaMetricIconWithinBudget(uint32_t iconId, const char* saveName)
+{
+    static const char* const ICON_EXTENSIONS[] = { ".png", ".gif" };
+
+    if (!filesystemReady)
+    {
+        Serial.println("[LAMETRIC] Filesystem not ready");
+        return LAMETRIC_DOWNLOAD_LOCAL_FAILED;
+    }
+
+    const unsigned long downloadStart = millis();
 
     WiFiClientSecure client;
     client.setInsecure();  // Skip certificate verification for simplicity
+    client.setHandshakeTimeout(LAMETRIC_HANDSHAKE_TIMEOUT_SECONDS);
 
     HTTPClient https;
-    bool isPng = true;
+    https.setConnectTimeout(LAMETRIC_CONNECT_TIMEOUT);
+    https.setTimeout(LAMETRIC_READ_TIMEOUT);
+    // Reusing the socket would carry the unread body of a rejected attempt into the next one.
+    https.setReuse(false);
 
-    // Try PNG first
-    String url = "https://" LAMETRIC_API_HOST LAMETRIC_ICON_PATH + String(iconId) + ".png";
-    Serial.printf("[LAMETRIC] Trying PNG: %s\n", url.c_str());
+    int httpCode = 0;
+    size_t attempt = 0;
 
-    if (!https.begin(client, url)) {
-        Serial.println("[LAMETRIC] HTTPS begin failed");
-        return false;
-    }
+    for (; attempt < 2; attempt++)
+    {
+        if ((millis() - downloadStart) > LAMETRIC_DOWNLOAD_BUDGET)
+        {
+            Serial.println("[LAMETRIC] Budget spent before the next attempt");
+            return LAMETRIC_DOWNLOAD_UPSTREAM_FAILED;
+        }
 
-    int httpCode = https.GET();
+        String url = "https://" LAMETRIC_API_HOST LAMETRIC_ICON_PATH + String(iconId) + ICON_EXTENSIONS[attempt];
+        Serial.printf("[LAMETRIC] Trying %s\n", url.c_str());
 
-    // If PNG not found, try GIF
-    if (httpCode != HTTP_CODE_OK) {
-        https.end();
-        url = "https://" LAMETRIC_API_HOST LAMETRIC_ICON_PATH + String(iconId) + ".gif";
-        Serial.printf("[LAMETRIC] Trying GIF: %s\n", url.c_str());
-
-        if (!https.begin(client, url)) {
+        if (!https.begin(client, url))
+        {
             Serial.println("[LAMETRIC] HTTPS begin failed");
-            return false;
+            return LAMETRIC_DOWNLOAD_UPSTREAM_FAILED;
         }
 
         httpCode = https.GET();
-        isPng = false;
-    }
+        if (httpCode == HTTP_CODE_OK)
+        {
+            break;
+        }
 
-    if (httpCode != HTTP_CODE_OK) {
         Serial.printf("[LAMETRIC] HTTP error: %d\n", httpCode);
         https.end();
-        return false;
-    }
 
-    // Check file size
-    int contentLength = https.getSize();
-    if (contentLength > MAX_ICON_SIZE) {
-        Serial.printf("[LAMETRIC] Icon too large: %d bytes\n", contentLength);
-        https.end();
-        return false;
-    }
-
-    // Save file with appropriate extension
-    String ext = isPng ? ".png" : ".gif";
-    String path = String(FS_ICONS_PATH) + "/" + saveName + ext;
-
-    File file = LittleFS.open(path, "w");
-    if (!file) {
-        Serial.printf("[LAMETRIC] Failed to create file: %s\n", path.c_str());
-        https.end();
-        return false;
-    }
-
-    // Stream response to file
-    WiFiClient* stream = https.getStreamPtr();
-    uint8_t buffer[256];
-    size_t totalWritten = 0;
-
-    while (https.connected() && (contentLength > 0 || contentLength == -1)) {
-        size_t available = stream->available();
-        if (available) {
-            size_t toRead = min(available, sizeof(buffer));
-            size_t bytesRead = stream->readBytes(buffer, toRead);
-            file.write(buffer, bytesRead);
-            totalWritten += bytesRead;
-            if (contentLength > 0) {
-                contentLength -= bytesRead;
-            }
-        } else {
-            delay(1);
+        // A negative code means the request never reached LaMetric, so the other extension
+        // would fail the same way.
+        if (httpCode < 0)
+        {
+            return LAMETRIC_DOWNLOAD_UPSTREAM_FAILED;
         }
     }
 
+    if (httpCode != HTTP_CODE_OK)
+    {
+        return LAMETRIC_DOWNLOAD_UPSTREAM_FAILED;
+    }
+
+    const bool isPng = (attempt == 0);
+
+    // Check file size
+    if (https.getSize() > MAX_ICON_SIZE)
+    {
+        Serial.printf("[LAMETRIC] Icon declared too large: %d bytes\n", https.getSize());
+        https.end();
+        return LAMETRIC_DOWNLOAD_UPSTREAM_FAILED;
+    }
+
+    String path = String(FS_ICONS_PATH) + "/" + saveName + ICON_EXTENSIONS[attempt];
+
+    File file = LittleFS.open(path, "w");
+    if (!file)
+    {
+        Serial.printf("[LAMETRIC] Failed to create file: %s\n", path.c_str());
+        https.end();
+        return LAMETRIC_DOWNLOAD_LOCAL_FAILED;
+    }
+
+    size_t totalWritten = 0;
+    const LaMetricDownloadResult writeResult = writeLaMetricIconBody(https, file, isPng, downloadStart, totalWritten);
+
     file.close();
     https.end();
+
+    if (writeResult != LAMETRIC_DOWNLOAD_OK)
+    {
+        LittleFS.remove(path);
+        return writeResult;
+    }
 
     Serial.printf("[LAMETRIC] Downloaded icon %d as %s (%d bytes)\n", iconId, path.c_str(), totalWritten);
 
     // Invalidate cache if icon with same name was cached
     invalidateCachedIcon(saveName);
 
-    return true;
+    return LAMETRIC_DOWNLOAD_OK;
+}
+
+LaMetricDownloadResult downloadLaMetricIcon(uint32_t iconId, const char* saveName)
+{
+    // A TLS fetch cannot fit in the 5 s the task watchdog allows, so the calling task leaves
+    // the watchdog while the download bounds the work with its own timeouts and deadline.
+    const bool taskWasWatched = (esp_task_wdt_delete(NULL) == ESP_OK);
+
+    const LaMetricDownloadResult result = downloadLaMetricIconWithinBudget(iconId, saveName);
+
+    if (taskWasWatched)
+    {
+        esp_task_wdt_add(NULL);
+    }
+
+    return result;
 }
 
 void handleApiIconsList(AsyncWebServerRequest *request) {
@@ -6226,10 +6334,13 @@ void setupWebServer() {
 
             Serial.printf("[API] LaMetric download request: id=%d, name=%s\n", iconId, name.c_str());
 
-            if (downloadLaMetricIcon(iconId, name.c_str())) {
+            LaMetricDownloadResult result = downloadLaMetricIcon(iconId, name.c_str());
+            if (result == LAMETRIC_DOWNLOAD_OK) {
                 request->send(200, "application/json", "{\"success\":true}");
+            } else if (result == LAMETRIC_DOWNLOAD_UPSTREAM_FAILED) {
+                request->send(502, "application/json", "{\"error\":\"LaMetric did not return the icon\"}");
             } else {
-                request->send(500, "application/json", "{\"error\":\"Failed to download icon from LaMetric\"}");
+                request->send(500, "application/json", "{\"error\":\"Failed to save the icon\"}");
             }
         });
     webServer.addHandler(lametricHandler);

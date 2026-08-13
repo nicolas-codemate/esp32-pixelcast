@@ -142,6 +142,25 @@
 #ifndef MAX_ICON_DIMENSION
     #define MAX_ICON_DIMENSION 64       // Max 64x64 pixels
 #endif
+#define LAMETRIC_API_HOST "developer.lametric.com"
+#define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"
+// The download runs on the async_tcp task, which the task watchdog panics after 5 s, and
+// nothing in HTTPClient bounds the TLS handshake (its default is 120 s) or the body.
+#ifndef LAMETRIC_CONNECT_TIMEOUT
+    #define LAMETRIC_CONNECT_TIMEOUT 4000            // ms, TCP connect
+#endif
+#ifndef LAMETRIC_READ_TIMEOUT
+    #define LAMETRIC_READ_TIMEOUT 4000               // ms, per socket read
+#endif
+#ifndef LAMETRIC_HANDSHAKE_TIMEOUT_SECONDS
+    #define LAMETRIC_HANDSHAKE_TIMEOUT_SECONDS 5     // TLS handshake
+#endif
+// Checked before each attempt and on every streaming iteration. It does not interrupt a
+// blocking phase already under way: those are bounded by the three timeouts above, except
+// the DNS lookup, which the network stack caps at its own 15 s.
+#ifndef LAMETRIC_DOWNLOAD_BUDGET
+    #define LAMETRIC_DOWNLOAD_BUDGET 15000           // ms, whole download, both attempts
+#endif
 
 // ============================================================================
 // Tracker Layout
@@ -156,22 +175,6 @@
 #endif
 #define TRACKER_CHART_COLUMNS 63
 #define TRACKER_ID_PREFIX "tracker_"
-#define LAMETRIC_API_HOST "developer.lametric.com"
-#define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"
-// The download runs on the async_tcp task, which the task watchdog panics after 5 s, and
-// nothing in HTTPClient bounds the TLS handshake (its default is 120 s) or the body.
-#ifndef LAMETRIC_CONNECT_TIMEOUT
-    #define LAMETRIC_CONNECT_TIMEOUT 4000    // ms, TCP connect
-#endif
-#ifndef LAMETRIC_READ_TIMEOUT
-    #define LAMETRIC_READ_TIMEOUT 4000       // ms, per socket read
-#endif
-#ifndef LAMETRIC_HANDSHAKE_TIMEOUT
-    #define LAMETRIC_HANDSHAKE_TIMEOUT 5     // seconds, TLS handshake
-#endif
-#ifndef LAMETRIC_DOWNLOAD_BUDGET
-    #define LAMETRIC_DOWNLOAD_BUDGET 15000   // ms, whole download, both attempts
-#endif
 
 // ============================================================================
 // Gauge Layout

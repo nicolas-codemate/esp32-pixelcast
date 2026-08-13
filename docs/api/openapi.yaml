@@ -1214,9 +1214,9 @@ paths:
       summary: Download icon from LaMetric
       description: >
         Downloads an icon from the LaMetric icon database and saves it to
-        the device filesystem. The download is bounded by connect, read and
-        handshake timeouts and by an overall budget, so a slow or unreachable
-        LaMetric ends as an error response instead of restarting the device.
+        the device filesystem. A slow or unreachable LaMetric ends as a 502
+        instead of restarting the device, so the request may take a few tens
+        of seconds before it fails.
       tags: [Icons]
       requestBody:
         required: true

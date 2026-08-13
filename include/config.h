@@ -158,6 +158,20 @@
 #define TRACKER_ID_PREFIX "tracker_"
 #define LAMETRIC_API_HOST "developer.lametric.com"
 #define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"
+// The download runs on the async_tcp task, which the task watchdog panics after 5 s, and
+// nothing in HTTPClient bounds the TLS handshake (its default is 120 s) or the body.
+#ifndef LAMETRIC_CONNECT_TIMEOUT
+    #define LAMETRIC_CONNECT_TIMEOUT 4000    // ms, TCP connect
+#endif
+#ifndef LAMETRIC_READ_TIMEOUT
+    #define LAMETRIC_READ_TIMEOUT 4000       // ms, per socket read
+#endif
+#ifndef LAMETRIC_HANDSHAKE_TIMEOUT
+    #define LAMETRIC_HANDSHAKE_TIMEOUT 5     // seconds, TLS handshake
+#endif
+#ifndef LAMETRIC_DOWNLOAD_BUDGET
+    #define LAMETRIC_DOWNLOAD_BUDGET 15000   // ms, whole download, both attempts
+#endif
 
 // ============================================================================
 // Gauge Layout

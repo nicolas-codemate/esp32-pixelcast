@@ -182,7 +182,8 @@ enum LaMetricDownloadResult : uint8_t {
 enum IconDecodeResult : uint8_t {
     ICON_DECODE_OK = 0,
     ICON_DECODE_FAILED = 1,     // The file itself is not decodable
-    ICON_DECODE_NO_MEMORY = 2   // No verdict on the file, do not blacklist
+    ICON_DECODE_NO_MEMORY = 2,  // No verdict on the file, do not blacklist
+    ICON_DECODE_NOT_FOUND = 3   // No .png and no .gif under that name
 };
 
 // Failed icon load blacklist: a download or decode failure must not be retried every
@@ -4708,6 +4709,13 @@ void printLabelWithSegments(const char* text, int16_t x, int16_t y,
 // Icon Functions
 // ============================================================================
 
+#define ICON_DECODED_EXTENSION ".565"
+#define ICON_DECODED_MAGIC "P565"
+#define ICON_DECODED_HEADER_SIZE 8
+// Bump whenever the pixel packing or MAX_ICON_DIMENSION changes: the reader then discards
+// every file written by an older firmware and the source image is decoded once more.
+#define ICON_DECODED_FORMAT_VERSION 1
+
 void initIconCache() {
     for (uint8_t i = 0; i < MAX_ICON_CACHE; i++) {
         iconCache[i].name[0] = '\0';
@@ -4913,46 +4921,174 @@ static IconDecodeResult decodeGifIntoBuffer(uint8_t* fileBuffer, size_t fileSize
     return result;
 }
 
-CachedIcon* loadIcon(const char* name) {
-    if (!name || strlen(name) == 0) return nullptr;
-    if (!filesystemReady) return nullptr;
-    if (isFailedIconLoad(name)) return nullptr;
+static void buildDecodedIconPath(char* path, size_t pathSize, const char* name)
+{
+    snprintf(path, pathSize, "%s/%s" ICON_DECODED_EXTENSION, FS_ICONS_PATH, name);
+}
 
-    // Build file path
+static void removeDecodedIconFile(const char* name)
+{
+    char path[64];
+    buildDecodedIconPath(path, sizeof(path), name);
+
+    if (LittleFS.exists(path) && LittleFS.remove(path))
+    {
+        Serial.printf("[ICON] Discarded decoded copy: %s\n", name);
+    }
+}
+
+static bool writeDecodedIconFile(const char* name, const uint16_t* pixels,
+                                 uint8_t width, uint8_t height)
+{
+    char path[64];
+    buildDecodedIconPath(path, sizeof(path), name);
+
+    File file = LittleFS.open(path, "w");
+    if (!file)
+    {
+        Serial.printf("[ICON] Failed to write the decoded copy, filesystem may be full: %s\n", name);
+        return false;
+    }
+
+    uint8_t header[ICON_DECODED_HEADER_SIZE];
+    memcpy(header, ICON_DECODED_MAGIC, 4);
+    header[4] = ICON_DECODED_FORMAT_VERSION;
+    header[5] = width;
+    header[6] = height;
+    header[7] = 0;
+
+    const size_t pixelBytes = (size_t)width * height * sizeof(uint16_t);
+    const bool fullyWritten = file.write(header, sizeof(header)) == sizeof(header) &&
+                              file.write((const uint8_t*)pixels, pixelBytes) == pixelBytes;
+    file.close();
+
+    if (!fullyWritten)
+    {
+        LittleFS.remove(path);
+        Serial.printf("[ICON] Failed to write the decoded copy, filesystem may be full: %s\n", name);
+        return false;
+    }
+
+    return true;
+}
+
+static bool readDecodedIconFile(const char* name, uint16_t** outPixels,
+                                uint8_t* outWidth, uint8_t* outHeight)
+{
+    *outPixels = nullptr;
+    *outWidth = 0;
+    *outHeight = 0;
+
+    char path[64];
+    buildDecodedIconPath(path, sizeof(path), name);
+
+    if (!LittleFS.exists(path)) return false;
+
+    File file = LittleFS.open(path, "r");
+    if (!file) return false;
+
+    const size_t fileSize = file.size();
+    uint8_t header[ICON_DECODED_HEADER_SIZE];
+    const char* rejectionReason = nullptr;
+
+    if (fileSize < ICON_DECODED_HEADER_SIZE)
+        rejectionReason = "too short";
+    else if (file.read(header, sizeof(header)) != sizeof(header))
+        rejectionReason = "header unreadable";
+    else if (memcmp(header, ICON_DECODED_MAGIC, 4) != 0)
+        rejectionReason = "wrong magic";
+    else if (header[4] != ICON_DECODED_FORMAT_VERSION)
+        rejectionReason = "older format version";
+    else if (header[7] != 0)
+        rejectionReason = "reserved byte not zero";
+    else if (header[5] < 1 || header[5] > MAX_ICON_DIMENSION ||
+             header[6] < 1 || header[6] > MAX_ICON_DIMENSION)
+        rejectionReason = "dimensions out of range";
+    else if (fileSize != ICON_DECODED_HEADER_SIZE + (size_t)header[5] * header[6] * sizeof(uint16_t))
+        rejectionReason = "size does not match its dimensions";
+
+    if (rejectionReason)
+    {
+        file.close();
+        removeDecodedIconFile(name);
+        Serial.printf("[ICON] Decoded copy rejected (%s): %s\n", rejectionReason, name);
+        return false;
+    }
+
+    const uint8_t width = header[5];
+    const uint8_t height = header[6];
+    const size_t pixelBytes = (size_t)width * height * sizeof(uint16_t);
+
+    uint16_t* pixels = (uint16_t*)malloc(pixelBytes);
+    if (!pixels)
+    {
+        // No memory says nothing about the file, so it is kept for the next attempt
+        file.close();
+        Serial.println("[ICON] Failed to allocate pixel buffer");
+        return false;
+    }
+
+    const size_t bytesRead = file.read((uint8_t*)pixels, pixelBytes);
+    file.close();
+
+    if (bytesRead != pixelBytes)
+    {
+        free(pixels);
+        removeDecodedIconFile(name);
+        Serial.printf("[ICON] Decoded copy rejected (pixels unreadable): %s\n", name);
+        return false;
+    }
+
+    *outPixels = pixels;
+    *outWidth = width;
+    *outHeight = height;
+    return true;
+}
+
+static IconDecodeResult decodeIconSourceFile(const char* name, uint16_t** outPixels,
+                                             uint8_t* outWidth, uint8_t* outHeight)
+{
+    *outPixels = nullptr;
+    *outWidth = 0;
+    *outHeight = 0;
+
     char filePath[64];
     snprintf(filePath, sizeof(filePath), "%s/%s.png", FS_ICONS_PATH, name);
     bool isGif = false;
 
-    if (!LittleFS.exists(filePath)) {
+    if (!LittleFS.exists(filePath))
+    {
         snprintf(filePath, sizeof(filePath), "%s/%s.gif", FS_ICONS_PATH, name);
-        if (!LittleFS.exists(filePath)) {
+        if (!LittleFS.exists(filePath))
+        {
             Serial.printf("[ICON] File not found: %s/%s (.png or .gif)\n", FS_ICONS_PATH, name);
-            return nullptr;
+            return ICON_DECODE_NOT_FOUND;
         }
         isGif = true;
     }
 
-    // Open file
     File file = LittleFS.open(filePath, "r");
-    if (!file) {
+    if (!file)
+    {
         Serial.printf("[ICON] Failed to open: %s\n", filePath);
-        return nullptr;
+        return ICON_DECODE_NOT_FOUND;
     }
 
-    // Read file into buffer
     size_t fileSize = file.size();
-    if (isGif && (fileSize == 0 || fileSize > MAX_ICON_SIZE)) {
+    if (isGif && (fileSize == 0 || fileSize > MAX_ICON_SIZE))
+    {
         file.close();
-        addFailedIconLoad(name);
         Serial.printf("[ICON] GIF size out of range: %s (%u bytes)\n",
                       filePath, (unsigned)fileSize);
-        return nullptr;
+        return ICON_DECODE_FAILED;
     }
+
     uint8_t* fileBuffer = (uint8_t*)malloc(fileSize);
-    if (!fileBuffer) {
+    if (!fileBuffer)
+    {
         file.close();
         Serial.println("[ICON] Failed to allocate file buffer");
-        return nullptr;
+        return ICON_DECODE_NO_MEMORY;
     }
     file.read(fileBuffer, fileSize);
     file.close();
@@ -4964,72 +5100,112 @@ CachedIcon* loadIcon(const char* name) {
     uint32_t imageWidth = 0;
     uint32_t imageHeight = 0;
 
-    if (isGif) {
-        if (fileSize >= 10 && validateGifHeader(fileBuffer, fileSize)) {
+    if (isGif)
+    {
+        if (fileSize >= 10 && validateGifHeader(fileBuffer, fileSize))
+        {
             imageWidth = readLittleEndianUint16(fileBuffer + 6);
             imageHeight = readLittleEndianUint16(fileBuffer + 8);
         }
-    } else {
+    }
+    else
+    {
         if (fileSize >= 24 && validatePngHeader(fileBuffer, fileSize) &&
-            memcmp(fileBuffer + 12, "IHDR", 4) == 0) {
+            memcmp(fileBuffer + 12, "IHDR", 4) == 0)
+        {
             imageWidth = readBigEndianUint32(fileBuffer + 16);
             imageHeight = readBigEndianUint32(fileBuffer + 20);
         }
     }
 
-    if (imageWidth == 0 || imageHeight == 0) {
+    if (imageWidth == 0 || imageHeight == 0)
+    {
         free(fileBuffer);
-        addFailedIconLoad(name);
         Serial.printf("[ICON] Not a decodable %s: %s\n", isGif ? "GIF" : "PNG", filePath);
-        return nullptr;
+        return ICON_DECODE_FAILED;
     }
 
-    // Limit to 32x32 to preserve RAM
-    uint8_t width = min((int)imageWidth, 32);
-    uint8_t height = min((int)imageHeight, 32);
+    uint8_t width = min((int)imageWidth, MAX_ICON_DIMENSION);
+    uint8_t height = min((int)imageHeight, MAX_ICON_DIMENSION);
 
-    // Find a cache slot only once the file is known to be usable: the slot is taken by evicting
-    // whatever icon holds it, so an earlier failure would throw away a live entry for nothing
-    int8_t slot = findLRUSlot();
-    if (slot < 0) {
+    uint16_t* pixels = (uint16_t*)malloc((size_t)width * height * sizeof(uint16_t));
+    if (!pixels)
+    {
         free(fileBuffer);
+        Serial.println("[ICON] Failed to allocate pixel buffer");
+        return ICON_DECODE_NO_MEMORY;
+    }
+
+    IconDecodeResult decodeResult = isGif
+        ? decodeGifIntoBuffer(fileBuffer, fileSize, pixels, width, height)
+        : decodePngIntoBuffer(fileBuffer, fileSize, pixels, width, height);
+
+    free(fileBuffer);
+
+    if (decodeResult != ICON_DECODE_OK)
+    {
+        free(pixels);
+        return decodeResult;
+    }
+
+    *outPixels = pixels;
+    *outWidth = width;
+    *outHeight = height;
+    return ICON_DECODE_OK;
+}
+
+CachedIcon* loadIcon(const char* name)
+{
+    if (!name || strlen(name) == 0) return nullptr;
+    if (!filesystemReady) return nullptr;
+    if (isFailedIconLoad(name)) return nullptr;
+
+    uint16_t* pixels = nullptr;
+    uint8_t width = 0;
+    uint8_t height = 0;
+
+    const bool loadedFromDecodedFile = readDecodedIconFile(name, &pixels, &width, &height);
+
+    if (!loadedFromDecodedFile)
+    {
+        const IconDecodeResult decodeResult = decodeIconSourceFile(name, &pixels, &width, &height);
+        if (decodeResult != ICON_DECODE_OK)
+        {
+            if (decodeResult == ICON_DECODE_FAILED)
+            {
+                addFailedIconLoad(name);
+            }
+            return nullptr;
+        }
+    }
+
+    // Find a cache slot only once the pixels exist: the slot is taken by evicting whatever icon
+    // holds it, so an earlier failure would throw away a live entry for nothing
+    int8_t slot = findLRUSlot();
+    if (slot < 0)
+    {
+        free(pixels);
         Serial.println("[ICON] No cache slots available");
         return nullptr;
     }
 
     CachedIcon* cached = &iconCache[slot];
-
-    // Allocate pixel buffer
-    cached->pixels = (uint16_t*)malloc(width * height * sizeof(uint16_t));
-    if (!cached->pixels) {
-        free(fileBuffer);
-        Serial.println("[ICON] Failed to allocate pixel buffer");
-        return nullptr;
-    }
-
-    IconDecodeResult decodeResult = isGif
-        ? decodeGifIntoBuffer(fileBuffer, fileSize, cached->pixels, width, height)
-        : decodePngIntoBuffer(fileBuffer, fileSize, cached->pixels, width, height);
-
-    free(fileBuffer);
-
-    if (decodeResult != ICON_DECODE_OK) {
-        free(cached->pixels);
-        cached->pixels = nullptr;
-        if (decodeResult == ICON_DECODE_FAILED) {
-            addFailedIconLoad(name);
-        }
-        return nullptr;
-    }
-
-    // Update cache entry
+    cached->pixels = pixels;
     strlcpy(cached->name, name, sizeof(cached->name));
     cached->width = width;
     cached->height = height;
     cached->valid = true;
     cached->lastUsed = millis();
 
-    Serial.printf("[ICON] Loaded: %s (%dx%d)\n", name, width, height);
+    if (!loadedFromDecodedFile)
+    {
+        // The file buffer and the decoder workspace are both gone by now, so the write never
+        // competes with them for heap
+        writeDecodedIconFile(name, pixels, width, height);
+    }
+
+    Serial.printf("[ICON] Loaded: %s (%dx%d) from %s\n", name, width, height,
+                  loadedFromDecodedFile ? "decoded copy" : "source image");
     return cached;
 }
 

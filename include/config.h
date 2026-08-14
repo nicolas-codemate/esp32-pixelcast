@@ -140,7 +140,7 @@
     #define MAX_ICON_SIZE 8192          // 8KB max per icon
 #endif
 #ifndef MAX_ICON_DIMENSION
-    #define MAX_ICON_DIMENSION 64       // Max 64x64 pixels
+    #define MAX_ICON_DIMENSION 32       // Icons are clamped to this on load, to preserve RAM
 #endif
 #define LAMETRIC_API_HOST "developer.lametric.com"
 #define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"

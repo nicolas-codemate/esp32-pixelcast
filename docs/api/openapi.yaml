@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ESP32-PixelCast REST API
-  version: 1.9.5
+  version: 1.9.6
   description: >
     REST API for controlling a HUB75 LED matrix panel (64x64) running on
     ESP32 Trinity. Manages custom apps, notifications, weather, trackers,
@@ -1098,6 +1098,10 @@ paths:
     get:
       operationId: listIcons
       summary: List all icons on filesystem
+      description: >
+        Lists the uploaded images only. The device also keeps a decoded copy
+        of each icon next to it, which is roughly the size of the image again
+        and is counted in `storage.used` without appearing in `icons`.
       tags: [Icons]
       responses:
         "200":
@@ -1113,7 +1117,9 @@ paths:
         Upload a PNG or GIF icon to the device filesystem. Recommended
         sizes: 8x8 or 16x16 pixels. Both formats are drawn on the panel; a GIF
         shows only its first stored frame, which on an animated icon can be
-        nearly blank.
+        nearly blank. The device decodes the image once when it lands and
+        keeps the decoded pixels alongside it, so an icon costs about twice
+        its file size on the filesystem.
       tags: [Icons]
       parameters:
         - name: name

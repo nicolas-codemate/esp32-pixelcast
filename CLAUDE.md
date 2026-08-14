@@ -69,7 +69,7 @@ From CONTRIBUTING.md:
 ## Filesystem Structure
 
 The `data/` directory is uploaded to LittleFS:
-- `icons/` - PNG/GIF icons (8x8 to 64x64)
+- `icons/` - PNG/GIF icons (8x8 to 32x32; larger images are clamped on load)
 - `gifs/` - Animated GIFs
 - `config/settings.json` - Runtime configuration
 

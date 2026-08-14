@@ -24,10 +24,10 @@
     #define VERSION_MINOR 9
 #endif
 #ifndef VERSION_PATCH
-    #define VERSION_PATCH 5
+    #define VERSION_PATCH 6
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.9.5"
+    #define VERSION_STRING "1.9.6"
 #endif
 
 // ============================================================================
@@ -140,7 +140,7 @@
     #define MAX_ICON_SIZE 8192          // 8KB max per icon
 #endif
 #ifndef MAX_ICON_DIMENSION
-    #define MAX_ICON_DIMENSION 64       // Max 64x64 pixels
+    #define MAX_ICON_DIMENSION 32       // Icons are clamped to this on load, to preserve RAM
 #endif
 #define LAMETRIC_API_HOST "developer.lametric.com"
 #define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"

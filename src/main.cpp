@@ -5154,6 +5154,23 @@ static IconDecodeResult decodeIconSourceFile(const char* name, uint16_t** outPix
     return ICON_DECODE_OK;
 }
 
+static void convertIconToDecodedFile(const char* name)
+{
+    uint16_t* pixels = nullptr;
+    uint8_t width = 0;
+    uint8_t height = 0;
+
+    const IconDecodeResult result = decodeIconSourceFile(name, &pixels, &width, &height);
+    if (result != ICON_DECODE_OK)
+    {
+        Serial.printf("[ICON] Not converted now, will be decoded on first use: %s\n", name);
+        return;
+    }
+
+    writeDecodedIconFile(name, pixels, width, height);
+    free(pixels);
+}
+
 CachedIcon* loadIcon(const char* name)
 {
     if (!name || strlen(name) == 0) return nullptr;
@@ -5532,6 +5549,8 @@ static LaMetricDownloadResult downloadLaMetricIconWithinBudget(uint32_t iconId, 
         return LAMETRIC_DOWNLOAD_LOCAL_FAILED;
     }
 
+    removeDecodedIconFile(saveName);
+
     size_t totalWritten = 0;
     const LaMetricDownloadResult writeResult = writeLaMetricIconBody(https, file, isPng, downloadStart, totalWritten);
 
@@ -5548,6 +5567,7 @@ static LaMetricDownloadResult downloadLaMetricIconWithinBudget(uint32_t iconId, 
 
     // Invalidate cache if icon with same name was cached
     invalidateCachedIcon(saveName);
+    convertIconToDecodedFile(saveName);
 
     return LAMETRIC_DOWNLOAD_OK;
 }
@@ -5577,19 +5597,23 @@ void handleApiIconsList(AsyncWebServerRequest *request) {
         File file = root.openNextFile();
         while (file) {
             if (!file.isDirectory()) {
-                JsonObject obj = icons.add<JsonObject>();
                 String filename = String(file.name());
                 // Remove path prefix if present
                 int lastSlash = filename.lastIndexOf('/');
                 if (lastSlash >= 0) {
                     filename = filename.substring(lastSlash + 1);
                 }
-                // Remove extension for the name
-                int lastDot = filename.lastIndexOf('.');
-                String name = lastDot > 0 ? filename.substring(0, lastDot) : filename;
-                obj["name"] = name;
-                obj["filename"] = filename;
-                obj["size"] = file.size();
+
+                // The decoded copy is derived data, not an icon a client can ask for
+                if (!filename.endsWith(ICON_DECODED_EXTENSION)) {
+                    JsonObject obj = icons.add<JsonObject>();
+                    // Remove extension for the name
+                    int lastDot = filename.lastIndexOf('.');
+                    String name = lastDot > 0 ? filename.substring(0, lastDot) : filename;
+                    obj["name"] = name;
+                    obj["filename"] = filename;
+                    obj["size"] = file.size();
+                }
             }
             file = root.openNextFile();
         }
@@ -5630,16 +5654,19 @@ void handleApiIconsDelete(AsyncWebServerRequest *request) {
     // Invalidate cache first
     invalidateCachedIcon(name.c_str());
 
-    // Try to delete PNG or GIF
     String pngPath = String(FS_ICONS_PATH) + "/" + name + ".png";
     String gifPath = String(FS_ICONS_PATH) + "/" + name + ".gif";
 
+    // A name can hold both a .png and a .gif, and leaving one behind would let the icon come
+    // back on its next display
     bool deleted = false;
     if (LittleFS.exists(pngPath)) {
-        deleted = LittleFS.remove(pngPath);
-    } else if (LittleFS.exists(gifPath)) {
-        deleted = LittleFS.remove(gifPath);
+        deleted = LittleFS.remove(pngPath) || deleted;
     }
+    if (LittleFS.exists(gifPath)) {
+        deleted = LittleFS.remove(gifPath) || deleted;
+    }
+    removeDecodedIconFile(name.c_str());
 
     if (deleted) {
         Serial.printf("[ICON] Deleted: %s\n", name.c_str());
@@ -6688,6 +6715,7 @@ void setupWebServer() {
                     if (LittleFS.exists(path)) {
                         LittleFS.remove(path);
                     }
+                    removeDecodedIconFile(uploadIconName.c_str());
                 }
                 request->send(400, "application/json", "{\"error\":\"Upload failed - invalid file format or size\"}");
             }
@@ -6733,6 +6761,8 @@ void setupWebServer() {
                 }
 
                 uploadValid = true;
+                // The source file is being replaced from here on, so its decoded copy is stale
+                removeDecodedIconFile(uploadIconName.c_str());
                 Serial.printf("[ICON] Upload started: %s\n", path.c_str());
             }
 
@@ -6756,6 +6786,7 @@ void setupWebServer() {
                 if (uploadValid) {
                     // Invalidate cached icon
                     invalidateCachedIcon(uploadIconName.c_str());
+                    convertIconToDecodedFile(uploadIconName.c_str());
                 }
             }
         }

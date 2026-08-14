@@ -4709,11 +4709,15 @@ void printLabelWithSegments(const char* text, int16_t x, int16_t y,
 // Icon Functions
 // ============================================================================
 
+// The extensions an icon source image can carry, in the order a name resolves to one
+static const char* const ICON_EXTENSIONS[] = { ".png", ".gif" };
+
 #define ICON_DECODED_EXTENSION ".565"
 #define ICON_DECODED_MAGIC "P565"
 #define ICON_DECODED_HEADER_SIZE 8
-// Bump whenever the pixel packing or MAX_ICON_DIMENSION changes: the reader then discards
-// every file written by an older firmware and the source image is decoded once more.
+// Bump whenever the pixel packing changes: the reader then discards every file written by an
+// older firmware and the source image is decoded once more. A change to MAX_ICON_DIMENSION
+// needs no bump, it is stamped in the header and checked on read.
 #define ICON_DECODED_FORMAT_VERSION 1
 
 void initIconCache() {
@@ -4921,15 +4925,24 @@ static IconDecodeResult decodeGifIntoBuffer(uint8_t* fileBuffer, size_t fileSize
     return result;
 }
 
-static void buildDecodedIconPath(char* path, size_t pathSize, const char* name)
+static void buildIconPath(char* path, size_t pathSize, const char* name, const char* extension)
 {
-    snprintf(path, pathSize, "%s/%s" ICON_DECODED_EXTENSION, FS_ICONS_PATH, name);
+    snprintf(path, pathSize, "%s/%s%s", FS_ICONS_PATH, name, extension);
+}
+
+static bool isDecodedIconFileName(const char* filename)
+{
+    const size_t nameLength = strlen(filename);
+    const size_t extensionLength = strlen(ICON_DECODED_EXTENSION);
+
+    return nameLength >= extensionLength &&
+           strcmp(filename + nameLength - extensionLength, ICON_DECODED_EXTENSION) == 0;
 }
 
 static void removeDecodedIconFile(const char* name)
 {
     char path[64];
-    buildDecodedIconPath(path, sizeof(path), name);
+    buildIconPath(path, sizeof(path), name, ICON_DECODED_EXTENSION);
 
     if (LittleFS.exists(path) && LittleFS.remove(path))
     {
@@ -4937,39 +4950,56 @@ static void removeDecodedIconFile(const char* name)
     }
 }
 
-static bool writeDecodedIconFile(const char* name, const uint16_t* pixels,
+// Returns whether a source image was removed: an orphan decoded copy is cleaned up too, but it
+// is not an icon, so it must not make a delete look successful
+static bool removeIconSourceFiles(const char* name)
+{
+    bool removedSourceFile = false;
+
+    for (const char* extension : ICON_EXTENSIONS)
+    {
+        char path[64];
+        buildIconPath(path, sizeof(path), name, extension);
+
+        if (LittleFS.exists(path) && LittleFS.remove(path))
+        {
+            removedSourceFile = true;
+        }
+    }
+
+    removeDecodedIconFile(name);
+    return removedSourceFile;
+}
+
+static void writeDecodedIconFile(const char* name, const uint16_t* pixels,
                                  uint8_t width, uint8_t height)
 {
     char path[64];
-    buildDecodedIconPath(path, sizeof(path), name);
+    buildIconPath(path, sizeof(path), name, ICON_DECODED_EXTENSION);
 
     File file = LittleFS.open(path, "w");
-    if (!file)
+    bool fullyWritten = false;
+
+    if (file)
     {
-        Serial.printf("[ICON] Failed to write the decoded copy, filesystem may be full: %s\n", name);
-        return false;
+        uint8_t header[ICON_DECODED_HEADER_SIZE];
+        memcpy(header, ICON_DECODED_MAGIC, 4);
+        header[4] = ICON_DECODED_FORMAT_VERSION;
+        header[5] = width;
+        header[6] = height;
+        header[7] = MAX_ICON_DIMENSION;
+
+        const size_t pixelBytes = (size_t)width * height * sizeof(uint16_t);
+        fullyWritten = file.write(header, sizeof(header)) == sizeof(header) &&
+                       file.write((const uint8_t*)pixels, pixelBytes) == pixelBytes;
+        file.close();
     }
-
-    uint8_t header[ICON_DECODED_HEADER_SIZE];
-    memcpy(header, ICON_DECODED_MAGIC, 4);
-    header[4] = ICON_DECODED_FORMAT_VERSION;
-    header[5] = width;
-    header[6] = height;
-    header[7] = 0;
-
-    const size_t pixelBytes = (size_t)width * height * sizeof(uint16_t);
-    const bool fullyWritten = file.write(header, sizeof(header)) == sizeof(header) &&
-                              file.write((const uint8_t*)pixels, pixelBytes) == pixelBytes;
-    file.close();
 
     if (!fullyWritten)
     {
         LittleFS.remove(path);
         Serial.printf("[ICON] Failed to write the decoded copy, filesystem may be full: %s\n", name);
-        return false;
     }
-
-    return true;
 }
 
 static bool readDecodedIconFile(const char* name, uint16_t** outPixels,
@@ -4980,9 +5010,7 @@ static bool readDecodedIconFile(const char* name, uint16_t** outPixels,
     *outHeight = 0;
 
     char path[64];
-    buildDecodedIconPath(path, sizeof(path), name);
-
-    if (!LittleFS.exists(path)) return false;
+    buildIconPath(path, sizeof(path), name, ICON_DECODED_EXTENSION);
 
     File file = LittleFS.open(path, "r");
     if (!file) return false;
@@ -4999,49 +5027,49 @@ static bool readDecodedIconFile(const char* name, uint16_t** outPixels,
         rejectionReason = "wrong magic";
     else if (header[4] != ICON_DECODED_FORMAT_VERSION)
         rejectionReason = "older format version";
-    else if (header[7] != 0)
-        rejectionReason = "reserved byte not zero";
+    else if (header[7] != MAX_ICON_DIMENSION)
+        rejectionReason = "written under a different dimension clamp";
     else if (header[5] < 1 || header[5] > MAX_ICON_DIMENSION ||
              header[6] < 1 || header[6] > MAX_ICON_DIMENSION)
         rejectionReason = "dimensions out of range";
     else if (fileSize != ICON_DECODED_HEADER_SIZE + (size_t)header[5] * header[6] * sizeof(uint16_t))
         rejectionReason = "size does not match its dimensions";
 
+    uint16_t* pixels = nullptr;
+
+    if (!rejectionReason)
+    {
+        const size_t pixelBytes = (size_t)header[5] * header[6] * sizeof(uint16_t);
+
+        pixels = (uint16_t*)malloc(pixelBytes);
+        if (!pixels)
+        {
+            // No memory says nothing about the file, so it is kept for the next attempt
+            file.close();
+            Serial.println("[ICON] Failed to allocate pixel buffer");
+            return false;
+        }
+
+        if (file.read((uint8_t*)pixels, pixelBytes) != pixelBytes)
+        {
+            free(pixels);
+            pixels = nullptr;
+            rejectionReason = "pixels unreadable";
+        }
+    }
+
+    file.close();
+
     if (rejectionReason)
     {
-        file.close();
-        removeDecodedIconFile(name);
+        LittleFS.remove(path);
         Serial.printf("[ICON] Decoded copy rejected (%s): %s\n", rejectionReason, name);
         return false;
     }
 
-    const uint8_t width = header[5];
-    const uint8_t height = header[6];
-    const size_t pixelBytes = (size_t)width * height * sizeof(uint16_t);
-
-    uint16_t* pixels = (uint16_t*)malloc(pixelBytes);
-    if (!pixels)
-    {
-        // No memory says nothing about the file, so it is kept for the next attempt
-        file.close();
-        Serial.println("[ICON] Failed to allocate pixel buffer");
-        return false;
-    }
-
-    const size_t bytesRead = file.read((uint8_t*)pixels, pixelBytes);
-    file.close();
-
-    if (bytesRead != pixelBytes)
-    {
-        free(pixels);
-        removeDecodedIconFile(name);
-        Serial.printf("[ICON] Decoded copy rejected (pixels unreadable): %s\n", name);
-        return false;
-    }
-
     *outPixels = pixels;
-    *outWidth = width;
-    *outHeight = height;
+    *outWidth = header[5];
+    *outHeight = header[6];
     return true;
 }
 
@@ -5053,12 +5081,12 @@ static IconDecodeResult decodeIconSourceFile(const char* name, uint16_t** outPix
     *outHeight = 0;
 
     char filePath[64];
-    snprintf(filePath, sizeof(filePath), "%s/%s.png", FS_ICONS_PATH, name);
+    buildIconPath(filePath, sizeof(filePath), name, ".png");
     bool isGif = false;
 
     if (!LittleFS.exists(filePath))
     {
-        snprintf(filePath, sizeof(filePath), "%s/%s.gif", FS_ICONS_PATH, name);
+        buildIconPath(filePath, sizeof(filePath), name, ".gif");
         if (!LittleFS.exists(filePath))
         {
             Serial.printf("[ICON] File not found: %s/%s (.png or .gif)\n", FS_ICONS_PATH, name);
@@ -5467,8 +5495,6 @@ static LaMetricDownloadResult writeLaMetricIconBody(HTTPClient& https, File& fil
 
 static LaMetricDownloadResult downloadLaMetricIconWithinBudget(uint32_t iconId, const char* saveName)
 {
-    static const char* const ICON_EXTENSIONS[] = { ".png", ".gif" };
-
     if (!filesystemReady)
     {
         Serial.println("[LAMETRIC] Filesystem not ready");
@@ -5596,24 +5622,21 @@ void handleApiIconsList(AsyncWebServerRequest *request) {
     if (root && root.isDirectory()) {
         File file = root.openNextFile();
         while (file) {
-            if (!file.isDirectory()) {
+            // The decoded copy is derived data, not an icon a client can ask for
+            if (!file.isDirectory() && !isDecodedIconFileName(file.name())) {
                 String filename = String(file.name());
                 // Remove path prefix if present
                 int lastSlash = filename.lastIndexOf('/');
                 if (lastSlash >= 0) {
                     filename = filename.substring(lastSlash + 1);
                 }
-
-                // The decoded copy is derived data, not an icon a client can ask for
-                if (!filename.endsWith(ICON_DECODED_EXTENSION)) {
-                    JsonObject obj = icons.add<JsonObject>();
-                    // Remove extension for the name
-                    int lastDot = filename.lastIndexOf('.');
-                    String name = lastDot > 0 ? filename.substring(0, lastDot) : filename;
-                    obj["name"] = name;
-                    obj["filename"] = filename;
-                    obj["size"] = file.size();
-                }
+                JsonObject obj = icons.add<JsonObject>();
+                // Remove extension for the name
+                int lastDot = filename.lastIndexOf('.');
+                String name = lastDot > 0 ? filename.substring(0, lastDot) : filename;
+                obj["name"] = name;
+                obj["filename"] = filename;
+                obj["size"] = file.size();
             }
             file = root.openNextFile();
         }
@@ -5654,21 +5677,9 @@ void handleApiIconsDelete(AsyncWebServerRequest *request) {
     // Invalidate cache first
     invalidateCachedIcon(name.c_str());
 
-    String pngPath = String(FS_ICONS_PATH) + "/" + name + ".png";
-    String gifPath = String(FS_ICONS_PATH) + "/" + name + ".gif";
-
     // A name can hold both a .png and a .gif, and leaving one behind would let the icon come
     // back on its next display
-    bool deleted = false;
-    if (LittleFS.exists(pngPath)) {
-        deleted = LittleFS.remove(pngPath) || deleted;
-    }
-    if (LittleFS.exists(gifPath)) {
-        deleted = LittleFS.remove(gifPath) || deleted;
-    }
-    removeDecodedIconFile(name.c_str());
-
-    if (deleted) {
+    if (removeIconSourceFiles(name.c_str())) {
         Serial.printf("[ICON] Deleted: %s\n", name.c_str());
         request->send(200, "application/json", "{\"success\":true}");
     } else {
@@ -6707,15 +6718,7 @@ void setupWebServer() {
             } else {
                 // Clean up failed upload
                 if (uploadIconName.length() > 0) {
-                    String path = String(FS_ICONS_PATH) + "/" + uploadIconName + ".png";
-                    if (LittleFS.exists(path)) {
-                        LittleFS.remove(path);
-                    }
-                    path = String(FS_ICONS_PATH) + "/" + uploadIconName + ".gif";
-                    if (LittleFS.exists(path)) {
-                        LittleFS.remove(path);
-                    }
-                    removeDecodedIconFile(uploadIconName.c_str());
+                    removeIconSourceFiles(uploadIconName.c_str());
                 }
                 request->send(400, "application/json", "{\"error\":\"Upload failed - invalid file format or size\"}");
             }

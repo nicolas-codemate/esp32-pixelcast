@@ -38,7 +38,7 @@ pio run -t clean
 
 The firmware follows a single-file architecture (currently in `src/main.cpp`) with planned modular expansion:
 
-- **Display**: ESP32-HUB75-MatrixPanel-DMA driver with double buffering
+- **Display**: ESP32-HUB75-MatrixPanel-DMA driver, single-buffered on `trinity` (`DOUBLE_BUFFER=0`, see the comment on the flag in `platformio.ini`)
 - **Network**: WiFiManager for captive portal config, ESPAsyncWebServer for REST API
 - **MQTT**: PubSubClient for home automation integration
 - **Storage**: LittleFS for icons, GIFs, and configuration

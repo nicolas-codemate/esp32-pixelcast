@@ -45,7 +45,7 @@ This document details the development phases of the ESP32-PixelCast project, fro
 ### 1.2 Display Driver
 - [x] Wrapper around ESP32-HUB75-MatrixPanel-DMA
 - [x] Dynamic configuration (resolution, pins)
-- [x] Double buffering (configurable)
+- [x] Double buffering (configurable, disabled on `trinity`)
 - [x] Brightness control
 - [x] Clear/fill functions
 
@@ -475,25 +475,31 @@ pixelcast/
 ### ESP32 Memory Constraints
 
 ```
-Total SRAM:     ~320 KB
-- System:       ~50 KB
-- WiFi:         ~40 KB
-- DMA buffer:   ~80 KB (64x64 double buffer)
-- Application:  ~100 KB free
+Static RAM (trinity, v1.10.0):  77 624 B of 327 680 (23.7 %)
 
-Application breakdown:
-- App queue:    ~8 KB (16 apps x 512 bytes)
-- Notif queue:  ~2 KB
-- JSON buffer:  ~4 KB
-- Icon cache:   ~16 KB
-- GIF decode:   ~32 KB
-- Web server:   ~8 KB
-- Misc:         ~30 KB
+Largest static consumers:
+- apps:           11 368 B (MAX_APPS=14)
+- trackers:        3 616 B (MAX_TRACKERS=8)
+- notifications:   2 440 B (MAX_NOTIFICATIONS=10)
+- gauges:          1 584 B (MAX_GAUGE_APPS=2)
+
+Allocated from the heap at boot:
+- DMA framebuffer: 32 768 B (64x64, single buffer, colour depth 8)
+- DMA descriptors: one 1024-entry set
+
+Allocated from the heap while running:
+- Icon cache:      8 slots of at most 2 048 B of RGB565 each
+- PNG decoder:     transient, only while an icon source image is decoded
 ```
 
-### Current Build Stats (February 2026)
-- RAM usage: ~37.7% (123 KB / 327 KB)
-- Flash usage: ~78.5% (1.54 MB / 1.96 MB)
+Heap figures need a device. Read on the Trinity on 2026-08-12, single-buffered at colour
+depth 8: free heap after boot about 132 KB, largest allocatable block about 86 KB. Later
+changes have not been measured on hardware, so treat these as that day's readings rather
+than the current state.
+
+### Current Build Stats (v1.10.0, `pio run -e trinity`, August 2026)
+- RAM usage: 23.7% (77 624 B / 327 680 B)
+- Flash usage: 81.6% (1 604 749 B / 1 966 080 B)
 
 ### Development Priorities
 

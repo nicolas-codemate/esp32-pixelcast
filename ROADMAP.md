@@ -499,7 +499,7 @@ than the current state.
 
 ### Current Build Stats (v1.10.0, `pio run -e trinity`, August 2026)
 - RAM usage: 23.7% (77 624 B / 327 680 B)
-- Flash usage: 81.6% (1 604 749 B / 1 966 080 B)
+- Flash usage: 81.6% (1 605 121 B / 1 966 080 B)
 
 ### Development Priorities
 

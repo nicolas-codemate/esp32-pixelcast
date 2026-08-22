@@ -14,7 +14,7 @@
 - Support for HUB75/HUB75E panels (64x64, 128x64, etc.)
 - 24-bit RGB colors with gamma correction
 - Adjustable brightness (0-255)
-- Double buffering for smooth animations
+- Double buffering available as a build flag, disabled on `trinity`: the second framebuffer leaves the WiFi stack too little heap to reassociate (see the `DOUBLE_BUFFER` comment in `platformio.ini`)
 
 ### Applications
 - **Custom Apps**: Create your own information screens
@@ -266,7 +266,16 @@ build_flags =
   -DPANEL_HEIGHT=64
   -DMAX_APPS=14
   -DMAX_NOTIFICATIONS=10
+  -DCOLOR_DEPTH=8
+  -DDOUBLE_BUFFER=0
 ```
+
+- `COLOR_DEPTH` - bit-planes per colour channel. 8 on `trinity`: depth 6 makes the brightness
+  modulation coarser and visibly crushes colours at the brightness the panel runs at.
+- `DOUBLE_BUFFER` - 0 on `trinity`. A second framebuffer costs about 48 KB of heap on a
+  64x64 panel at colour depth 8 (32 768 B framebuffer plus a second set of 1024 DMA
+  descriptors at 12 B each), which leaves the WiFi stack too little room to reassociate
+  after it loses the AP beacon.
 
 ### Web Interface
 Accessible via `http://pixelcast.local/`:

@@ -21,13 +21,13 @@
     #define VERSION_MAJOR 1
 #endif
 #ifndef VERSION_MINOR
-    #define VERSION_MINOR 9
+    #define VERSION_MINOR 10
 #endif
 #ifndef VERSION_PATCH
-    #define VERSION_PATCH 6
+    #define VERSION_PATCH 0
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.9.6"
+    #define VERSION_STRING "1.10.0"
 #endif
 
 // ============================================================================
@@ -141,6 +141,9 @@
 #endif
 #ifndef MAX_ICON_DIMENSION
     #define MAX_ICON_DIMENSION 32       // Icons are clamped to this on load, to preserve RAM
+#endif
+#ifndef MAX_LEGACY_ICON_CONVERSIONS
+    #define MAX_LEGACY_ICON_CONVERSIONS 24  // Source images converted to decoded copies per boot
 #endif
 #define LAMETRIC_API_HOST "developer.lametric.com"
 #define LAMETRIC_ICON_PATH "/content/apps/icon_thumbs/"
@@ -358,5 +361,6 @@ typedef enum {
 #define WATCHDOG_TIMEOUT 30  // seconds
 #define TASK_STACK_SIZE 4096
 #define LOOP_DELAY 10  // Main loop delay (ms)
+#define MEMORY_LOG_INTERVAL 60000  // Periodic [MEM] log interval (ms)
 
 #endif // CONFIG_H

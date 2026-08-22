@@ -143,6 +143,12 @@ uint8_t currentBrightness = DEFAULT_BRIGHTNESS;
 bool pendingReboot = false;
 unsigned long rebootRequestTime = 0;
 
+// Heap Watermarks
+// ESP.getMinFreeHeap() comes from the allocator, so it catches dips inside a blocking decode.
+// Nothing tracks the largest free block that way, so the lowest one below is sampled, which is
+// why an icon decode samples it while it holds its workspace rather than leaving it to the log.
+static volatile uint32_t minMaxAllocHeapSeen = UINT32_MAX;
+
 // Application Manager
 AppItem apps[MAX_APPS];
 uint8_t appCount = 0;
@@ -822,7 +828,11 @@ void handleApiStats(AsyncWebServerRequest *request);
 void handleApiSettings(AsyncWebServerRequest *request);
 void handleApiApps(AsyncWebServerRequest *request);
 
+uint32_t updateHeapWatermarks();
 void logMemory();
+void loopMemory();
+
+static void convertLegacyIconsToDecodedFiles();
 
 bool sleepIsActive();
 static bool dayIndexFromName(const char* name, uint8_t& outIndex);
@@ -857,6 +867,10 @@ void setup() {
 
     Serial.println("[INIT] Setting up filesystem...");
     setupFilesystem();
+
+    // Each conversion claims ~56 KB for the decoder, so it has to happen before setupWiFi()
+    // reserves the heap the association needs, and before anything renders
+    convertLegacyIconsToDecodedFiles();
 
     // Initialize weather data as empty
     memset(&weatherData, 0, sizeof(weatherData));
@@ -1009,6 +1023,7 @@ void loop() {
     loopSleepTransition();
     loopApps();
     loopDisplay();
+    loopMemory();
 
     delay(LOOP_DELAY);
 }
@@ -4866,6 +4881,8 @@ static IconDecodeResult decodePngIntoBuffer(uint8_t* fileBuffer, size_t fileSize
         return ICON_DECODE_NO_MEMORY;
     }
 
+    updateHeapWatermarks();
+
     int rc = pngDecoder->openRAM(fileBuffer, fileSize, pngDrawCallback);
     if (rc == PNG_SUCCESS) {
         pngDecodeTarget = target;
@@ -4893,6 +4910,8 @@ static IconDecodeResult decodeGifIntoBuffer(uint8_t* fileBuffer, size_t fileSize
         Serial.println("[ICON] Failed to allocate GIF decoder");
         return ICON_DECODE_NO_MEMORY;
     }
+
+    updateHeapWatermarks();
 
     // begin() zeroes the decoder state, so it has to run before open() fills it in
     gifDecoder->begin(GIF_PALETTE_RGB565_LE);
@@ -4937,6 +4956,34 @@ static bool isDecodedIconFileName(const char* filename)
 
     return nameLength >= extensionLength &&
            strcmp(filename + nameLength - extensionLength, ICON_DECODED_EXTENSION) == 0;
+}
+
+static bool iconNameFromSourceFileName(const char* filename, char* outName, size_t outNameSize)
+{
+    const char* lastSlash = strrchr(filename, '/');
+    const char* bareName = lastSlash ? lastSlash + 1 : filename;
+    const char* lastDot = strrchr(bareName, '.');
+
+    if (!lastDot) return false;
+
+    bool isSourceExtension = false;
+    for (const char* extension : ICON_EXTENSIONS)
+    {
+        if (strcmp(lastDot, extension) == 0)
+        {
+            isSourceExtension = true;
+            break;
+        }
+    }
+
+    if (!isSourceExtension) return false;
+
+    const size_t nameLength = (size_t)(lastDot - bareName);
+    if (nameLength == 0 || nameLength >= outNameSize) return false;
+
+    memcpy(outName, bareName, nameLength);
+    outName[nameLength] = '\0';
+    return true;
 }
 
 static void removeDecodedIconFile(const char* name)
@@ -5002,6 +5049,41 @@ static void writeDecodedIconFile(const char* name, const uint16_t* pixels,
     }
 }
 
+static const char* decodedIconHeaderRejection(const uint8_t* header, size_t fileSize)
+{
+    if (memcmp(header, ICON_DECODED_MAGIC, 4) != 0)
+        return "wrong magic";
+    if (header[4] != ICON_DECODED_FORMAT_VERSION)
+        return "older format version";
+    if (header[7] != MAX_ICON_DIMENSION)
+        return "written under a different dimension clamp";
+    if (header[5] < 1 || header[5] > MAX_ICON_DIMENSION ||
+        header[6] < 1 || header[6] > MAX_ICON_DIMENSION)
+        return "dimensions out of range";
+    if (fileSize != ICON_DECODED_HEADER_SIZE + (size_t)header[5] * header[6] * sizeof(uint16_t))
+        return "size does not match its dimensions";
+    return nullptr;
+}
+
+static bool decodedIconFileIsUsable(const char* name)
+{
+    char path[64];
+    buildIconPath(path, sizeof(path), name, ICON_DECODED_EXTENSION);
+
+    File file = LittleFS.open(path, "r");
+    if (!file) return false;
+
+    const size_t fileSize = file.size();
+    uint8_t header[ICON_DECODED_HEADER_SIZE];
+
+    const bool usable = fileSize >= ICON_DECODED_HEADER_SIZE &&
+                        file.read(header, sizeof(header)) == sizeof(header) &&
+                        decodedIconHeaderRejection(header, fileSize) == nullptr;
+
+    file.close();
+    return usable;
+}
+
 static bool readDecodedIconFile(const char* name, uint16_t** outPixels,
                                 uint8_t* outWidth, uint8_t* outHeight)
 {
@@ -5023,17 +5105,8 @@ static bool readDecodedIconFile(const char* name, uint16_t** outPixels,
         rejectionReason = "too short";
     else if (file.read(header, sizeof(header)) != sizeof(header))
         rejectionReason = "header unreadable";
-    else if (memcmp(header, ICON_DECODED_MAGIC, 4) != 0)
-        rejectionReason = "wrong magic";
-    else if (header[4] != ICON_DECODED_FORMAT_VERSION)
-        rejectionReason = "older format version";
-    else if (header[7] != MAX_ICON_DIMENSION)
-        rejectionReason = "written under a different dimension clamp";
-    else if (header[5] < 1 || header[5] > MAX_ICON_DIMENSION ||
-             header[6] < 1 || header[6] > MAX_ICON_DIMENSION)
-        rejectionReason = "dimensions out of range";
-    else if (fileSize != ICON_DECODED_HEADER_SIZE + (size_t)header[5] * header[6] * sizeof(uint16_t))
-        rejectionReason = "size does not match its dimensions";
+    else
+        rejectionReason = decodedIconHeaderRejection(header, fileSize);
 
     uint16_t* pixels = nullptr;
 
@@ -5197,6 +5270,62 @@ static void convertIconToDecodedFile(const char* name)
 
     writeDecodedIconFile(name, pixels, width, height);
     free(pixels);
+}
+
+static void convertLegacyIconsToDecodedFiles()
+{
+    if (!filesystemReady) return;
+
+    File root = LittleFS.open(FS_ICONS_PATH);
+    if (!root || !root.isDirectory()) return;
+
+    // Writing into the directory an openNextFile() cursor is walking can shift the entries it
+    // has not handed back yet, so the names are collected first and converted afterwards
+    char pendingNames[MAX_LEGACY_ICON_CONVERSIONS][32];
+    uint8_t pendingCount = 0;
+    uint16_t leftForFirstUse = 0;
+
+    File file = root.openNextFile();
+    while (file)
+    {
+        char name[32];
+
+        if (!file.isDirectory() &&
+            iconNameFromSourceFileName(file.name(), name, sizeof(name)) &&
+            !decodedIconFileIsUsable(name))
+        {
+            if (pendingCount < MAX_LEGACY_ICON_CONVERSIONS)
+            {
+                strlcpy(pendingNames[pendingCount], name, sizeof(pendingNames[pendingCount]));
+                pendingCount++;
+            }
+            else
+            {
+                leftForFirstUse++;
+            }
+        }
+
+        file = root.openNextFile();
+    }
+
+    root.close();
+
+    for (uint8_t i = 0; i < pendingCount; i++)
+    {
+        convertIconToDecodedFile(pendingNames[i]);
+        delay(1);
+    }
+
+    if (pendingCount > 0)
+    {
+        Serial.printf("[ICON] Converted %u source image(s) to decoded copies\n", pendingCount);
+    }
+
+    if (leftForFirstUse > 0)
+    {
+        Serial.printf("[ICON] Conversion cap reached, %u icon(s) decoded on first use instead\n",
+            leftForFirstUse);
+    }
 }
 
 CachedIcon* loadIcon(const char* name)
@@ -6897,7 +7026,9 @@ void handleApiStats(AsyncWebServerRequest *request) {
     doc["version"] = VERSION_STRING;
     doc["uptime"] = millis() / 1000;
     doc["freeHeap"] = ESP.getFreeHeap();
-    doc["maxAllocHeap"] = ESP.getMaxAllocHeap();
+    doc["maxAllocHeap"] = updateHeapWatermarks();
+    doc["minFreeHeap"] = ESP.getMinFreeHeap();
+    doc["minMaxAllocHeap"] = minMaxAllocHeapSeen;
     doc["brightness"] = settings.brightness;
     doc["wifi"]["ssid"] = WiFi.SSID();
     doc["wifi"]["rssi"] = WiFi.RSSI();
@@ -7251,6 +7382,7 @@ void mqttPublishStats() {
     JsonDocument doc;
     doc["uptime"] = millis() / 1000;
     doc["freeHeap"] = ESP.getFreeHeap();
+    doc["minFreeHeap"] = ESP.getMinFreeHeap();
     doc["brightness"] = currentBrightness;
     doc["rssi"] = WiFi.RSSI();
     doc["appCount"] = appCount;
@@ -8642,7 +8774,32 @@ void loopDisplay() {
 // Utility Functions
 // ============================================================================
 
+// Reading the largest free block walks every heap block under the allocator lock, so callers
+// take the returned value rather than asking a second time
+uint32_t updateHeapWatermarks() {
+    uint32_t largestFreeBlock = ESP.getMaxAllocHeap();
+    if (largestFreeBlock < minMaxAllocHeapSeen) {
+        minMaxAllocHeapSeen = largestFreeBlock;
+    }
+    return largestFreeBlock;
+}
+
 void logMemory() {
-    Serial.printf("[MEM] Free heap: %d bytes, largest block: %d bytes\n",
-        ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    uint32_t largestFreeBlock = updateHeapWatermarks();
+    Serial.printf("[MEM] Free heap: %u bytes (lowest %u), largest block: %u bytes (lowest %u)\n",
+        ESP.getFreeHeap(), ESP.getMinFreeHeap(), largestFreeBlock, minMaxAllocHeapSeen);
+}
+
+void loopMemory() {
+    static uint32_t lastLoggedMinFreeHeap = UINT32_MAX;
+    static unsigned long lastMemoryLogTime = 0;
+
+    uint32_t minFreeHeap = ESP.getMinFreeHeap();
+    unsigned long now = millis();
+
+    if (minFreeHeap < lastLoggedMinFreeHeap || now - lastMemoryLogTime >= MEMORY_LOG_INTERVAL) {
+        lastLoggedMinFreeHeap = minFreeHeap;
+        lastMemoryLogTime = now;
+        logMemory();
+    }
 }

@@ -17,6 +17,17 @@ StatsResponse:
     maxAllocHeap:
       type: integer
       description: Largest allocatable block in bytes.
+    minFreeHeap:
+      type: integer
+      description: >-
+        Lowest free heap in bytes since boot, tracked by the heap allocator, so it records
+        dips that happened between two polls.
+    minMaxAllocHeap:
+      type: integer
+      description: >-
+        Lowest largest allocatable block in bytes seen since boot. Sampled when the memory
+        log runs, when this endpoint is called and while an icon decoder holds its
+        workspace, so it is a fragmentation trend indicator, not a guaranteed minimum.
     brightness:
       type: integer
       description: Current brightness (0-255).
@@ -74,6 +85,11 @@ MqttStatsPayload:
       type: integer
     freeHeap:
       type: integer
+    minFreeHeap:
+      type: integer
+      description: >-
+        Lowest free heap in bytes since boot, tracked by the heap allocator, so it records
+        dips that happened between two publishes.
     brightness:
       type: integer
     rssi:

@@ -47,7 +47,8 @@ docs {
 
   Parameters:
   - rows: Up to 9 rows, three per page. More than 9 is refused with HTTP 400
-    and the watchlist keeps the rows it had. Without rows, the stored rows stay
+    and the watchlist keeps the rows it had. Without rows, the stored rows stay. A page
+    holding fewer than three rows shares the screen height between them
   - duration: Display duration in ms (default: 10000), split evenly across the
     carousel pages
   - staleAfter: Silence tolerated before the watchlist is stale, in seconds

@@ -1016,40 +1016,7 @@ void setup() {
         Serial.println("[INIT] Setting up apps...");
         setupApps();
 
-        // Load demo weather data for development (6 days to test 2-page pagination)
-        Serial.println("[INIT] Loading demo weather data (6 days)...");
-        strncpy(weatherData.currentIcon, "w_clear_day", sizeof(weatherData.currentIcon));
-        weatherData.currentTemp = 18;
-        weatherData.currentTempMin = 12;
-        weatherData.currentTempMax = 24;
-        weatherData.currentHumidity = 65;
-        strncpy(weatherData.forecast[0].icon, "w_partly_day", sizeof(weatherData.forecast[0].icon));
-        weatherData.forecast[0].tempMin = 12;
-        weatherData.forecast[0].tempMax = 22;
-        strncpy(weatherData.forecast[0].dayName, "LUN", sizeof(weatherData.forecast[0].dayName));
-        strncpy(weatherData.forecast[1].icon, "w_rain", sizeof(weatherData.forecast[1].icon));
-        weatherData.forecast[1].tempMin = 8;
-        weatherData.forecast[1].tempMax = 15;
-        strncpy(weatherData.forecast[1].dayName, "MAR", sizeof(weatherData.forecast[1].dayName));
-        strncpy(weatherData.forecast[2].icon, "w_snow", sizeof(weatherData.forecast[2].icon));
-        weatherData.forecast[2].tempMin = 0;
-        weatherData.forecast[2].tempMax = 6;
-        strncpy(weatherData.forecast[2].dayName, "MER", sizeof(weatherData.forecast[2].dayName));
-        strncpy(weatherData.forecast[3].icon, "w_clear_day", sizeof(weatherData.forecast[3].icon));
-        weatherData.forecast[3].tempMin = 14;
-        weatherData.forecast[3].tempMax = 26;
-        strncpy(weatherData.forecast[3].dayName, "JEU", sizeof(weatherData.forecast[3].dayName));
-        strncpy(weatherData.forecast[4].icon, "w_cloudy", sizeof(weatherData.forecast[4].icon));
-        weatherData.forecast[4].tempMin = 10;
-        weatherData.forecast[4].tempMax = 19;
-        strncpy(weatherData.forecast[4].dayName, "VEN", sizeof(weatherData.forecast[4].dayName));
-        strncpy(weatherData.forecast[5].icon, "w_partly_day", sizeof(weatherData.forecast[5].icon));
-        weatherData.forecast[5].tempMin = 15;
-        weatherData.forecast[5].tempMax = 28;
-        strncpy(weatherData.forecast[5].dayName, "SAM", sizeof(weatherData.forecast[5].dayName));
-        weatherData.forecastCount = 6;
-        weatherData.lastUpdate = millis();
-        weatherData.valid = true;
+        // No weather until the client pushes one: the weather clock shows the time alone meanwhile.
         weatherClockApplyStalePolicy(WEATHER_DEFAULT_STALE_AFTER, STALE_HIDE);
     }
 
@@ -2549,7 +2516,8 @@ void displayShowTracker(TrackerData* tracker, const AppItem* app) {
 //                    Stale data takes the icon's place with a STALE badge at x=42, or at x=39
 //                    when the top-right indicator is lit.
 // y=12:     separator line
-// y=14-55:  three 14px row bands; a page holding one or two rows is centred in the band instead
+// y=14-55:  three 14px row bands; a page holding one or two rows shares the 42px between them
+//           instead, each row in the middle of its share
 //           y=14-27:  row 1 - label/info/value baseline y=19, bar y=20-24
 //           y=28-41:  row 2 - baseline y=33, bar y=34-38
 //           y=42-55:  row 3 - baseline y=47, bar y=48-52
@@ -2808,16 +2776,16 @@ void displayDrawGaugePage(GaugeData* gauge, uint8_t page, uint8_t pageCount, boo
         : 0;
 
     // The whole band is wiped first, so a page shorter than the one before it leaves none of its
-    // rows behind, and the short page then sits in the middle of the band rather than at its top.
-    dma_display->fillRect(0, GAUGE_ROW_TOP_Y, DISPLAY_WIDTH,
-                          GAUGE_ROWS_PER_PAGE * GAUGE_ROW_HEIGHT, black);
+    // rows behind. A short page then spreads its rows over the band rather than packing them in
+    // its middle; a full page gets the 14px bands of GAUGE_ROW_HEIGHT, as before.
+    const int16_t rowsBandHeight = GAUGE_ROWS_PER_PAGE * GAUGE_ROW_HEIGHT;
+    dma_display->fillRect(0, GAUGE_ROW_TOP_Y, DISPLAY_WIDTH, rowsBandHeight, black);
 
-    int16_t rowsTopY = GAUGE_ROW_TOP_Y +
-                       ((GAUGE_ROWS_PER_PAGE - rowsOnPage) * GAUGE_ROW_HEIGHT) / 2;
+    int16_t shareHeight = rowsOnPage > 0 ? rowsBandHeight / rowsOnPage : rowsBandHeight;
 
     for (uint8_t slot = 0; slot < rowsOnPage; slot++) {
-        displayDrawGaugeRow(&gauge->rows[firstRow + slot],
-                            rowsTopY + slot * GAUGE_ROW_HEIGHT, dimColors);
+        int16_t rowTopY = GAUGE_ROW_TOP_Y + slot * shareHeight + (shareHeight - GAUGE_ROW_HEIGHT) / 2;
+        displayDrawGaugeRow(&gauge->rows[firstRow + slot], rowTopY, dimColors);
     }
 
     const int16_t dotSize = 2;
@@ -2934,13 +2902,15 @@ void displayShowGauge(GaugeData* gauge, const AppItem* app) {
 // NULL font: setCursor = top-left of the glyph cell, 6px advance, 7px tall
 // TomThumb:  setCursor = baseline, capitals sit 5px above it
 //
-// Three 21px row bands, y=0-20, 21-41, 42-62. Within a band starting at top:
+// The screen height is shared between the rows of the page: three 21px bands (y=0-20, 21-41,
+// 42-62) on a full page, two 32px bands or a single 64px one on a page holding fewer rows, each
+// row drawn in the middle of its band. Within a row starting at top:
 //   top+2..top+6:   symbol at x=11 (TomThumb, baseline top+7), change right-aligned on x=60;
 //                   a symbol wider than the gap between them scrolls inside it
 //   top+6..top+13:  8x8 icon at x=1, clear of the top-left indicator footprint on the first row;
 //                   the margin keeps a logo off the edge of the panel, as on the tracker
 //   top+10..top+16: price at x=11 (NULL font), currency right after it (TomThumb, grey)
-//   top+20:         separator, under every row but the last of the page
+//   last line of the band: separator, under every row but the last of the page
 // x=61-62:  carousel dots, vertical, centred on the screen height
 // Nothing is inked past x=58, so the two right-hand indicators never cover data.
 // A STALE badge takes the place of the change on the first row of the page.
@@ -2952,7 +2922,6 @@ void displayShowGauge(GaugeData* gauge, const AppItem* app) {
 #define WATCHLIST_SYMBOL_BASELINE_OFFSET 7
 #define WATCHLIST_PRICE_OFFSET_Y      10
 #define WATCHLIST_CURRENCY_BASELINE_OFFSET 16
-#define WATCHLIST_SEPARATOR_OFFSET_Y  20
 // TomThumb inks the five rows above its baseline; the band erased under a scrolling symbol takes
 // one more row on each side and stays clear of the price, which starts three rows lower
 #define WATCHLIST_SYMBOL_BAND_ABOVE_BASELINE 6
@@ -3001,12 +2970,30 @@ int16_t formatWatchlistChange(const WatchlistRow* row, bool showBadgeHere,
     return WATCHLIST_RIGHT_X - calculateTomThumbTextWidth(buffer);
 }
 
+uint8_t watchlistRowsOnPage(const WatchlistData* watchlist, uint8_t page) {
+    uint8_t firstRow = page * WATCHLIST_ROWS_PER_PAGE;
+    return firstRow < watchlist->rowCount
+        ? min((uint8_t)(watchlist->rowCount - firstRow), (uint8_t)WATCHLIST_ROWS_PER_PAGE)
+        : 0;
+}
+
+// A page short of rows spreads them over the whole height rather than leaving the bottom of
+// the screen empty. A full page gets the 21px bands of WATCHLIST_ROW_HEIGHT, as before.
+int16_t watchlistBandHeight(uint8_t rowsOnPage) {
+    return rowsOnPage > 0 ? DISPLAY_HEIGHT / rowsOnPage : DISPLAY_HEIGHT;
+}
+
+int16_t watchlistRowTopY(uint8_t slot, uint8_t rowsOnPage) {
+    int16_t bandHeight = watchlistBandHeight(rowsOnPage);
+    return slot * bandHeight + (bandHeight - WATCHLIST_ROW_HEIGHT) / 2;
+}
+
 // --- Symbol band of one row ---
 // Runs every scroll step, and the DMA reads this framebuffer while it is being written, so it
 // touches nothing outside the band the symbol moves in.
-void displayDrawWatchlistSymbol(const WatchlistRow* row, uint8_t slot, int16_t symbolAreaEnd,
-                                bool dimColors) {
-    int16_t baselineY = slot * WATCHLIST_ROW_HEIGHT + WATCHLIST_SYMBOL_BASELINE_OFFSET;
+void displayDrawWatchlistSymbol(const WatchlistRow* row, uint8_t slot, int16_t topY,
+                                int16_t symbolAreaEnd, bool dimColors) {
+    int16_t baselineY = topY + WATCHLIST_SYMBOL_BASELINE_OFFSET;
     ScrollState& scrollState = watchlistSymbolScrollStates[slot];
 
     dma_display->fillRect(WATCHLIST_TEXT_X, baselineY - WATCHLIST_SYMBOL_BAND_ABOVE_BASELINE,
@@ -3025,12 +3012,10 @@ void displayDrawWatchlistSymbol(const WatchlistRow* row, uint8_t slot, int16_t s
                               dimmedColor565(row->symbolColor, dimColors));
 }
 
-// --- One row (21px band) ---
+// --- One row, 21px tall wherever its band places it ---
 // Reached only from the full repaint, which clears the screen first.
-void displayDrawWatchlistRow(const WatchlistRow* row, uint8_t slot, bool showBadgeHere,
-                             bool dimColors) {
-    int16_t topY = slot * WATCHLIST_ROW_HEIGHT;
-
+void displayDrawWatchlistRow(const WatchlistRow* row, uint8_t slot, int16_t topY,
+                             bool showBadgeHere, bool dimColors) {
     char changeBuffer[16];
     uint32_t changeColor;
     int16_t changeX = formatWatchlistChange(row, showBadgeHere, changeBuffer, sizeof(changeBuffer),
@@ -3039,7 +3024,7 @@ void displayDrawWatchlistRow(const WatchlistRow* row, uint8_t slot, bool showBad
     printWatchlistField(changeBuffer, changeX, topY + WATCHLIST_SYMBOL_BASELINE_OFFSET, changeColor,
                         dimColors && !showBadgeHere);
 
-    displayDrawWatchlistSymbol(row, slot, changeX - WATCHLIST_FIELD_GUTTER, dimColors);
+    displayDrawWatchlistSymbol(row, slot, topY, changeX - WATCHLIST_FIELD_GUTTER, dimColors);
 
     CachedIcon* icon = getIcon(row->icon);
     if (row->icon[0] && icon && icon->valid) {
@@ -3071,18 +3056,16 @@ void displayDrawWatchlistRow(const WatchlistRow* row, uint8_t slot, bool showBad
 void displayDrawWatchlistPage(WatchlistData* watchlist, uint8_t page, uint8_t pageCount,
                               bool showBadge, bool dimColors) {
     uint8_t firstRow = page * WATCHLIST_ROWS_PER_PAGE;
-    uint8_t rowsOnPage = firstRow < watchlist->rowCount
-        ? min((uint8_t)(watchlist->rowCount - firstRow), (uint8_t)WATCHLIST_ROWS_PER_PAGE)
-        : 0;
+    uint8_t rowsOnPage = watchlistRowsOnPage(watchlist, page);
+    int16_t bandHeight = watchlistBandHeight(rowsOnPage);
 
     for (uint8_t slot = 0; slot < rowsOnPage; slot++) {
-        int16_t topY = slot * WATCHLIST_ROW_HEIGHT;
         displayDrawWatchlistRow(&watchlist->rows[firstRow + slot], slot,
-                                showBadge && slot == 0, dimColors);
+                                watchlistRowTopY(slot, rowsOnPage), showBadge && slot == 0, dimColors);
 
         if (slot + 1 < rowsOnPage) {
             // Undimmed, like the gauge separator: it frames the screen instead of carrying data
-            dma_display->drawFastHLine(0, topY + WATCHLIST_SEPARATOR_OFFSET_Y, WATCHLIST_RIGHT_X - 1,
+            dma_display->drawFastHLine(0, (slot + 1) * bandHeight - 1, WATCHLIST_RIGHT_X - 1,
                                        dimmedColor565(WATCHLIST_SEPARATOR_COLOR, false));
         }
     }
@@ -3166,16 +3149,17 @@ void displayShowWatchlist(WatchlistData* watchlist, const AppItem* app) {
             int16_t cornerY = (corner == 2) ? DISPLAY_HEIGHT - INDICATOR_FOOTPRINT : 0;
             dma_display->fillRect(cornerX, cornerY, INDICATOR_FOOTPRINT, INDICATOR_FOOTPRINT, black);
         }
-        for (uint8_t slot = 0; slot < WATCHLIST_ROWS_PER_PAGE; slot++) {
+        uint8_t rowsOnPage = watchlistRowsOnPage(watchlist, currentPage);
+        for (uint8_t slot = 0; slot < rowsOnPage; slot++) {
             if (!watchlistSymbolScrollStates[slot].needsScroll) continue;
-            if (firstRow + slot >= watchlist->rowCount) continue;
 
             const WatchlistRow* row = &watchlist->rows[firstRow + slot];
             char changeBuffer[16];
             uint32_t changeColor;
             int16_t changeX = formatWatchlistChange(row, showBadge && slot == 0, changeBuffer,
                                                     sizeof(changeBuffer), &changeColor);
-            displayDrawWatchlistSymbol(row, slot, changeX - WATCHLIST_FIELD_GUTTER, dimColors);
+            displayDrawWatchlistSymbol(row, slot, watchlistRowTopY(slot, rowsOnPage),
+                                       changeX - WATCHLIST_FIELD_GUTTER, dimColors);
         }
         drawIndicators();
         #if DOUBLE_BUFFER

@@ -147,8 +147,8 @@ GaugeUpdateRequest:
         Rows to display, three per page. Beyond three rows the panel paginates on its own,
         one dot per page at the bottom, each page holding the screen for the app duration
         divided by the page count - so the carousel never lengthens the rotation. A last
-        page holding one or two rows is centred vertically in the band the three would
-        have filled. More than nine rows is refused whole with HTTP 400 and the gauge
+        page holding one or two rows shares the height the three would have filled between
+        them, each row in the middle of its share. More than nine rows is refused whole with HTTP 400 and the gauge
         keeps the rows it had.
     duration:
       type: integer

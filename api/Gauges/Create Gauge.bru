@@ -59,8 +59,8 @@ docs {
     character even mid-scroll
   - icon: Icon name from /icons folder (optional), drawn 8x8 in the header
   - rows: Up to 9 rows, three per page. More than 9 is refused with HTTP 400
-    and the gauge keeps the rows it had. A last page holding one or two rows is
-    centred vertically in the band the three would have filled
+    and the gauge keeps the rows it had. A last page holding one or two rows
+    shares the height the three would have filled, each row in the middle of its share
   - duration: Display duration in ms (default: 10000), split evenly across the
     carousel pages
   - staleAfter: Silence tolerated before the gauge is stale, in seconds

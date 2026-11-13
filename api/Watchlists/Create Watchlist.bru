@@ -1,0 +1,68 @@
+meta {
+  name: Create Watchlist
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/watchlist?name=stocks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+params:query {
+  name: stocks
+}
+
+body:json {
+  {
+    "duration": 12000,
+    "staleAfter": 2700,
+    "staleBehavior": "dim",
+    "rows": [
+      { "symbol": "SpaceX", "icon": "spacex", "value": 184.2, "currency": "USD", "change": 3.42 },
+      { "symbol": "Meta", "icon": "meta", "value": 612.85, "currency": "USD", "change": -1.08 },
+      { "symbol": "Nvidia", "icon": "nvidia", "value": 143.07, "currency": "USD", "change": 0.56 },
+      { "symbol": "PEA Monde", "icon": "etf", "value": 28.41, "currency": "EUR", "change": -0.32 },
+      { "symbol": "Apple", "icon": "apple", "value": 231.6, "currency": "USD", "change": 1.21 },
+      { "symbol": "Bitcoin", "icon": "bitcoin", "value": 98452.3, "currency": "USD", "change": 2.14 }
+    ]
+  }
+}
+
+docs {
+  Creates or updates a watchlist app: a list of quotes, one 21-pixel row each,
+  three rows per page, with a vertical dot carousel on the right edge when there
+  are more.
+
+  The watchlist name in the query param becomes the unique key, max 13 chars: a
+  longer name is refused with HTTP 400 ("Watchlist name too long (max 13)")
+  rather than shortened, since the shortened key and the app ID would stop
+  matching. App ID in rotation is prefixed with "watchlist_" (e.g.
+  "watchlist_stocks"). Two watchlists can exist at a time (MAX_WATCHLIST_APPS).
+
+  Parameters:
+  - rows: Up to 9 rows, three per page. More than 9 is refused with HTTP 400
+    and the watchlist keeps the rows it had. Without rows, the stored rows stay
+  - duration: Display duration in ms (default: 10000), split evenly across the
+    carousel pages
+  - staleAfter: Silence tolerated before the watchlist is stale, in seconds
+    (default: 3600)
+  - staleBehavior: "hide", "dim" (default), "badge" or "none". With dim and
+    badge, STALE replaces the change of the first row of every page
+
+  Row fields:
+  - symbol: Name on the top line, max 15 chars. A name wider than the room the
+    change leaves scrolls inside it. Latin-1 accents are shown as their closest
+    ASCII letter
+  - symbolColor: Color of the symbol (default: "#FFB000")
+  - icon: Icon name from /icons folder (optional), drawn 8x8 at the left edge
+  - value: Price, formatted like the tracker value on six characters beside a
+    three-letter currency
+  - currency: Label in grey right after the price, max 7 chars (e.g. "USD")
+  - change: Percentage, two decimals with its sign, green from zero up, red below
+}

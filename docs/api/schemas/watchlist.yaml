@@ -1,0 +1,178 @@
+# Watchlist schemas
+
+WatchlistRow:
+  type: object
+  description: >
+    One 21-pixel row: the icon on the left, the symbol and the change on the top line, the
+    price and its currency on the line below. Every field is optional; a row with none of
+    them still takes its band, showing `0.00` and `+0.00%`.
+  properties:
+    symbol:
+      type: string
+      maxLength: 15
+      description: >
+        Name shown on the top line, in TomThumb, in `symbolColor`. It gets the width the
+        change leaves it, six or seven characters beside "+3.42%"; a longer name scrolls
+        inside that width, pausing at each end, while the rows around it stay put. The
+        panel has no accented glyphs, so Latin-1 accents are shown as their closest ASCII letter - "Société" reads "Societe".
+        Anything else outside ASCII is dropped. Stored on 31 bytes, so an accented
+        character counts for two.
+      examples:
+        - "SpaceX"
+    symbolColor:
+      allOf:
+        - $ref: "common.yaml#/Color"
+      default: "#FFB000"
+      description: >
+        Color of the symbol. Amber by default, which sets the name apart from the white
+        price below it; avoid the green and red of the change, which carry the direction
+        of the move.
+    icon:
+      type: string
+      description: >
+        Icon name from filesystem, drawn 8x8 at the left edge of the row. A missing or
+        unknown icon leaves the eight columns empty; the text does not move left to fill them.
+      examples:
+        - "spacex"
+    currency:
+      type: string
+      maxLength: 7
+      description: >
+        Currency label printed in grey TomThumb right after the price (e.g. "USD", "EUR").
+        The longer it is, the fewer characters the price keeps.
+      examples:
+        - "USD"
+    value:
+      type: number
+      format: float
+      description: >
+        Current price. Formatted like the tracker value - thousands separated by commas, two
+        decimals kept whenever they fit - but on a narrower line: beside a three-letter
+        currency the price has six characters, so 184.2 reads 184.20 and 98452.3 reads
+        98,452. Digits beyond the seven a float can carry are dropped.
+      examples:
+        - 184.2
+    change:
+      type: number
+      format: float
+      description: >
+        Change percentage, printed with two decimals and its sign, right-aligned on the top
+        line: green when zero or above, red below. The period it covers is the client's
+        call; the panel does not print it.
+      examples:
+        - 3.42
+
+WatchlistUpdateRequest:
+  type: object
+  description: >
+    A list of quotes shown three to a page. `rows` is the only content field, and a `rows`
+    array replaces the stored rows whole - there is no per-row patch. A payload without
+    `rows` keeps the rows in place and only updates `duration` and the stale policy.
+  properties:
+    name:
+      type: string
+      maxLength: 13
+      description: >
+        Watchlist identifier. Can also be passed as `?name=` query parameter. Up to two
+        watchlists exist at a time (`MAX_WATCHLIST_APPS`). A longer name is refused with
+        HTTP 400 (`Watchlist name too long (max 13)`) rather than shortened, since the
+        shortened key and the `watchlist_{name}` app id would stop matching; over MQTT the
+        message is dropped with a serial log.
+      examples:
+        - "stocks"
+    rows:
+      type: array
+      items:
+        $ref: "#/WatchlistRow"
+      maxItems: 9
+      description: >
+        Rows to display, three per page, in the order sent. Beyond three rows the panel
+        paginates on its own, one dot per page in a column on the right edge, each page
+        holding the screen for the app duration divided by the page count - so the
+        carousel never lengthens the rotation. A last page holding fewer than three
+        rows keeps them at the top. More than nine rows is refused whole with HTTP 400 and the
+        watchlist keeps the rows it had.
+    duration:
+      type: integer
+      description: Display duration in milliseconds, split evenly across the carousel pages.
+      default: 10000
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+      default: 3600
+    staleBehavior:
+      allOf:
+        - $ref: "common.yaml#/StaleBehavior"
+      default: dim
+      description: >
+        With `dim` or `badge`, the STALE badge takes the place of the change on the first
+        row of every page. `dim` also dims every other color on the screen except the
+        separators and the page dots.
+
+WatchlistResponse:
+  type: object
+  properties:
+    name:
+      type: string
+    rows:
+      type: array
+      items:
+        type: object
+        properties:
+          symbol:
+            type: string
+          icon:
+            type: string
+          currency:
+            type: string
+          value:
+            type: number
+            format: float
+          change:
+            type: number
+            format: float
+          symbolColor:
+            type: string
+            pattern: "^#[0-9a-fA-F]{6}$"
+            description: Hex color string, whatever form it was sent in.
+            examples:
+              - "#FFB000"
+      description: >
+        Rows as stored, in display order. Text fields come back trimmed to what the
+        firmware kept.
+    age:
+      type: integer
+      description: Seconds since last update.
+    stale:
+      type: boolean
+      description: >
+        True once the silence exceeds `staleAfter`. What the panel then does is
+        set by `staleBehavior`.
+    staleAfter:
+      $ref: "common.yaml#/StaleAfter"
+    staleBehavior:
+      $ref: "common.yaml#/StaleBehavior"
+
+WatchlistListResponse:
+  type: object
+  properties:
+    watchlists:
+      type: array
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          rowCount:
+            type: integer
+            description: Number of rows currently stored.
+          age:
+            type: integer
+          stale:
+            type: boolean
+          staleAfter:
+            $ref: "common.yaml#/StaleAfter"
+          staleBehavior:
+            $ref: "common.yaml#/StaleBehavior"
+    count:
+      type: integer
+      description: Total number of active watchlists.

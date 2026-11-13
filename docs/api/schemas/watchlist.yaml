@@ -30,8 +30,9 @@ WatchlistRow:
     icon:
       type: string
       description: >
-        Icon name from filesystem, drawn 8x8 at the left edge of the row. A missing or
-        unknown icon leaves the eight columns empty; the text does not move left to fill them.
+        Icon name from filesystem, drawn 8x8 one pixel from the left edge of the row. A
+        missing or unknown icon leaves its columns empty; the text does not move left to fill
+        them.
       examples:
         - "spacex"
     currency:

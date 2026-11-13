@@ -195,7 +195,9 @@ WeatherResponse:
   properties:
     valid:
       type: boolean
-      description: Whether weather data has been received.
+      description: >
+        Whether weather data has been received since the device started. Until then the
+        weather clock shows the time alone.
     age:
       type: integer
       description: Seconds since last update.

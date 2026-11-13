@@ -90,8 +90,9 @@ WatchlistUpdateRequest:
         Rows to display, three per page, in the order sent. Beyond three rows the panel
         paginates on its own, one dot per page in a column on the right edge, each page
         holding the screen for the app duration divided by the page count - so the
-        carousel never lengthens the rotation. A last page holding fewer than three
-        rows keeps them at the top. More than nine rows is refused whole with HTTP 400 and the
+        carousel never lengthens the rotation. A page holding fewer than three rows
+        shares the screen height between them, each row in the middle of its share: two
+        rows take half the screen each, a single row sits in the middle. More than nine rows is refused whole with HTTP 400 and the
         watchlist keeps the rows it had.
     duration:
       type: integer

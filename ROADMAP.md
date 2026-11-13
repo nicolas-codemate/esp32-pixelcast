@@ -162,10 +162,24 @@ This document details the development phases of the ESP32-PixelCast project, fro
       shows a "STALE" badge in place of the icon, `badge` keeps full colors with the badge,
       `none` shows nothing, over a `staleAfter` window the client sets (default 1h)
 
+### 2b.4 Watchlist System App
+- [x] `WatchlistData` / `WatchlistRow` structures (rows of symbol/icon/value/currency/change)
+- [x] Up to 2 concurrent watchlists (`MAX_WATCHLIST_APPS`), 9 rows each (`MAX_WATCHLIST_ROWS`)
+- [x] REST API: `POST /api/watchlist`, `GET /api/watchlist`, `GET /api/watchlists`,
+      `DELETE /api/watchlist`
+- [x] App IDs prefixed with `watchlist_` (e.g. `watchlist_stocks`)
+- [x] Layout: three 21px rows of icon / symbol + change over price + currency, no header
+- [x] Carousel of 3 rows per page, up to `MAX_CAROUSEL_PAGES`, with vertical dots on the
+      right edge, clear of the three corner indicators
+- [x] Stale rendering driven by the client: `dim` (default) dims the colors to 1/4 and shows
+      a "STALE" badge in place of the first row's change, `badge` keeps full colors with the
+      badge, `none` shows nothing, over a `staleAfter` window the client sets (default 1h)
+
 **Deliverables:**
 - [x] Working weather dashboard with forecast
 - [x] Working tracker display with sparkline
 - [x] Working gauge display with progress-bar rows and carousel
+- [x] Working watchlist display with three quotes per page and carousel
 - [x] Bruno API collections for the three features
 
 ---
@@ -259,6 +273,10 @@ This document details the development phases of the ESP32-PixelCast project, fro
 | GET | `/api/gauge` | Read single gauge data | ✅ |
 | GET | `/api/gauges` | List all active gauges | ✅ |
 | DELETE | `/api/gauge` | Remove gauge from rotation | ✅ |
+| POST | `/api/watchlist` | Create/Update a watchlist | ✅ |
+| GET | `/api/watchlist` | Read single watchlist data | ✅ |
+| GET | `/api/watchlists` | List all active watchlists | ✅ |
+| DELETE | `/api/watchlist` | Remove watchlist from rotation | ✅ |
 | POST | `/api/icons` | Upload icon file | ✅ |
 | POST | `/api/lametric` | Download LaMetric icon by ID | ✅ |
 

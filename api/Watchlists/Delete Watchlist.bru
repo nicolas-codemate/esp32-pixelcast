@@ -1,0 +1,19 @@
+meta {
+  name: Delete Watchlist
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/api/watchlist?name=stocks
+  body: none
+  auth: none
+}
+
+params:query {
+  name: stocks
+}
+
+docs {
+  Removes a watchlist and its corresponding app from rotation.
+}

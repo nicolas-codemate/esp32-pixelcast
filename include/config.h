@@ -21,13 +21,13 @@
     #define VERSION_MAJOR 1
 #endif
 #ifndef VERSION_MINOR
-    #define VERSION_MINOR 10
+    #define VERSION_MINOR 11
 #endif
 #ifndef VERSION_PATCH
-    #define VERSION_PATCH 1
+    #define VERSION_PATCH 0
 #endif
 #ifndef VERSION_STRING
-    #define VERSION_STRING "1.10.1"
+    #define VERSION_STRING "1.11.0"
 #endif
 
 // ============================================================================
@@ -191,6 +191,19 @@
 #define GAUGE_ID_PREFIX "gauge_"
 
 // ============================================================================
+// Watchlist Layout
+// ============================================================================
+#ifndef MAX_WATCHLIST_APPS
+    #define MAX_WATCHLIST_APPS 2
+#endif
+#ifndef MAX_WATCHLIST_ROWS
+    #define MAX_WATCHLIST_ROWS 9
+#endif
+#define WATCHLIST_ID_PREFIX "watchlist_"
+// Four rows would fit the height, but packed one against the next they read as a single block
+#define WATCHLIST_ROWS_PER_PAGE 3
+
+// ============================================================================
 // Stale Policy
 // ============================================================================
 // An app goes stale when its client stops pushing. Only the client knows how long a
@@ -199,6 +212,7 @@
 #define TRACKER_DEFAULT_STALE_AFTER 3600000  // 1 hour in ms
 #define WEATHER_DEFAULT_STALE_AFTER 3600000  // 1 hour in ms
 #define GAUGE_DEFAULT_STALE_AFTER 3600000    // 1 hour in ms
+#define WATCHLIST_DEFAULT_STALE_AFTER 3600000  // 1 hour in ms
 
 // ============================================================================
 // Sleep Configuration
@@ -271,6 +285,7 @@ static_assert(MAX_WEATHER_DURATION <= UINT16_MAX,
 #define MQTT_TOPIC_WEATHER      "/weather"
 #define MQTT_TOPIC_TRACKER      "/tracker"
 #define MQTT_TOPIC_GAUGE        "/gauge"
+#define MQTT_TOPIC_WATCHLIST    "/watchlist"
 #define MQTT_TOPIC_STATS        "/stats"
 #define MQTT_TOPIC_STATUS       "/status"
 #define MQTT_TOPIC_SLEEP        "/sleep"

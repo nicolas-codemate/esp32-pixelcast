@@ -1,0 +1,22 @@
+meta {
+  name: Get Watchlist
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/watchlist?name=stocks
+  body: none
+  auth: none
+}
+
+params:query {
+  name: stocks
+}
+
+docs {
+  Returns data for a single watchlist by name.
+
+  Response includes every stored row with its symbol, icon, currency, value and
+  change, age in seconds, and stale status.
+}

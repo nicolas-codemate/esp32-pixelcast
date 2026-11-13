@@ -1,0 +1,16 @@
+meta {
+  name: List Watchlists
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/watchlists
+  body: none
+  auth: none
+}
+
+docs {
+  Lists every active watchlist with its row count, age in seconds, and stale
+  status.
+}

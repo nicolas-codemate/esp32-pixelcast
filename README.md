@@ -195,6 +195,7 @@ curl -X DELETE "http://pixelcast.local/api/indicator1"
 | `pixelcast/weather` | To Device | Update weather data |
 | `pixelcast/tracker/{name}` | To Device | Create/Update a tracker |
 | `pixelcast/gauge/{name}` | To Device | Create/Update a gauge |
+| `pixelcast/watchlist/{name}` | To Device | Create/Update a watchlist |
 | `pixelcast/settings` | To Device | Modify settings |
 | `pixelcast/stats` | From Device | Statistics (auto-publish) |
 | `pixelcast/status` | From Device | Online/Offline (LWT) |
@@ -248,6 +249,10 @@ Full interactive documentation: **[REST API](https://nicolas-codemate.github.io/
 | `GET` | `/api/gauge?name={name}` | Read gauge data |
 | `GET` | `/api/gauges` | List all gauges |
 | `DELETE` | `/api/gauge?name={name}` | Remove gauge |
+| `POST` | `/api/watchlist?name={name}` | Create/update watchlist |
+| `GET` | `/api/watchlist?name={name}` | Read watchlist data |
+| `GET` | `/api/watchlists` | List all watchlists |
+| `DELETE` | `/api/watchlist?name={name}` | Remove watchlist |
 | `POST` | `/api/indicator{1-3}` | Set corner indicator |
 | `DELETE` | `/api/indicator{1-3}` | Turn off corner indicator |
 | `GET` | `/api/stats` | System statistics |

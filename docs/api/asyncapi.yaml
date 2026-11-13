@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: ESP32-PixelCast MQTT API
-  version: 1.10.1
+  version: 1.11.0
   description: >
     MQTT interface for controlling a HUB75 LED matrix panel (64x64) running
     on ESP32 Trinity. JSON payloads mirror the REST API. MQTT must be enabled
@@ -19,7 +19,7 @@ info:
 
     - Delete via `{"delete": true}` flag instead of HTTP DELETE.
 
-    - Name can be in topic path or JSON body for custom/tracker/gauge.
+    - Name can be in topic path or JSON body for custom/tracker/gauge/watchlist.
 
     - No icon management over MQTT.
 
@@ -220,6 +220,32 @@ channels:
       gaugeMessage:
         $ref: "#/components/messages/Gauge"
 
+  watchlist:
+    address: "{prefix}/watchlist"
+    description: >
+      Create or update a watchlist. Name must be in the JSON body.
+      Send `{"delete": true, "name": "stocks"}` to delete.
+    parameters:
+      prefix:
+        default: pixelcast
+    messages:
+      watchlistMessage:
+        $ref: "#/components/messages/Watchlist"
+
+  watchlistNamed:
+    address: "{prefix}/watchlist/{name}"
+    description: >
+      Create or update a watchlist with name in the topic path.
+      Send `{"delete": true}` to delete.
+    parameters:
+      prefix:
+        default: pixelcast
+      name:
+        description: Watchlist name (e.g. "stocks").
+    messages:
+      watchlistMessage:
+        $ref: "#/components/messages/Watchlist"
+
   reboot:
     address: "{prefix}/reboot"
     description: Reboot the device. Payload can be empty.
@@ -341,6 +367,14 @@ operations:
     action: receive
     channel:
       $ref: "#/channels/gaugeNamed"
+  receiveWatchlist:
+    action: receive
+    channel:
+      $ref: "#/channels/watchlist"
+  receiveWatchlistNamed:
+    action: receive
+    channel:
+      $ref: "#/channels/watchlistNamed"
   receiveReboot:
     action: receive
     channel:
@@ -593,6 +627,33 @@ components:
                 color: "#4CAF50"
         - name: deleteGauge
           summary: Delete a gauge
+          payload:
+            delete: true
+
+    Watchlist:
+      payload:
+        $ref: "schemas/watchlist.yaml#/WatchlistUpdateRequest"
+      description: >
+        Same payload as `POST /api/watchlist`, except that a name over thirteen characters
+        and an oversized `rows` array are dropped with a serial log instead of an HTTP 400,
+        and an unknown `staleBehavior` falls back to `dim` instead of being rejected. Nine
+        rows come to under 1 KB, inside the 2048-byte MQTT receive buffer
+        (`MQTT_BUFFER_SIZE`).
+      examples:
+        - name: stocks
+          summary: Six stocks over two pages
+          payload:
+            duration: 12000
+            staleAfter: 2700
+            rows:
+              - { symbol: "SpaceX", icon: "spacex", value: 184.2, currency: "USD", change: 3.42 }
+              - { symbol: "Meta", icon: "meta", value: 612.85, currency: "USD", change: -1.08 }
+              - { symbol: "Nvidia", icon: "nvidia", value: 143.07, currency: "USD", change: 0.56 }
+              - { symbol: "PEA Monde", icon: "etf", value: 28.41, currency: "EUR", change: -0.32 }
+              - { symbol: "Apple", icon: "apple", value: 231.6, currency: "USD", change: 1.21 }
+              - { symbol: "Bitcoin", icon: "bitcoin", value: 98452.3, currency: "USD", change: 2.14 }
+        - name: deleteWatchlist
+          summary: Delete a watchlist
           payload:
             delete: true
 

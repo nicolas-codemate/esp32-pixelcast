@@ -381,6 +381,28 @@ struct GaugeData {
 GaugeData gauges[MAX_GAUGE_APPS];
 uint8_t gaugeCount = 0;
 
+// Watchlist Data (populated by POST /api/watchlist)
+struct WatchlistRow {
+    // Scrolls when it overflows, so the cap is storage rather than screen width: 32 bytes
+    // hold 15 characters whatever their encoding, an accented one taking two.
+    char symbol[32];
+    char icon[32];            // Icon name (LittleFS)
+    char currency[8];         // "USD", "EUR"
+    float value;
+    float changePercent;
+    uint32_t symbolColor;     // 0xRRGGBB
+};
+
+struct WatchlistData {
+    char name[14];            // Key: "stocks" - sized so WATCHLIST_ID_PREFIX plus it fits AppItem::id
+    WatchlistRow rows[MAX_WATCHLIST_ROWS];
+    uint8_t rowCount;
+    unsigned long lastUpdate;
+    bool valid;
+};
+WatchlistData watchlists[MAX_WATCHLIST_APPS];
+uint8_t watchlistCount = 0;
+
 // Indicator Data
 enum IndicatorMode : uint8_t {
     INDICATOR_OFF = 0,
@@ -462,6 +484,14 @@ uint8_t gaugeRowRepaintsPending = 0;
 uint8_t gaugePage = 0;
 unsigned long lastGaugePageSwitch = 0;
 
+// Watchlist display cache (global so they can be reset on app switch)
+unsigned long watchlistLastUpdateDrawn = 0;
+bool watchlistBadgeDrawn = false;
+bool watchlistDimDrawn = false;
+uint8_t watchlistRepaintsPending = 0;
+uint8_t watchlistPage = 0;
+unsigned long lastWatchlistPageSwitch = 0;
+
 // A screen arms one of these counters when its content changes and spends one unit per full
 // paint, so the change reaches every buffer before a partial repaint is allowed to run.
 bool consumePendingRepaint(uint8_t& pendingRepaints) {
@@ -479,6 +509,9 @@ ScrollState trackerBottomScrollState;
 
 // Only the gauge title scrolls: its rows are clipped instead, so they need no state of their own.
 ScrollState gaugeTitleScrollState;
+
+// One per row slot of a watchlist page: the symbols of a page scroll independently.
+ScrollState watchlistSymbolScrollStates[WATCHLIST_ROWS_PER_PAGE];
 
 // Icon Upload State
 File uploadFile;
@@ -688,6 +721,7 @@ void truncateTomThumbTextToWidth(const char* text, char* buffer, size_t bufferSi
 void resetScrollState();
 void resetTrackerScrollStates();
 void resetGaugeDisplayState();
+void resetWatchlistDisplayState();
 bool scrollStateAdvance(ScrollState& state, unsigned long now);
 void scrollStateArm(ScrollState& state, int16_t textWidth, int16_t availableWidth);
 void scrollStateReset(ScrollState& state);
@@ -768,6 +802,8 @@ void printLabelWithSegments(const char* text, int16_t x, int16_t y,
 void printTextWithinBounds(const char* text, int16_t x, int16_t y,
                            int16_t boundLeft, int16_t boundRight, uint32_t color,
                            const TextSegment* segments, uint8_t segmentCount);
+void printTomThumbWithinBounds(const char* text, int16_t x, int16_t baselineY,
+                               int16_t boundLeft, int16_t boundRight, uint16_t color565);
 const TextSegment* dimTextSegments(const TextSegment* segments, uint8_t segmentCount,
                                    bool dimColors, TextSegment* dimmedBuffer);
 void drawCharacterWithinBounds(char character, int16_t x, int16_t y,
@@ -783,6 +819,17 @@ bool gaugeRowCountFits(JsonObject doc);
 void gaugeApplyJsonFields(GaugeData* gauge, JsonObject doc);
 void displayShowGauge(GaugeData* gauge, const AppItem* app);
 void displayDrawGaugeTitle(GaugeData* gauge, bool showBadge, bool dimColors);
+
+// Watchlist management
+WatchlistData* watchlistFind(const char* name);
+const AppItem* watchlistFindApp(const char* name);
+WatchlistData* watchlistAllocate(const char* name);
+bool watchlistRemove(const char* name);
+void watchlistInit();
+bool watchlistNameFits(const char* name);
+bool watchlistRowCountFits(JsonObject doc);
+void watchlistApplyJsonFields(WatchlistData* watchlist, JsonObject doc);
+void displayShowWatchlist(WatchlistData* watchlist, const AppItem* app);
 
 // Notification management
 void notifInit();
@@ -820,6 +867,8 @@ void mqttHandleTracker(const char* name, JsonObject& doc);
 void mqttHandleTrackerDelete(const char* name);
 void mqttHandleGauge(const char* name, JsonObject& doc);
 void mqttHandleGaugeDelete(const char* name);
+void mqttHandleWatchlist(const char* name, JsonObject& doc);
+void mqttHandleWatchlistDelete(const char* name);
 void mqttHandleSettings(JsonObject& doc);
 void mqttHandleBrightness(JsonObject& doc);
 void mqttHandleReboot();
@@ -880,6 +929,9 @@ void setup() {
 
     // Initialize gauge system
     gaugeInit();
+
+    // Initialize watchlist system
+    watchlistInit();
 
     // Initialize notification system
     notifInit();
@@ -1638,6 +1690,99 @@ void gaugeApplyJsonFields(GaugeData* gauge, JsonObject doc) {
             row->noteColor = parseColorValue(rowObject["noteColor"], GAUGE_NOTE_COLOR);
             gauge->rowCount++;
         }
+    }
+}
+
+// ============================================================================
+// Watchlist Functions
+// ============================================================================
+
+// Up here rather than with the layout constants: it is read at parse time, as the colour a
+// symbol takes when the client sends none of its own. Amber sets the name apart from the white
+// price below it and from the green and red that carry the direction of the change.
+#define WATCHLIST_SYMBOL_COLOR 0xFFB000
+
+// Same reason as gaugeNameFits: the store and the rotation app id must spell the name alike.
+bool watchlistNameFits(const char* name) {
+    return strlen(name) < sizeof(WatchlistData::name);
+}
+
+WatchlistData* watchlistFind(const char* name) {
+    for (uint8_t i = 0; i < MAX_WATCHLIST_APPS; i++) {
+        if (watchlists[i].valid && strcmp(watchlists[i].name, name) == 0) {
+            return &watchlists[i];
+        }
+    }
+    return nullptr;
+}
+
+WatchlistData* watchlistAllocate(const char* name) {
+    WatchlistData* existing = watchlistFind(name);
+    if (existing) return existing;
+
+    for (uint8_t i = 0; i < MAX_WATCHLIST_APPS; i++) {
+        if (!watchlists[i].valid) {
+            memset(&watchlists[i], 0, sizeof(WatchlistData));
+            strlcpy(watchlists[i].name, name, sizeof(watchlists[i].name));
+            watchlists[i].valid = true;
+            watchlistCount++;
+            return &watchlists[i];
+        }
+    }
+    return nullptr;
+}
+
+bool watchlistRemove(const char* name) {
+    WatchlistData* watchlist = watchlistFind(name);
+    if (!watchlist) return false;
+
+    watchlist->valid = false;
+    watchlistCount--;
+
+    char appId[32];
+    snprintf(appId, sizeof(appId), "%s%s", WATCHLIST_ID_PREFIX, name);
+    appRemove(appId);
+
+    Serial.printf("[WATCHLIST] Removed: %s\n", name);
+    return true;
+}
+
+void watchlistInit() {
+    memset(watchlists, 0, sizeof(watchlists));
+    watchlistCount = 0;
+    Serial.println("[WATCHLIST] Initialized");
+}
+
+// A watchlist's stale policy is stored on its rotation app, alongside every other app's.
+const AppItem* watchlistFindApp(const char* name) {
+    char appId[32];
+    snprintf(appId, sizeof(appId), "%s%s", WATCHLIST_ID_PREFIX, name);
+    int8_t index = appFind(appId);
+    return index >= 0 ? &apps[index] : nullptr;
+}
+
+// Asked before a slot is taken, so an oversized payload is refused without the caller having
+// anything to undo. A payload without a rows array is accepted: it leaves the rows in place.
+bool watchlistRowCountFits(JsonObject doc) {
+    return !doc["rows"].is<JsonArray>() || doc["rows"].as<JsonArray>().size() <= MAX_WATCHLIST_ROWS;
+}
+
+void watchlistApplyJsonFields(WatchlistData* watchlist, JsonObject doc) {
+    if (!doc["rows"].is<JsonArray>()) return;
+
+    JsonArray rowsArray = doc["rows"];
+    memset(watchlist->rows, 0, sizeof(watchlist->rows));
+    watchlist->rowCount = 0;
+
+    for (JsonObject rowObject : rowsArray) {
+        WatchlistRow* row = &watchlist->rows[watchlist->rowCount];
+        strlcpy(row->symbol, rowObject["symbol"] | "", sizeof(row->symbol));
+        strlcpy(row->icon, rowObject["icon"] | "", sizeof(row->icon));
+        strlcpy(row->currency, rowObject["currency"] | "", sizeof(row->currency));
+        row->value = rowObject["value"] | 0.0f;
+        row->changePercent = rowObject["change"] | 0.0f;
+        row->symbolColor = parseColorValue(rowObject["symbolColor"], WATCHLIST_SYMBOL_COLOR);
+        watchlist->rowCount++;
     }
 }
 
@@ -2784,6 +2929,269 @@ void displayShowGauge(GaugeData* gauge, const AppItem* app) {
     #endif
 }
 
+// ============================================================
+// Layout map (64x64 display) - app "watchlist"
+// NULL font: setCursor = top-left of the glyph cell, 6px advance, 7px tall
+// TomThumb:  setCursor = baseline, capitals sit 5px above it
+//
+// Three 21px row bands, y=0-20, 21-41, 42-62. Within a band starting at top:
+//   top+2..top+6:   symbol at x=10 (TomThumb, baseline top+7), change right-aligned on x=60;
+//                   a symbol wider than the gap between them scrolls inside it
+//   top+6..top+13:  8x8 icon at x=0, clear of the top-left indicator footprint on the first row
+//   top+10..top+16: price at x=10 (NULL font), currency right after it (TomThumb, grey)
+//   top+20:         separator, under every row but the last of the page
+// x=61-62:  carousel dots, vertical, centred on the screen height
+// Nothing is inked past x=58, so the two right-hand indicators never cover data.
+// A STALE badge takes the place of the change on the first row of the page.
+// ============================================================
+#define WATCHLIST_ROW_HEIGHT          21
+#define WATCHLIST_ICON_X              0
+#define WATCHLIST_ICON_OFFSET_Y       6
+#define WATCHLIST_TEXT_X              10
+#define WATCHLIST_SYMBOL_BASELINE_OFFSET 7
+#define WATCHLIST_PRICE_OFFSET_Y      10
+#define WATCHLIST_CURRENCY_BASELINE_OFFSET 16
+#define WATCHLIST_SEPARATOR_OFFSET_Y  20
+// TomThumb inks the five rows above its baseline; the band erased under a scrolling symbol takes
+// one more row on each side and stays clear of the price, which starts three rows lower
+#define WATCHLIST_SYMBOL_BAND_ABOVE_BASELINE 6
+#define WATCHLIST_SYMBOL_BAND_HEIGHT  8
+// Right-aligned TomThumb stops its ink two columns before this, on x=58
+#define WATCHLIST_RIGHT_X             60
+#define WATCHLIST_FIELD_GUTTER        2
+#define WATCHLIST_DOT_X               61
+
+#define WATCHLIST_PRICE_COLOR         0xFFFFFF
+#define WATCHLIST_CURRENCY_COLOR      0x787878
+#define WATCHLIST_SEPARATOR_COLOR     0x282828
+#define WATCHLIST_BADGE_COLOR         0xC80000
+#define WATCHLIST_DOT_ACTIVE_COLOR    0x783CC8
+#define WATCHLIST_DOT_IDLE_COLOR      0x282828
+
+// Rows past this product would be stored and returned by the API but never drawn.
+static_assert(MAX_WATCHLIST_ROWS <= WATCHLIST_ROWS_PER_PAGE * MAX_CAROUSEL_PAGES,
+              "MAX_WATCHLIST_ROWS must not exceed what the carousel can display");
+
+// The rotation app id is WATCHLIST_ID_PREFIX followed by the watchlist name, and a name the
+// store keeps whole must reach that id whole too, or the watchlist can no longer be found.
+static_assert(sizeof(WATCHLIST_ID_PREFIX) - 1 + sizeof(WatchlistData::name) <= sizeof(AppItem::id),
+              "WATCHLIST_ID_PREFIX plus a full-length watchlist name must fit AppItem::id");
+
+// Through the shared label primitive for the same reason as printGaugeRowField: it
+// transliterates accents exactly as calculateTomThumbTextWidth counts them.
+void printWatchlistField(const char* text, int16_t x, int16_t baselineY, uint32_t color,
+                         bool dimColors) {
+    printLabelWithSegments(text, x, baselineY, dimColors ? dimColorQuarter(color) : color,
+                           nullptr, 0, false);
+}
+
+// The change, or the STALE badge standing in for it, owns the right edge of the top line.
+// Returns the x it starts at, which is where the symbol band ends.
+int16_t formatWatchlistChange(const WatchlistRow* row, bool showBadgeHere,
+                              char* buffer, size_t bufferSize, uint32_t* color) {
+    if (showBadgeHere) {
+        strlcpy(buffer, "STALE", bufferSize);
+        *color = WATCHLIST_BADGE_COLOR;
+    } else {
+        bool isPositive = row->changePercent >= 0.0f;
+        snprintf(buffer, bufferSize, "%s%.2f%%", isPositive ? "+" : "", row->changePercent);
+        *color = isPositive ? TRACKER_UP_COLOR : TRACKER_DOWN_COLOR;
+    }
+    return WATCHLIST_RIGHT_X - calculateTomThumbTextWidth(buffer);
+}
+
+// --- Symbol band of one row ---
+// Runs every scroll step, and the DMA reads this framebuffer while it is being written, so it
+// touches nothing outside the band the symbol moves in.
+void displayDrawWatchlistSymbol(const WatchlistRow* row, uint8_t slot, int16_t symbolAreaEnd,
+                                bool dimColors) {
+    int16_t baselineY = slot * WATCHLIST_ROW_HEIGHT + WATCHLIST_SYMBOL_BASELINE_OFFSET;
+    ScrollState& scrollState = watchlistSymbolScrollStates[slot];
+
+    dma_display->fillRect(WATCHLIST_TEXT_X, baselineY - WATCHLIST_SYMBOL_BAND_ABOVE_BASELINE,
+                          symbolAreaEnd - WATCHLIST_TEXT_X, WATCHLIST_SYMBOL_BAND_HEIGHT,
+                          dma_display->color565(0, 0, 0));
+
+    scrollStateArm(scrollState, calculateTomThumbTextWidth(row->symbol),
+                   symbolAreaEnd - WATCHLIST_TEXT_X);
+
+    int16_t symbolX = WATCHLIST_TEXT_X;
+    if (scrollState.needsScroll) {
+        symbolX -= scrollState.scrollOffset;
+    }
+
+    printTomThumbWithinBounds(row->symbol, symbolX, baselineY, WATCHLIST_TEXT_X, symbolAreaEnd,
+                              dimmedColor565(row->symbolColor, dimColors));
+}
+
+// --- One row (21px band) ---
+// Reached only from the full repaint, which clears the screen first.
+void displayDrawWatchlistRow(const WatchlistRow* row, uint8_t slot, bool showBadgeHere,
+                             bool dimColors) {
+    int16_t topY = slot * WATCHLIST_ROW_HEIGHT;
+
+    char changeBuffer[16];
+    uint32_t changeColor;
+    int16_t changeX = formatWatchlistChange(row, showBadgeHere, changeBuffer, sizeof(changeBuffer),
+                                            &changeColor);
+    // The badge keeps its full colour while dimmed: it is what says the screen is frozen
+    printWatchlistField(changeBuffer, changeX, topY + WATCHLIST_SYMBOL_BASELINE_OFFSET, changeColor,
+                        dimColors && !showBadgeHere);
+
+    displayDrawWatchlistSymbol(row, slot, changeX - WATCHLIST_FIELD_GUTTER, dimColors);
+
+    CachedIcon* icon = getIcon(row->icon);
+    if (row->icon[0] && icon && icon->valid) {
+        drawIconAtScale(icon, WATCHLIST_ICON_X, topY + WATCHLIST_ICON_OFFSET_Y, 1);
+    }
+
+    // The price cell ends on a blank column, so the currency printed one column further sits
+    // two columns clear of the last digit, the gap that keeps "184.20USD" from reading as one run
+    bool hasCurrency = row->currency[0] != '\0';
+    int16_t currencyWidth = hasCurrency ? calculateTomThumbTextWidth(row->currency) + 1 : 0;
+    uint8_t priceMaxChars = (WATCHLIST_RIGHT_X - WATCHLIST_TEXT_X - currencyWidth) / TEXT_CELL_WIDTH;
+
+    char priceBuffer[24];
+    formatTrackerValue(row->value, priceBuffer, sizeof(priceBuffer), priceMaxChars);
+    dma_display->setFont(NULL);
+    dma_display->setTextSize(1);
+    dma_display->setTextColor(dimmedColor565(WATCHLIST_PRICE_COLOR, dimColors));
+    dma_display->setCursor(WATCHLIST_TEXT_X, topY + WATCHLIST_PRICE_OFFSET_Y);
+    dma_display->print(priceBuffer);
+
+    if (hasCurrency) {
+        int16_t currencyX = WATCHLIST_TEXT_X + calculateTextWidth(priceBuffer) + 1;
+        printWatchlistField(row->currency, currencyX, topY + WATCHLIST_CURRENCY_BASELINE_OFFSET,
+                            WATCHLIST_CURRENCY_COLOR, dimColors);
+    }
+}
+
+// --- Whole screen: the rows of one page plus the dots ---
+void displayDrawWatchlistPage(WatchlistData* watchlist, uint8_t page, uint8_t pageCount,
+                              bool showBadge, bool dimColors) {
+    uint8_t firstRow = page * WATCHLIST_ROWS_PER_PAGE;
+    uint8_t rowsOnPage = firstRow < watchlist->rowCount
+        ? min((uint8_t)(watchlist->rowCount - firstRow), (uint8_t)WATCHLIST_ROWS_PER_PAGE)
+        : 0;
+
+    for (uint8_t slot = 0; slot < rowsOnPage; slot++) {
+        int16_t topY = slot * WATCHLIST_ROW_HEIGHT;
+        displayDrawWatchlistRow(&watchlist->rows[firstRow + slot], slot,
+                                showBadge && slot == 0, dimColors);
+
+        if (slot + 1 < rowsOnPage) {
+            // Undimmed, like the gauge separator: it frames the screen instead of carrying data
+            dma_display->drawFastHLine(0, topY + WATCHLIST_SEPARATOR_OFFSET_Y, WATCHLIST_RIGHT_X - 1,
+                                       dimmedColor565(WATCHLIST_SEPARATOR_COLOR, false));
+        }
+    }
+
+    if (pageCount > 1) {
+        const int16_t dotSize = 2;
+        const int16_t dotPitch = 3;
+        int16_t startY = (DISPLAY_HEIGHT - (pageCount * dotPitch - 1)) / 2;
+        for (uint8_t dot = 0; dot < pageCount; dot++) {
+            uint32_t dotColor = (dot == page) ? WATCHLIST_DOT_ACTIVE_COLOR : WATCHLIST_DOT_IDLE_COLOR;
+            // Never dimmed, for the reason the gauge gives: a quarter of the idle grey is invisible
+            dma_display->fillRect(WATCHLIST_DOT_X, startY + dot * dotPitch, dotSize, dotSize,
+                                  dimmedColor565(dotColor, false));
+        }
+    }
+}
+
+// Display watchlist layout on 64x64 matrix
+void displayShowWatchlist(WatchlistData* watchlist, const AppItem* app) {
+    if (!watchlist) return;
+
+    bool isStale = appIsStale(app);
+    bool showBadge = isStale && (app->staleBehavior == STALE_DIM || app->staleBehavior == STALE_BADGE);
+    bool dimColors = isStale && app->staleBehavior == STALE_DIM;
+
+    uint8_t pageCount = max((uint8_t)1,
+                            (uint8_t)((watchlist->rowCount + WATCHLIST_ROWS_PER_PAGE - 1) / WATCHLIST_ROWS_PER_PAGE));
+    pageCount = min(pageCount, (uint8_t)MAX_CAROUSEL_PAGES);
+
+    // Every page shows for its share of the app's slot, so the carousel never lengthens the rotation
+    unsigned long pageInterval = (unsigned long)app->duration / pageCount;
+
+    // The API handler runs on another task and can reset watchlistPage mid-frame, so the whole
+    // frame is drawn from one snapshot of it
+    uint8_t currentPage = watchlistPage;
+
+    // A payload with fewer rows can leave the carousel parked on a page that no longer exists
+    if (currentPage >= pageCount) {
+        currentPage = 0;
+    }
+
+    bool pageChanged = false;
+    if (pageCount > 1) {
+        unsigned long now = millis();
+        if (now - lastWatchlistPageSwitch >= pageInterval) {
+            currentPage = (currentPage + 1) % pageCount;
+            lastWatchlistPageSwitch = now;
+            pageChanged = true;
+        }
+    }
+
+    watchlistPage = currentPage;
+
+    // Every row band is part of the page, so a page turn costs the same full paint as new data
+    bool contentChanged = (watchlistLastUpdateDrawn != watchlist->lastUpdate) ||
+                          (watchlistBadgeDrawn != showBadge) ||
+                          (watchlistDimDrawn != dimColors) ||
+                          pageChanged;
+
+    if (contentChanged) {
+        watchlistLastUpdateDrawn = watchlist->lastUpdate;
+        watchlistBadgeDrawn = showBadge;
+        watchlistDimDrawn = dimColors;
+        watchlistRepaintsPending = DISPLAY_BUFFER_COUNT;
+        // A new page or new data puts other symbols in the slots, each starting from its left end
+        for (ScrollState& state : watchlistSymbolScrollStates) {
+            scrollStateReset(state);
+        }
+    }
+
+    uint8_t firstRow = currentPage * WATCHLIST_ROWS_PER_PAGE;
+
+    if (!consumePendingRepaint(watchlistRepaintsPending)) {
+        // A blinking indicator in its off phase is the only one drawIndicators leaves unpainted,
+        // so its corner has to be cleared here for it to blink at all. The layout keeps every
+        // corner footprint free of ink, so black is what belongs there.
+        uint16_t black = dma_display->color565(0, 0, 0);
+        for (uint8_t corner = 0; corner < NUM_INDICATORS; corner++) {
+            if (indicators[corner].mode != INDICATOR_BLINK) continue;
+            int16_t cornerX = (corner == 0) ? 0 : DISPLAY_WIDTH - INDICATOR_FOOTPRINT;
+            int16_t cornerY = (corner == 2) ? DISPLAY_HEIGHT - INDICATOR_FOOTPRINT : 0;
+            dma_display->fillRect(cornerX, cornerY, INDICATOR_FOOTPRINT, INDICATOR_FOOTPRINT, black);
+        }
+        for (uint8_t slot = 0; slot < WATCHLIST_ROWS_PER_PAGE; slot++) {
+            if (!watchlistSymbolScrollStates[slot].needsScroll) continue;
+            if (firstRow + slot >= watchlist->rowCount) continue;
+
+            const WatchlistRow* row = &watchlist->rows[firstRow + slot];
+            char changeBuffer[16];
+            uint32_t changeColor;
+            int16_t changeX = formatWatchlistChange(row, showBadge && slot == 0, changeBuffer,
+                                                    sizeof(changeBuffer), &changeColor);
+            displayDrawWatchlistSymbol(row, slot, changeX - WATCHLIST_FIELD_GUTTER, dimColors);
+        }
+        drawIndicators();
+        #if DOUBLE_BUFFER
+            dma_display->flipDMABuffer();
+        #endif
+        return;
+    }
+
+    dma_display->clearScreen();
+    displayDrawWatchlistPage(watchlist, currentPage, pageCount, showBadge, dimColors);
+    drawIndicators();
+
+    #if DOUBLE_BUFFER
+        dma_display->flipDMABuffer();
+    #endif
+}
+
 #define TODAY_HEAVY_PRECIP_TENTHS 10
 #define TODAY_MIN_PRECIP_PROBABILITY 15
 
@@ -3517,6 +3925,7 @@ void displayShowApp(AppItem* app) {
         trackerLastUpdateDrawn = 0;
         resetTrackerScrollStates();
         resetGaugeDisplayState();
+        resetWatchlistDisplayState();
         // Reset forecast pagination to first page
         forecastPage = 0;
         lastForecastPageSwitch = millis();
@@ -3569,6 +3978,21 @@ void displayShowApp(AppItem* app) {
                 resetScrollState();
             }
             displayShowGauge(gauge, app);
+            return;
+        }
+        // Fallback to default custom app layout if no data
+    }
+
+    // Watchlist layout apps (ID starts with "watchlist_")
+    if (strncmp(app->id, WATCHLIST_ID_PREFIX, strlen(WATCHLIST_ID_PREFIX)) == 0) {
+        const char* watchlistName = app->id + strlen(WATCHLIST_ID_PREFIX);
+        WatchlistData* watchlist = watchlistFind(watchlistName);
+        if (watchlist && watchlist->valid) {
+            // Same reason as the gauge: the custom layout fallback may have armed appScrollState
+            if (appScrollState.needsScroll) {
+                resetScrollState();
+            }
+            displayShowWatchlist(watchlist, app);
             return;
         }
         // Fallback to default custom app layout if no data
@@ -4132,6 +4556,15 @@ void resetGaugeDisplayState() {
     lastGaugePageSwitch = millis();
 }
 
+void resetWatchlistDisplayState() {
+    watchlistLastUpdateDrawn = 0;
+    watchlistPage = 0;
+    lastWatchlistPageSwitch = millis();
+    for (ScrollState& state : watchlistSymbolScrollStates) {
+        scrollStateReset(state);
+    }
+}
+
 // ============================================================================
 // Notification Display
 // ============================================================================
@@ -4661,6 +5094,53 @@ void printTextWithinBounds(const char* text, int16_t x, int16_t y,
         }
 
         cursorX += TEXT_CELL_WIDTH;
+    }
+}
+
+// The TomThumb counterpart of printTextWithinBounds, for a label that scrolls inside a band.
+// Glyphs are drawn pixel by pixel from the font tables, so one straddling a bound is cut on the
+// bound rather than drawn whole or skipped. Characters are read exactly as
+// calculateTomThumbTextWidth reads them, so the scroll runs against the width it measured.
+void printTomThumbWithinBounds(const char* text, int16_t x, int16_t baselineY,
+                               int16_t boundLeft, int16_t boundRight, uint16_t color565) {
+    int16_t cursorX = x;
+    const uint8_t* ptr = (const uint8_t*)text;
+
+    while (*ptr && cursorX < boundRight) {
+        uint8_t characterCode = *ptr;
+        if (characterCode == 0xC3 && *(ptr + 1)) {
+            characterCode = (uint8_t)utf8FrenchToAscii(characterCode, *(ptr + 1));
+            ptr++;
+        }
+        ptr++;
+
+        if (characterCode < 0x20 || characterCode > 0x7E) continue;
+
+        const GFXglyph* glyph = &TomThumbGlyphs[characterCode - 0x20];
+        uint16_t bitmapOffset = pgm_read_word(&glyph->bitmapOffset);
+        uint8_t width = pgm_read_byte(&glyph->width);
+        uint8_t height = pgm_read_byte(&glyph->height);
+        int8_t xOffset = (int8_t)pgm_read_byte(&glyph->xOffset);
+        int8_t yOffset = (int8_t)pgm_read_byte(&glyph->yOffset);
+
+        uint8_t bits = 0;
+        uint8_t bitIndex = 0;
+        for (uint8_t row = 0; row < height; row++) {
+            for (uint8_t column = 0; column < width; column++) {
+                if ((bitIndex & 7) == 0) {
+                    bits = pgm_read_byte(&TomThumbBitmaps[bitmapOffset++]);
+                }
+                bitIndex++;
+                bool lit = bits & 0x80;
+                bits <<= 1;
+                int16_t pixelX = cursorX + xOffset + column;
+                if (lit && pixelX >= boundLeft && pixelX < boundRight) {
+                    dma_display->drawPixel(pixelX, baselineY + yOffset + row, color565);
+                }
+            }
+        }
+
+        cursorX += (int16_t)pgm_read_byte(&glyph->xAdvance);
     }
 }
 
@@ -5985,7 +6465,7 @@ void setupWebServer() {
             }
             if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
                 request->send(400, "application/json",
-                    "{\"error\":\"staleBehavior dim and badge are only supported on tracker and gauge apps\"}");
+                    "{\"error\":\"staleBehavior dim and badge are only supported on tracker, gauge and watchlist apps\"}");
                 return;
             }
 
@@ -6232,7 +6712,7 @@ void setupWebServer() {
             }
             if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
                 request->send(400, "application/json",
-                    "{\"error\":\"staleBehavior dim and badge are only supported on tracker and gauge apps\"}");
+                    "{\"error\":\"staleBehavior dim and badge are only supported on tracker, gauge and watchlist apps\"}");
                 return;
             }
             weatherClockApplyStalePolicy(staleAfter, staleBehavior);
@@ -6606,6 +7086,174 @@ void setupWebServer() {
     webServer.addHandler(gaugeHandler);
 
     // ========================================================================
+    // Watchlist API
+    // ========================================================================
+
+    // GET /api/watchlists - List all active watchlists
+    webServer.on("/api/watchlists", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        JsonArray arr = doc["watchlists"].to<JsonArray>();
+
+        for (uint8_t i = 0; i < MAX_WATCHLIST_APPS; i++) {
+            if (watchlists[i].valid) {
+                JsonObject w = arr.add<JsonObject>();
+                w["name"] = watchlists[i].name;
+                w["rowCount"] = watchlists[i].rowCount;
+                unsigned long ageMs = millis() - watchlists[i].lastUpdate;
+                const AppItem* watchlistApp = watchlistFindApp(watchlists[i].name);
+                w["age"] = ageMs / 1000;
+                w["stale"] = appIsStale(watchlistApp);
+                if (watchlistApp) {
+                    w["staleAfter"] = watchlistApp->staleAfter / 1000;
+                    w["staleBehavior"] = staleBehaviorName(watchlistApp->staleBehavior);
+                }
+            }
+        }
+        doc["count"] = watchlistCount;
+
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // GET /api/watchlist?name=stocks - Get single watchlist data
+    webServer.on("/api/watchlist", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!request->hasParam("name")) {
+            request->send(400, "application/json", "{\"error\":\"Missing watchlist name\"}");
+            return;
+        }
+
+        String name = request->getParam("name")->value();
+        WatchlistData* watchlist = watchlistFind(name.c_str());
+
+        if (!watchlist) {
+            request->send(404, "application/json", "{\"error\":\"Watchlist not found\"}");
+            return;
+        }
+
+        JsonDocument doc;
+        doc["name"] = watchlist->name;
+
+        JsonArray rowsArray = doc["rows"].to<JsonArray>();
+        for (uint8_t i = 0; i < watchlist->rowCount; i++) {
+            const WatchlistRow* row = &watchlist->rows[i];
+            JsonObject rowObject = rowsArray.add<JsonObject>();
+            rowObject["symbol"] = row->symbol;
+            rowObject["icon"] = row->icon;
+            rowObject["currency"] = row->currency;
+            rowObject["value"] = row->value;
+            rowObject["change"] = row->changePercent;
+            char symbolColorHex[8];
+            formatColorHex(row->symbolColor, symbolColorHex, sizeof(symbolColorHex));
+            rowObject["symbolColor"] = symbolColorHex;
+        }
+
+        unsigned long ageMs = millis() - watchlist->lastUpdate;
+        const AppItem* watchlistApp = watchlistFindApp(watchlist->name);
+        doc["age"] = ageMs / 1000;
+        doc["stale"] = appIsStale(watchlistApp);
+        if (watchlistApp) {
+            doc["staleAfter"] = watchlistApp->staleAfter / 1000;
+            doc["staleBehavior"] = staleBehaviorName(watchlistApp->staleBehavior);
+        }
+
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+    });
+
+    // DELETE /api/watchlist?name=stocks - Remove watchlist
+    webServer.on("/api/watchlist", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+        if (!request->hasParam("name")) {
+            request->send(400, "application/json", "{\"error\":\"Missing watchlist name\"}");
+            return;
+        }
+
+        String name = request->getParam("name")->value();
+        if (watchlistRemove(name.c_str())) {
+            request->send(200, "application/json", "{\"success\":true}");
+        } else {
+            request->send(404, "application/json", "{\"error\":\"Watchlist not found\"}");
+        }
+    });
+
+    // POST /api/watchlist?name=stocks - Create/update watchlist
+    AsyncCallbackJsonWebHandler* watchlistHandler = new AsyncCallbackJsonWebHandler("/api/watchlist",
+        [](AsyncWebServerRequest *request, JsonVariant &json) {
+            Serial.println("[API] /watchlist handler called");
+            JsonObject doc = json.as<JsonObject>();
+
+            if (doc.isNull()) {
+                request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
+            }
+
+            String name;
+            if (request->hasParam("name")) {
+                name = request->getParam("name")->value();
+            } else if (!doc["name"].isNull()) {
+                name = doc["name"].as<String>();
+            } else {
+                request->send(400, "application/json", "{\"error\":\"Missing watchlist name\"}");
+                return;
+            }
+
+            // Refused rather than shortened, for the reason the gauge handler gives
+            char errorMessage[64];
+            if (!watchlistNameFits(name.c_str())) {
+                snprintf(errorMessage, sizeof(errorMessage),
+                         "{\"error\":\"Watchlist name too long (max %d)\"}",
+                         (int)sizeof(WatchlistData::name) - 1);
+                request->send(400, "application/json", errorMessage);
+                return;
+            }
+
+            if (!watchlistRowCountFits(doc)) {
+                snprintf(errorMessage, sizeof(errorMessage),
+                         "{\"error\":\"Too many rows (max %d)\"}", MAX_WATCHLIST_ROWS);
+                request->send(400, "application/json", errorMessage);
+                return;
+            }
+
+            // Everything the request can be refused on is checked before a slot is taken, so a
+            // rejected POST leaves the device exactly as it found it
+            StaleBehavior staleBehavior = STALE_DIM;
+            if (!doc["staleBehavior"].isNull() &&
+                !parseStaleBehavior(doc["staleBehavior"], &staleBehavior)) {
+                request->send(400, "application/json",
+                    "{\"error\":\"staleBehavior must be hide, dim, badge or none\"}");
+                return;
+            }
+
+            uint32_t staleAfter = WATCHLIST_DEFAULT_STALE_AFTER;
+            if (!doc["staleAfter"].isNull()) {
+                staleAfter = staleAfterSecondsToMillis(doc["staleAfter"].as<uint32_t>());
+            }
+
+            WatchlistData* watchlist = watchlistAllocate(name.c_str());
+            if (!watchlist) {
+                request->send(500, "application/json", "{\"error\":\"No watchlist slot available\"}");
+                return;
+            }
+
+            watchlistApplyJsonFields(watchlist, doc);
+            watchlist->lastUpdate = millis();
+
+            char appId[32];
+            snprintf(appId, sizeof(appId), "%s%s", WATCHLIST_ID_PREFIX, name.c_str());
+            uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
+            int8_t appIndex = appAdd(appId, name.c_str(), "", 0xFFFFFF,
+                                     duration, staleAfter, false);
+            if (appIndex >= 0) {
+                apps[appIndex].staleBehavior = staleBehavior;
+            }
+
+            Serial.printf("[WATCHLIST] Updated: %s (%d rows)\n", name.c_str(), watchlist->rowCount);
+            request->send(200, "application/json", "{\"success\":true}");
+        });
+    webServer.addHandler(watchlistHandler);
+
+    // ========================================================================
     // Sleep API
     // ========================================================================
 
@@ -6964,6 +7612,19 @@ void setupWebServer() {
                 request->send(200, "application/json", "{\"success\":true}");
             } else {
                 request->send(404, "application/json", "{\"error\":\"Gauge not found\"}");
+            }
+            return;
+        }
+        if (method == HTTP_DELETE_METHOD && url == "/api/watchlist") {
+            if (!request->hasParam("name")) {
+                request->send(400, "application/json", "{\"error\":\"Missing watchlist name\"}");
+                return;
+            }
+            String name = request->getParam("name")->value();
+            if (watchlistRemove(name.c_str())) {
+                request->send(200, "application/json", "{\"success\":true}");
+            } else {
+                request->send(404, "application/json", "{\"error\":\"Watchlist not found\"}");
             }
             return;
         }
@@ -7348,6 +8009,28 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                 mqttHandleGauge(name, obj);
             }
         }
+    } else if (strcmp(relativeTopic, MQTT_TOPIC_WATCHLIST) == 0) {
+        // /watchlist with name in JSON body
+        const char* name = obj["name"] | "";
+        if (strlen(name) > 0) {
+            if (obj["delete"] | false) {
+                mqttHandleWatchlistDelete(name);
+            } else {
+                mqttHandleWatchlist(name, obj);
+            }
+        } else {
+            Serial.println("[MQTT] /watchlist missing name");
+        }
+    } else if (strncmp(relativeTopic, MQTT_TOPIC_WATCHLIST "/", strlen(MQTT_TOPIC_WATCHLIST) + 1) == 0) {
+        // /watchlist/{name}
+        const char* name = relativeTopic + strlen(MQTT_TOPIC_WATCHLIST) + 1;
+        if (strlen(name) > 0) {
+            if (obj["delete"] | false) {
+                mqttHandleWatchlistDelete(name);
+            } else {
+                mqttHandleWatchlist(name, obj);
+            }
+        }
     } else if (strncmp(relativeTopic, MQTT_TOPIC_INDICATOR, strlen(MQTT_TOPIC_INDICATOR)) == 0) {
         // /indicator1, /indicator2, /indicator3
         const char* indexStr = relativeTopic + strlen(MQTT_TOPIC_INDICATOR);
@@ -7455,7 +8138,7 @@ void mqttHandleCustom(const char* name, JsonObject& doc) {
         Serial.println("[MQTT] Unknown staleBehavior, keeping hide");
     }
     if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
-        Serial.println("[MQTT] staleBehavior dim and badge need a tracker or gauge app, keeping hide");
+        Serial.println("[MQTT] staleBehavior dim and badge need a tracker, gauge or watchlist app, keeping hide");
         staleBehavior = STALE_HIDE;
     }
 
@@ -7595,7 +8278,7 @@ void mqttHandleWeather(JsonObject& doc) {
         Serial.println("[MQTT] Unknown staleBehavior, keeping hide");
     }
     if (staleBehavior == STALE_DIM || staleBehavior == STALE_BADGE) {
-        Serial.println("[MQTT] staleBehavior dim and badge need a tracker or gauge app, keeping hide");
+        Serial.println("[MQTT] staleBehavior dim and badge need a tracker, gauge or watchlist app, keeping hide");
         staleBehavior = STALE_HIDE;
     }
     weatherClockApplyStalePolicy(staleAfter, staleBehavior);
@@ -7708,6 +8391,57 @@ void mqttHandleGaugeDelete(const char* name) {
         Serial.printf("[MQTT] Gauge '%s' deleted\n", name);
     } else {
         Serial.printf("[MQTT] Gauge '%s' not found\n", name);
+    }
+}
+
+void mqttHandleWatchlist(const char* name, JsonObject& doc) {
+    if (!watchlistNameFits(name)) {
+        Serial.printf("[MQTT] Watchlist '%s' rejected: name longer than %d characters\n",
+                      name, (int)sizeof(WatchlistData::name) - 1);
+        return;
+    }
+
+    if (!watchlistRowCountFits(doc)) {
+        Serial.printf("[MQTT] Watchlist '%s' rejected: more than %d rows\n", name, MAX_WATCHLIST_ROWS);
+        return;
+    }
+
+    WatchlistData* watchlist = watchlistAllocate(name);
+    if (!watchlist) {
+        Serial.printf("[MQTT] No watchlist slot available for '%s'\n", name);
+        return;
+    }
+
+    watchlistApplyJsonFields(watchlist, doc);
+    watchlist->lastUpdate = millis();
+
+    uint32_t staleAfter = WATCHLIST_DEFAULT_STALE_AFTER;
+    if (!doc["staleAfter"].isNull()) {
+        staleAfter = staleAfterSecondsToMillis(doc["staleAfter"].as<uint32_t>());
+    }
+
+    StaleBehavior staleBehavior = STALE_DIM;
+    if (!doc["staleBehavior"].isNull() &&
+        !parseStaleBehavior(doc["staleBehavior"], &staleBehavior)) {
+        Serial.println("[MQTT] Unknown staleBehavior, keeping dim");
+    }
+
+    char appId[32];
+    snprintf(appId, sizeof(appId), "%s%s", WATCHLIST_ID_PREFIX, name);
+    uint16_t duration = doc["duration"] | (uint16_t)DEFAULT_APP_DURATION;
+    int8_t appIndex = appAdd(appId, name, "", 0xFFFFFF, duration, staleAfter, false);
+    if (appIndex >= 0) {
+        apps[appIndex].staleBehavior = staleBehavior;
+    }
+
+    Serial.printf("[MQTT] Watchlist updated: %s (%d rows)\n", name, watchlist->rowCount);
+}
+
+void mqttHandleWatchlistDelete(const char* name) {
+    if (watchlistRemove(name)) {
+        Serial.printf("[MQTT] Watchlist '%s' deleted\n", name);
+    } else {
+        Serial.printf("[MQTT] Watchlist '%s' not found\n", name);
     }
 }
 
@@ -8389,6 +9123,7 @@ void loopApps() {
         trackerLastUpdateDrawn = 0;
         resetTrackerScrollStates();
         resetGaugeDisplayState();
+        resetWatchlistDisplayState();
         Serial.println("[NOTIF] All dismissed, resuming app rotation");
         // Wipe the notification pixels, then paint the app into every buffer
         displayClear();
@@ -8526,10 +9261,11 @@ void loopSleepTransition()
         Serial.printf("[SLEEP] exiting at %u\n", (unsigned)time(nullptr));
         displaySetBrightness(previousBrightness);
         lastDisplayUpdate = 0;
-        // The sleep clock overwrote the app frame, so a tracker or gauge screen has to repaint
+        // The sleep clock overwrote the app frame, so a tracker, gauge or watchlist screen has to repaint
         trackerLastUpdateDrawn = 0;
         resetTrackerScrollStates();
         resetGaugeDisplayState();
+        resetWatchlistDisplayState();
     }
     wasSleeping = isSleeping;
 }
@@ -8755,6 +9491,9 @@ void loopDisplay() {
         needsRedraw |= scrollStateAdvance(trackerSymbolScrollState, now);
         needsRedraw |= scrollStateAdvance(trackerBottomScrollState, now);
         needsRedraw |= scrollStateAdvance(gaugeTitleScrollState, now);
+        for (ScrollState& state : watchlistSymbolScrollStates) {
+            needsRedraw |= scrollStateAdvance(state, now);
+        }
     }
 
     // Regular display update (1000ms for non-scrolling, 50ms for indicator animation)

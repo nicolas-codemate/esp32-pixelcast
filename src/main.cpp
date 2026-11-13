@@ -2935,19 +2935,20 @@ void displayShowGauge(GaugeData* gauge, const AppItem* app) {
 // TomThumb:  setCursor = baseline, capitals sit 5px above it
 //
 // Three 21px row bands, y=0-20, 21-41, 42-62. Within a band starting at top:
-//   top+2..top+6:   symbol at x=10 (TomThumb, baseline top+7), change right-aligned on x=60;
+//   top+2..top+6:   symbol at x=11 (TomThumb, baseline top+7), change right-aligned on x=60;
 //                   a symbol wider than the gap between them scrolls inside it
-//   top+6..top+13:  8x8 icon at x=0, clear of the top-left indicator footprint on the first row
-//   top+10..top+16: price at x=10 (NULL font), currency right after it (TomThumb, grey)
+//   top+6..top+13:  8x8 icon at x=1, clear of the top-left indicator footprint on the first row;
+//                   the margin keeps a logo off the edge of the panel, as on the tracker
+//   top+10..top+16: price at x=11 (NULL font), currency right after it (TomThumb, grey)
 //   top+20:         separator, under every row but the last of the page
 // x=61-62:  carousel dots, vertical, centred on the screen height
 // Nothing is inked past x=58, so the two right-hand indicators never cover data.
 // A STALE badge takes the place of the change on the first row of the page.
 // ============================================================
 #define WATCHLIST_ROW_HEIGHT          21
-#define WATCHLIST_ICON_X              0
+#define WATCHLIST_ICON_X              1
 #define WATCHLIST_ICON_OFFSET_Y       6
-#define WATCHLIST_TEXT_X              10
+#define WATCHLIST_TEXT_X              11
 #define WATCHLIST_SYMBOL_BASELINE_OFFSET 7
 #define WATCHLIST_PRICE_OFFSET_Y      10
 #define WATCHLIST_CURRENCY_BASELINE_OFFSET 16
